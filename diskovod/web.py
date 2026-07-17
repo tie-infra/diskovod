@@ -43,6 +43,7 @@ class WebApp:
         self.store, self.chatgpt, self.discord, self.automation = store, chatgpt, discord, automation
         self.admin_password = admin_password
         self.public_url = public_url.rstrip("/")
+        self.public_origin = self._normalized_origin(self.public_url)
         self.security = HTTPBasic()
         base = Path(__file__).parent
         self.templates = Jinja2Templates(directory=base / "templates")
@@ -58,7 +59,8 @@ class WebApp:
                 "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
             )
             response.headers["X-Content-Type-Options"] = "nosniff"
-            response.headers["Referrer-Policy"] = "no-referrer"
+            # `no-referrer` serializes the Origin of ordinary form POSTs as `null`.
+            response.headers["Referrer-Policy"] = "same-origin"
             response.headers["Cache-Control"] = "no-store"
             return response
 
@@ -70,9 +72,27 @@ class WebApp:
                 status_code=status.HTTP_401_UNAUTHORIZED, headers={"WWW-Authenticate": "Basic"}
             )
         if origin := request.headers.get("origin"):
-            if urlparse(origin).netloc != request.headers.get("host"):
-                raise HTTPException(status_code=403, detail="Cross-origin form submission rejected")
+            if self._normalized_origin(origin) != self.public_origin:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Cross-origin form submission rejected; expected {self.public_url}",
+                )
         return credentials.username
+
+    @staticmethod
+    def _normalized_origin(url: str) -> tuple[str, str, int] | None:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        return (
+            parsed.scheme.lower(),
+            parsed.hostname.lower(),
+            port or (443 if parsed.scheme.lower() == "https" else 80),
+        )
 
     def _routes(self) -> None:
         auth = self.require_admin

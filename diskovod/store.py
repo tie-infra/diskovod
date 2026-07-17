@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .models import AppSettings, ChatCredentials
+from .models import AppSettings, ChatCredentials, CustomProvider
 from .security import SecretBox
 
 
@@ -110,6 +110,16 @@ class Store:
 
     def clear_chat_credentials(self) -> None:
         self._delete("chatgpt.credentials")
+
+    def custom_provider(self) -> CustomProvider | None:
+        value = self._get("openai_compatible.provider", None)
+        return CustomProvider(**value) if value else None
+
+    def set_custom_provider(self, value: CustomProvider) -> None:
+        self._set("openai_compatible.provider", value.to_dict(), secret=True)
+
+    def clear_custom_provider(self) -> None:
+        self._delete("openai_compatible.provider")
 
     def personality(self) -> dict[str, Any] | None:
         return self._get("personality", None)
@@ -316,6 +326,24 @@ class Store:
                 (channel_id, limit),
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
+
+    def update_message_content(
+        self, message_id: str, content: str, *, source: str | None = None
+    ) -> dict[str, Any] | None:
+        with self._lock, self._db:
+            row = self._db.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+            if row is None:
+                return None
+            new_source = source or row["source"]
+            changed = row["content"] != content or row["source"] != new_source
+            if changed:
+                self._db.execute(
+                    "UPDATE messages SET content=?, source=? WHERE id=?",
+                    (content, new_source, message_id),
+                )
+        result = dict(row)
+        result.update(content=content, source=new_source, changed=changed)
+        return result
 
     def remember_nonce(self, nonce: str) -> None:
         with self._lock, self._db:

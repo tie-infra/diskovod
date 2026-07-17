@@ -1,10 +1,19 @@
 from pathlib import Path
 
-from diskovod.models import ChatCredentials
+from diskovod.models import AppSettings, ChatCredentials, CustomProvider
 from diskovod.store import Store
 
 
 SECRET = "x" * 32
+
+
+def test_app_settings_persist_silent_replies(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+
+    assert store.app_settings().silent_replies is False
+    store.set_app_settings(AppSettings(silent_replies=True))
+    assert store.app_settings().silent_replies is True
+    store.close()
 
 
 def test_secrets_are_encrypted_and_round_trip(tmp_path: Path):
@@ -14,11 +23,14 @@ def test_secrets_are_encrypted_and_round_trip(tmp_path: Path):
     store.set_chat_credentials(
         ChatCredentials("access-secret", "refresh-secret", 123, "acct", "a@example.test")
     )
+    store.set_custom_provider(CustomProvider("Local", "http://localhost:8000/v1", "provider-secret"))
     raw = path.read_bytes()
     assert b"very-secret-token" not in raw
     assert b"access-secret" not in raw
+    assert b"provider-secret" not in raw
     assert store.discord_token() == "very-secret-token"
     assert store.chat_credentials().account_id == "acct"
+    assert store.custom_provider().api_key == "provider-secret"
     store.close()
 
 
@@ -51,6 +63,29 @@ def test_bot_markers_are_consumed_once(tmp_path: Path):
     assert store.consume_nonce("nonce") is False
     store.remember_bot_message("message")
     assert store.is_bot_message("message") is True
+    store.close()
+
+
+def test_message_edits_replace_content_and_can_reclassify_owner_message(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.upsert_conversation("dm", "peer", "Peer")
+    store.save_message(
+        id="message",
+        channel_id="dm",
+        author_id="me",
+        author_name="Me",
+        direction="out",
+        source="assistant",
+        content="original",
+        timestamp=100,
+    )
+
+    updated = store.update_message_content("message", "edited", source="human")
+
+    assert updated["changed"] is True
+    assert store.history("dm", 1)[0]["content"] == "edited"
+    assert store.history("dm", 1)[0]["source"] == "human"
+    assert store.update_message_content("missing", "ignored") is None
     store.close()
 
 

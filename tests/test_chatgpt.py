@@ -8,8 +8,13 @@ from urllib.parse import parse_qs, urlparse
 import aiohttp
 import pytest
 
-from diskovod.chatgpt import CALLBACK_URL, ORIGINATOR, ChatGPTClient
-from diskovod.models import ChatCredentials
+from diskovod.chatgpt import (
+    CALLBACK_URL,
+    ORIGINATOR,
+    ChatGPTClient,
+    normalize_custom_base_url,
+)
+from diskovod.models import AppSettings, ChatCredentials, CustomProvider
 from diskovod.store import Store
 
 
@@ -40,8 +45,19 @@ class FakeSession:
         self.last_kwargs = None
 
     def post(self, *_args, **kwargs):
+        self.last_args = _args
         self.last_kwargs = kwargs
         return self.response
+
+
+class FakeJSONResponse(FakeResponse):
+    def __init__(self, payload: object, status: int = 200):
+        super().__init__(b"")
+        self.payload = payload
+        self.status = status
+
+    async def json(self, *, content_type=None):
+        return self.payload
 
 
 def test_extracts_unverified_display_claims_only():
@@ -122,7 +138,14 @@ async def test_completed_stream_records_usage(tmp_path: Path):
     session = FakeSession(FakeResponse(stream))
     client.session = cast(aiohttp.ClientSession, session)
 
-    result = await client.complete([], "instructions", "gpt-5", "low", purpose="dm_reply")
+    result = await client.complete(
+        [],
+        "instructions",
+        "gpt-5",
+        "low",
+        purpose="dm_reply",
+        max_output_tokens=256,
+    )
 
     assert result == "Hello"
     stats = store.chatgpt_usage_stats()
@@ -130,6 +153,7 @@ async def test_completed_stream_records_usage(tmp_path: Path):
     assert stats["by_model"][0]["name"] == "gpt-5-resolved"
     assert stats["by_purpose"][0]["name"] == "dm_reply"
     assert session.last_kwargs["headers"]["Originator"] == ORIGINATOR
+    assert session.last_kwargs["json"]["max_output_tokens"] == 256
     store.close()
 
 
@@ -143,3 +167,120 @@ async def test_oauth_uses_registered_codex_callback_url():
     assert query["redirect_uri"] == [CALLBACK_URL]
     assert query["originator"] == [ORIGINATOR]
     assert client.oauth.redirect_uri == CALLBACK_URL
+
+
+@pytest.mark.parametrize(
+    ("value", "normalized"),
+    (
+        ("https://models.example/v1/", "https://models.example/v1"),
+        ("http://localhost:8000/v1", "http://localhost:8000/v1"),
+    ),
+)
+def test_custom_api_base_url_normalization(value: str, normalized: str):
+    assert normalize_custom_base_url(value) == normalized
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "localhost:8000/v1",
+        "ftp://models.example/v1",
+        "https://user:secret@models.example/v1",
+        "https://models.example/v1?key=secret",
+        "https://models example/v1",
+        "http://[::1/v1",
+    ),
+)
+def test_custom_api_base_url_rejects_ambiguous_or_secret_urls(value: str):
+    with pytest.raises(ValueError, match="API base URL"):
+        normalize_custom_base_url(value)
+
+
+@pytest.mark.asyncio
+async def test_custom_provider_uses_chat_completions_and_records_usage(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_app_settings(AppSettings(provider="custom", model="local-model"))
+    store.set_custom_provider(CustomProvider("Local", "http://localhost:8000/v1", "provider-key"))
+    payload = {
+        "id": "chatcmpl-local",
+        "model": "resolved-model",
+        "choices": [{"message": {"role": "assistant", "content": "hello"}}],
+        "usage": {
+            "prompt_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 5},
+            "completion_tokens": 7,
+            "completion_tokens_details": {"reasoning_tokens": 2},
+            "total_tokens": 27,
+        },
+    }
+    client = ChatGPTClient(store)
+    session = FakeSession(FakeJSONResponse(payload))
+    client.session = cast(aiohttp.ClientSession, session)
+
+    result = await client.complete(
+        [{"role": "user", "content": "hi"}],
+        "system instructions",
+        "local-model",
+        "high",
+        purpose="dm_reply",
+        max_output_tokens=192,
+    )
+
+    assert result == "hello"
+    assert session.last_args == ("http://localhost:8000/v1/chat/completions",)
+    assert session.last_kwargs["headers"]["Authorization"] == "Bearer provider-key"
+    assert session.last_kwargs["json"] == {
+        "model": "local-model",
+        "messages": [
+            {"role": "system", "content": "system instructions"},
+            {"role": "user", "content": "hi"},
+        ],
+        "stream": False,
+        "max_completion_tokens": 192,
+    }
+    stats = store.chatgpt_usage_stats()
+    assert stats["all_time"]["total_tokens"] == 27
+    assert stats["all_time"]["cached_input_tokens"] == 5
+    assert stats["all_time"]["reasoning_tokens"] == 2
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_keyless_custom_provider_omits_authorization_header(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_app_settings(AppSettings(provider="custom"))
+    store.set_custom_provider(CustomProvider("Keyless", "http://localhost:8000/v1", ""))
+    payload = {"choices": [{"message": {"content": "ok"}}]}
+    client = ChatGPTClient(store)
+    session = FakeSession(FakeJSONResponse(payload))
+    client.session = cast(aiohttp.ClientSession, session)
+
+    assert await client.complete([], "instructions", "model", "low") == "ok"
+    assert "Authorization" not in session.last_kwargs["headers"]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_custom_provider_surfaces_api_errors(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_app_settings(AppSettings(provider="custom"))
+    store.set_custom_provider(CustomProvider("Gateway", "https://models.example/v1", "key"))
+    client = ChatGPTClient(store)
+    client.session = cast(
+        aiohttp.ClientSession,
+        FakeSession(FakeJSONResponse({"error": {"message": "unknown model"}}, status=400)),
+    )
+
+    with pytest.raises(RuntimeError, match="Gateway returned HTTP 400: unknown model"):
+        await client.complete([], "instructions", "missing-model", "low")
+
+    assert client.last_error == "Gateway returned HTTP 400: unknown model"
+    store.close()
+
+
+def test_custom_usage_falls_back_to_prompt_plus_completion_total():
+    usage = ChatGPTClient._usage_from_chat_completion(
+        {"usage": {"prompt_tokens": 11, "completion_tokens": 4}}
+    )
+
+    assert usage["total_tokens"] == 15

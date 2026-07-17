@@ -137,6 +137,26 @@ class PrivateDiscordClient(discord.Client):
         )
         self.automation.schedule(message)
 
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        if not self.user or "content" not in payload.data:
+            return
+        message = payload.message
+        if not isinstance(message.channel, discord.DMChannel):
+            return
+        channel_id = str(message.channel.id)
+        content = message.content
+        if message.author == self.user:
+            updated = self.store.update_message_content(str(message.id), content, source="human")
+            if updated and updated["changed"]:
+                self.automation.human_activity(channel_id)
+            return
+        if message.author.bot:
+            return
+        updated = self.store.update_message_content(str(message.id), content)
+        if not updated or not updated["changed"]:
+            return
+        self.automation.reschedule_if_pending(message)
+
 
 class DiscordService:
     def __init__(self, store: Store, automation: Automation):

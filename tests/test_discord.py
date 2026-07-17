@@ -55,6 +55,23 @@ class FakeChannel:
             yield message
 
 
+class EditAutomation:
+    def __init__(self):
+        self.human_channels: list[str] = []
+        self.rescheduled: list[object] = []
+
+    def human_activity(self, channel_id: str):
+        self.human_channels.append(channel_id)
+
+    def reschedule_if_pending(self, message: object):
+        self.rescheduled.append(message)
+        return True
+
+
+class FakeEditDMChannel:
+    id = 42
+
+
 class RetryClient:
     attempts = 0
 
@@ -153,4 +170,83 @@ async def test_personality_history_is_limited_and_excludes_generated_messages(tm
     assert "human message 4" not in history
     assert "human message 18" in history
     assert "human message 20" not in history
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_raw_owner_edit_updates_style_history_and_marks_human_activity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
+    user = object()
+    automation = EditAutomation()
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.upsert_conversation("42", "peer", "Peer")
+    store.save_message(
+        id="outgoing",
+        channel_id="42",
+        author_id="me",
+        author_name="Me",
+        direction="out",
+        source="assistant",
+        content="generated draft",
+        timestamp=time.time(),
+    )
+    client = SimpleNamespace(user=user, store=store, automation=automation)
+    message = SimpleNamespace(
+        id="outgoing",
+        channel=FakeEditDMChannel(),
+        author=user,
+        content="edited by owner",
+    )
+    payload = SimpleNamespace(data={"content": "edited by owner"}, message=message)
+
+    await PrivateDiscordClient.on_raw_message_edit(client, payload)
+
+    saved = store.history("42", 1)[0]
+    assert saved["content"] == "edited by owner"
+    assert saved["source"] == "human"
+    assert automation.human_channels == ["42"]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_raw_remote_edit_updates_history_and_only_requests_pending_reschedule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
+    user = object()
+    remote = SimpleNamespace(bot=False)
+    automation = EditAutomation()
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.upsert_conversation("42", "peer", "Peer")
+    store.save_message(
+        id="incoming",
+        channel_id="42",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="original text",
+        timestamp=time.time(),
+    )
+    client = SimpleNamespace(user=user, store=store, automation=automation)
+    message = SimpleNamespace(
+        id="incoming",
+        channel=FakeEditDMChannel(),
+        author=remote,
+        content="corrected text",
+    )
+
+    await PrivateDiscordClient.on_raw_message_edit(
+        client,
+        SimpleNamespace(data={"content": "corrected text"}, message=message),
+    )
+    await PrivateDiscordClient.on_raw_message_edit(
+        client,
+        SimpleNamespace(data={"embeds": []}, message=message),
+    )
+
+    assert store.history("42", 1)[0]["content"] == "corrected text"
+    assert automation.rescheduled == [message]
     store.close()

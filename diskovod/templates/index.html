@@ -17,7 +17,11 @@
 
       <div class="system-status">
         <span class="status-dot {{ 'is-on' if app_settings.enabled else '' }}"></span>
-        {{ "Automation enabled" if app_settings.enabled else "Automation disabled" }}
+        {% if app_settings.enabled %}
+          Automation enabled · {{ provider_label }}
+        {% else %}
+          Automation disabled
+        {% endif %}
       </div>
     </header>
 
@@ -30,7 +34,7 @@
         <div class="notice notice-error" role="alert">{{ error }}</div>
       {% endif %}
 
-      <section class="card-grid" aria-label="Connections">
+      <section class="card-grid connection-grid" aria-label="Connections">
         <article class="card">
           <div class="card-header">
             <div>
@@ -38,7 +42,11 @@
               <h2>ChatGPT subscription</h2>
             </div>
             <span class="pill {{ 'is-good' if chat_connected else '' }}">
-              {{ chat_email or ("Connected" if chat_connected else "Not connected") }}
+              {% if active_provider == "chatgpt" and chat_connected %}
+                Active
+              {% else %}
+                {{ chat_email or ("Connected" if chat_connected else "Not connected") }}
+              {% endif %}
             </span>
           </div>
 
@@ -47,7 +55,7 @@
             locally.
           </p>
 
-          {% if chat_error %}
+          {% if chat_error and active_provider == "chatgpt" %}
             <p class="inline-error">{{ chat_error }}</p>
           {% endif %}
 
@@ -56,6 +64,13 @@
               {{ "Disconnect" if chat_connected else "Sign in with ChatGPT" }}
             </button>
           </form>
+
+          {% if chat_connected and active_provider != "chatgpt" %}
+            <form method="post" action="/provider/select">
+              <input type="hidden" name="provider" value="chatgpt">
+              <button>Use ChatGPT subscription</button>
+            </form>
+          {% endif %}
 
           <small>
             OpenAI redirects to <code>http://localhost:1455/auth/callback</code>, the fixed callback
@@ -69,6 +84,91 @@
           <div class="card-header">
             <div>
               <span class="step">02</span>
+              <h2>OpenAI-compatible API</h2>
+            </div>
+            <span class="pill {{ 'is-good' if custom_provider else '' }}">
+              {% if active_provider == "custom" and custom_provider %}
+                Active · {{ custom_provider.name }}
+              {% elif custom_provider %}
+                Configured
+              {% else %}
+                Not configured
+              {% endif %}
+            </span>
+          </div>
+
+          <p>
+            Connect any provider implementing the OpenAI Chat Completions API. The API key is
+            encrypted locally; keyless endpoints are supported.
+          </p>
+
+          {% if chat_error and active_provider == "custom" %}
+            <p class="inline-error">{{ chat_error }}</p>
+          {% endif %}
+
+          <form method="post" action="/provider/custom" class="form-stack">
+            <label>
+              Provider name
+              <input
+                name="name"
+                value="{{ custom_provider.name if custom_provider else '' }}"
+                maxlength="80"
+                placeholder="Local model"
+                required
+              >
+            </label>
+            <label>
+              API base URL
+              <input
+                type="url"
+                name="base_url"
+                value="{{ custom_provider.base_url if custom_provider else '' }}"
+                placeholder="http://localhost:8000/v1"
+                required
+              >
+            </label>
+            <label>
+              API key
+              <input
+                type="password"
+                name="api_key"
+                autocomplete="off"
+                placeholder="{{ 'Leave empty to keep the saved key' if custom_provider and custom_provider.has_api_key else 'Optional for keyless endpoints' }}"
+              >
+            </label>
+            {% if custom_provider and custom_provider.has_api_key %}
+              <label class="toggle">
+                <input type="checkbox" name="clear_api_key">
+                Remove the saved API key
+              </label>
+            {% endif %}
+            <button>{{ "Update and use provider" if custom_provider else "Save and use provider" }}</button>
+          </form>
+
+          {% if custom_provider %}
+            <div class="button-row">
+              {% if active_provider != "custom" %}
+                <form method="post" action="/provider/select">
+                  <input type="hidden" name="provider" value="custom">
+                  <button>Use {{ custom_provider.name }}</button>
+                </form>
+              {% endif %}
+              <form method="post" action="/provider/custom/remove">
+                <button class="button-secondary">Remove custom provider</button>
+              </form>
+            </div>
+          {% endif %}
+
+          <small>
+            Diskovod sends non-streaming requests to
+            <code>{{ (custom_provider.base_url if custom_provider else 'http://localhost:8000/v1') }}/chat/completions</code>.
+          </small>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <span class="step">03</span>
               <h2>Discord</h2>
             </div>
             <span class="pill {{ 'is-good' if discord_connected else '' }}">
@@ -155,7 +255,7 @@
         <article class="card">
           <div class="card-header">
             <div>
-              <span class="step">03</span>
+              <span class="step">04</span>
               <h2>Personality cache</h2>
             </div>
             <span class="pill {{ 'is-good' if personality else '' }}">
@@ -166,7 +266,8 @@
           <p>
             Build a detailed description of communication habits, preferences, languages, and
             other supported personality traits from human-authored message history. Dominant message
-            length and layout are separated from rare, context-specific behavior.
+            length and layout are separated from rare, context-specific behavior. The result also
+            includes newly written representative examples, never copied samples from the history.
           </p>
 
           <form method="post" action="/personality/infer-history" class="form-stack">
@@ -181,11 +282,12 @@
                 required
               >
             </label>
-            <button {% if not discord_connected or not chat_connected %}disabled{% endif %}>
+            <button {% if not discord_connected or not model_connected %}disabled{% endif %}>
               Load history and infer personality
             </button>
             <small>
-              Requires Discord and ChatGPT. Generated replies are excluded from the sample.
+              Requires Discord and the active model provider. Generated replies are excluded from
+              the sample.
             </small>
           </form>
 
@@ -201,7 +303,7 @@
                   required
                 ></textarea>
               </label>
-              <button {% if not chat_connected %}disabled{% endif %}>
+              <button {% if not model_connected %}disabled{% endif %}>
                 Infer personality from pasted history
               </button>
             </form>
@@ -227,7 +329,7 @@
         <article class="card">
           <div class="card-header">
             <div>
-              <span class="step">04</span>
+              <span class="step">05</span>
               <h2>Reply behavior</h2>
             </div>
           </div>
@@ -238,12 +340,43 @@
               Enable automated replies
             </label>
 
+            <label class="toggle">
+              <input
+                type="checkbox"
+                name="silent_replies"
+                {% if app_settings.silent_replies %}checked{% endif %}
+              >
+              Prefix generated replies with <code>@silent</code>
+            </label>
+            <p class="field-help">
+              Requests that Discord deliver generated text without notifying the recipient. Emoji
+              reactions are unaffected.
+            </p>
+
             <div class="field-grid field-grid-two">
+              <label>
+                Provider
+                <select name="provider">
+                  <option value="chatgpt" {% if active_provider == "chatgpt" %}selected{% endif %}>
+                    ChatGPT subscription
+                  </option>
+                  <option
+                    value="custom"
+                    {% if active_provider == "custom" %}selected{% endif %}
+                    {% if not custom_provider %}disabled{% endif %}
+                  >
+                    {{ custom_provider.name if custom_provider else "Custom API (not configured)" }}
+                  </option>
+                </select>
+              </label>
+
               <label>
                 Model
                 <input name="model" value="{{ app_settings.model }}">
               </label>
+            </div>
 
+            <div class="field-grid field-grid-two">
               <label>
                 Reasoning
                 <select name="reasoning_effort">
@@ -254,7 +387,22 @@
                   {% endfor %}
                 </select>
               </label>
+              <label>
+                Maximum reply tokens
+                <input
+                  type="number"
+                  min="32"
+                  max="2048"
+                  name="max_reply_tokens"
+                  value="{{ app_settings.max_reply_tokens }}"
+                >
+              </label>
             </div>
+            <p class="field-help">
+              The reply cap is sent as <code>max_output_tokens</code> for ChatGPT Subscription and
+              <code>max_completion_tokens</code> for custom providers. Reasoning tokens can consume
+              part of this allowance.
+            </p>
 
             <fieldset>
               <legend>Reply timing</legend>
@@ -369,15 +517,15 @@
         <article class="card usage-card">
           <div class="card-header">
             <div>
-              <span class="step">05</span>
-              <h2>ChatGPT token usage</h2>
+              <span class="step">06</span>
+              <h2>Model token usage</h2>
             </div>
             <span class="pill">{{ "{:,}".format(usage_stats.all_time.requests) }} calls</span>
           </div>
 
           <p>
-            Actual counters reported by completed ChatGPT responses. Only usage metadata is stored;
-            prompts and generated text are not copied into these records.
+            Actual counters reported by completed responses from either provider. Only usage
+            metadata is stored; prompts and generated text are not copied into these records.
           </p>
 
           <div class="usage-summary" aria-label="All-time usage summary">
@@ -555,7 +703,7 @@
         <article class="card">
           <div class="card-header">
             <div>
-              <span class="step">06</span>
+              <span class="step">07</span>
               <h2>Conversations</h2>
             </div>
             <span class="pill">{{ conversations | length }} known</span>

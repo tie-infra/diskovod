@@ -1,8 +1,8 @@
 # Diskovod
 
-Diskovod is a Discord DM assistant backed by a ChatGPT Plus or Pro subscription. It watches DMs,
-replies using a cached personality profile, and provides an admin UI for Discord, ChatGPT,
-personality, and conversation controls.
+Diskovod is a Discord DM assistant backed by either a ChatGPT Plus/Pro subscription or a custom
+OpenAI-compatible API. It watches DMs, replies using a cached personality profile, and provides an
+admin UI for Discord, model providers, personality, and conversation controls.
 
 When the account owner sends a message, Diskovod cancels pending work and enters a configurable
 quiet window. Messages received during that window are recorded but not answered. Automation can
@@ -12,17 +12,18 @@ paused until an administrator resumes them.
 ## Features
 
 - ChatGPT OAuth with PKCE, refresh-token rotation, and subscription-backed streaming responses.
+- Custom OpenAI-compatible Chat Completions providers, including keyless local endpoints.
 - Discord connection through `discord.py-self`.
 - Personality inference from bounded Discord or pasted message history, with an editable cache.
 - An identity-disclosure guard that rewrites a rejected draft once and otherwise sends nothing.
 - Rare emoji reactions for lightweight acknowledgements when a written reply is unnecessary.
-- Detailed ChatGPT token accounting by time window, model, and operation.
-- SQLite storage with encrypted Discord and ChatGPT credentials.
+- Optional `@silent` prefix for generated text replies that should not notify the recipient.
+- Configurable generation caps for concise DM replies.
+- Edit-aware message history that refreshes a pending reply when its trigger changes.
+- Detailed model token accounting by time window, model, and operation.
+- SQLite storage with encrypted Discord, ChatGPT, and custom-provider credentials.
 - An IPv6 loopback listener default, with a separate browser-facing public URL.
 - Nix package overlay and a settings-based NixOS module.
-
-The ChatGPT transport follows Zed's
-[`openai_subscribed` provider](https://github.com/zed-industries/zed/blob/master/crates/language_models/src/provider/openai_subscribed.rs).
 
 ## Configuration
 
@@ -51,8 +52,8 @@ Secrets are accepted through file paths in the JSON settings:
 | `admin_password_file` | Admin UI password, at least 12 characters | yes |
 | `secret_key_file` | Database encryption key, at least 32 characters | yes |
 
-The Discord token entered in the admin UI and ChatGPT credentials are encrypted before they are
-persisted in SQLite.
+The Discord token and custom-provider API key entered in the admin UI, along with ChatGPT
+credentials, are encrypted before they are persisted in SQLite.
 
 ## Run
 
@@ -83,6 +84,18 @@ Diskovod is remote, that page normally fails to load. In the browser address bar
 entire `?code=...&state=...` query string. Diskovod then exchanges the code using the original,
 registered localhost callback and redirects to the admin UI.
 
+### OpenAI-compatible provider
+
+In **OpenAI-compatible API**, enter a display name, an API base URL that normally ends in `/v1`,
+and an optional API key. Saving the provider also selects it. Diskovod makes non-streaming requests
+to `<base_url>/chat/completions` with a system message followed by the DM history. The model name is
+configured separately in **Reply behavior**.
+
+API keys use the standard `Authorization: Bearer` header. Leaving the key empty supports local or
+otherwise keyless endpoints; the example URL is `http://localhost:8000/v1`. The custom transport
+intentionally uses the broadly compatible Chat Completions request shape. Reasoning effort remains
+specific to the ChatGPT Subscription transport.
+
 ### Discord sign-in
 
 Paste the account token into the Discord card in the admin UI. Diskovod stores it encrypted and
@@ -92,8 +105,8 @@ and default Discord endpoints.
 
 Discord login and connection failures do not stop the service. Diskovod recreates the client with
 bounded exponential backoff and clears the displayed connection error after reconnecting. ChatGPT
-uses request-scoped connections, so a transient failure affects that operation while later calls
-can try again.
+and custom model calls use request-scoped connections, so a transient failure affects that
+operation while later calls can try again.
 
 ### CAPTCHA requests
 
@@ -105,9 +118,9 @@ the pending request form. The library retries the original request with that sol
 ## Personality preload
 
 In **Personality cache**, choose how many recent Discord messages to inspect or paste a message
-history manually. The Discord loader sends only the account's human-authored messages to ChatGPT
-and excludes generated replies. Identical history reuses the cached profile, and the raw preload
-text is not retained.
+history manually. The Discord loader sends only the account's human-authored messages to the active
+model provider and excludes generated replies. Identical history reuses the cached profile, and the
+raw preload text is not retained.
 
 The Discord loader inspects between 20 and 500 recent messages across the most recently active DMs,
 with an 80,000-character inference limit.
@@ -120,6 +133,10 @@ treated as the default. The cached description can be reviewed and edited in the
 time. Re-running inference after a prompt revision refreshes the cache even when the selected
 history has not changed.
 
+The profile ends with 8–12 synthetic representative examples written from the inferred style.
+They are newly generated examples—not samples, quotations, or close paraphrases from the private
+history. This gives the reply model concrete style guidance without copying source messages.
+
 Replies also pass through a local identity-disclosure check before sending. A rejected draft is
 regenerated once with stricter instructions. If the replacement still fails the check, Diskovod
 leaves the DM unanswered instead of releasing it. Repair calls appear separately in token usage as
@@ -130,12 +147,21 @@ instead of sending text. Reactions are never combined with a reply. A local limi
 one reaction among the latest twelve automated actions and applies a six-hour per-conversation
 cooldown; if the model proposes one sooner, it is asked for a normal text reply instead.
 
+**Prefix generated replies with `@silent`** adds Discord's notification-suppression marker to text
+sent by Diskovod. The marker is not stored in conversation history and does not affect reactions.
+
+**Maximum reply tokens** limits each DM generation and any repair or reaction-fallback generation.
+It maps to `max_output_tokens` for ChatGPT Subscription and `max_completion_tokens` for custom
+providers. Personality inference uses a separate 2,000-token allowance so its profile and examples
+are not truncated by the concise reply setting.
+
 ## Token usage
 
-Diskovod records the usage metadata reported with each completed ChatGPT response: input tokens,
-cached input tokens, output tokens, reasoning tokens, and total tokens. The admin UI shows rolling
-24-hour, 7-day, 30-day, and all-time totals; breakdowns by model and operation; cache utilization;
-and the 50 most recent calls.
+Diskovod records the usage metadata reported with each completed response: input tokens, cached
+input tokens, output tokens, reasoning tokens, and total tokens. Both ChatGPT Subscription and
+custom Chat Completions usage formats are normalized into the same counters. The admin UI shows
+rolling 24-hour, 7-day, 30-day, and all-time totals; breakdowns by model and operation; cache
+utilization; and the 50 most recent calls.
 
 Usage rows contain only the response ID, timestamp, model, operation, and token counters. They do
 not duplicate prompts or generated messages. Calls made before this feature was enabled cannot be
@@ -151,6 +177,11 @@ event is delayed.
 
 Messages received during a quiet window are not queued for a later reply. Permanent pause is a
 separate per-conversation setting and remains active until **Resume now** is selected.
+
+Message content edits are reflected in stored history. Editing an outgoing message marks its final
+version as human-authored, cancels pending automation, and starts the normal quiet window. If the
+peer edits the exact incoming message that currently has a reply pending, Diskovod cancels and
+regenerates from the edited content. Older edits update context but do not cause duplicate replies.
 
 ## Overlay
 

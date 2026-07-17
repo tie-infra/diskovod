@@ -1,7 +1,9 @@
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -47,6 +49,32 @@ def test_permanent_pause_is_separate_from_human_quiet_window(tmp_path: Path):
 
     assert store.conversation("dm")["paused"] is True
     assert store.conversation("dm")["snoozed_until"] is None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_only_the_pending_trigger_is_rescheduled_after_an_edit(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.upsert_conversation("dm", "peer", "Peer")
+    store.set_app_settings(AppSettings(enabled=True, debounce_seconds=60))
+    automation = Automation(store, cast(ChatGPTClient, None))
+    channel = SimpleNamespace(id="dm")
+    original = SimpleNamespace(id="latest", channel=channel, content="before")
+    older = SimpleNamespace(id="older", channel=channel, content="edited old message")
+
+    automation.schedule(original)
+    first_task = automation.tasks["dm"]
+    assert automation.reschedule_if_pending(older) is False
+
+    edited = SimpleNamespace(id="latest", channel=channel, content="after")
+    assert automation.reschedule_if_pending(edited) is True
+    second_task = automation.tasks["dm"]
+    assert first_task.cancelling()
+
+    emptied = SimpleNamespace(id="latest", channel=channel, content="")
+    assert automation.reschedule_if_pending(emptied) is True
+    assert "dm" not in automation.tasks
+    await asyncio.gather(first_task, second_task, return_exceptions=True)
     store.close()
 
 
@@ -111,8 +139,14 @@ class ReplyingChatGPT:
         self.answers = iter(answers)
         self.calls: list[dict] = []
 
-    async def complete(self, messages, instructions, model, effort, *, purpose):
-        self.calls.append({"instructions": instructions, "purpose": purpose})
+    async def complete(self, messages, instructions, model, effort, *, purpose, max_output_tokens=None):
+        self.calls.append(
+            {
+                "instructions": instructions,
+                "purpose": purpose,
+                "max_output_tokens": max_output_tokens,
+            }
+        )
         return next(self.answers)
 
 
@@ -128,6 +162,7 @@ async def test_identity_disclosure_is_repaired_before_release():
         "dm_reply",
         "dm_reply_identity_repair",
     ]
+    assert all(call["max_output_tokens"] == 256 for call in chatgpt.calls)
     assert "previous draft was rejected" in chatgpt.calls[1]["instructions"]
 
 
@@ -184,6 +219,75 @@ class ReactionTrigger:
 
     async def add_reaction(self, emoji: str):
         self.reactions.append(emoji)
+
+
+class TextChannel:
+    id = "dm"
+    me = object()
+
+    def __init__(self):
+        self.sent: list[tuple[str, str]] = []
+
+    async def history(self, limit: int):
+        if False:
+            yield limit
+
+    @asynccontextmanager
+    async def typing(self):
+        yield
+
+    async def send(self, content: str, *, nonce: str):
+        self.sent.append((content, nonce))
+        return SimpleNamespace(
+            id="sent",
+            author=SimpleNamespace(id="me"),
+            created_at=datetime.now(UTC),
+        )
+
+
+class TextTrigger:
+    id = "incoming"
+
+    def __init__(self):
+        self.channel = TextChannel()
+
+    async def add_reaction(self, emoji: str):
+        raise AssertionError(f"unexpected reaction: {emoji}")
+
+
+@pytest.mark.asyncio
+async def test_silent_prefix_is_sent_but_not_stored_in_model_history(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    settings = AppSettings(
+        enabled=True,
+        silent_replies=True,
+        debounce_seconds=0,
+        min_delay_seconds=0,
+        max_delay_seconds=0,
+    )
+    store.set_app_settings(settings)
+    store.upsert_conversation("dm", "peer", "Peer")
+    store.save_message(
+        id="incoming",
+        channel_id="dm",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="hello",
+        timestamp=time.time(),
+    )
+    automation = Automation(store, cast(ChatGPTClient, ReplyingChatGPT(["hey"])))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0)
+
+    assert trigger.channel.sent[0][0] == "@silent hey"
+    saved = store.history("dm", 10)[-1]
+    assert saved["content"] == "hey"
+    assert saved["source"] == "assistant"
+    store.close()
 
 
 @pytest.mark.asyncio

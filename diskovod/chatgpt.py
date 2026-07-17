@@ -8,7 +8,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import aiohttp
 
@@ -22,6 +22,31 @@ BACKEND_URL = "https://chatgpt.com/backend-api/codex"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CALLBACK_URL = "http://localhost:1455/auth/callback"
 ORIGINATOR = "zed"
+PROVIDERS = frozenset({"chatgpt", "custom"})
+
+
+def normalize_custom_base_url(value: str) -> str:
+    base_url = value.strip().rstrip("/")
+    try:
+        parsed = urlparse(base_url)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise ValueError(
+            "API base URL must be an absolute HTTP(S) URL without credentials or a query"
+        ) from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or any(character.isspace() for character in base_url)
+    ):
+        raise ValueError("API base URL must be an absolute HTTP(S) URL without credentials or a query")
+    return base_url
 
 
 @dataclass(slots=True)
@@ -49,7 +74,30 @@ class ChatGPTClient:
 
     @property
     def connected(self) -> bool:
+        provider = self.store.app_settings().provider
+        if provider == "custom":
+            return self.store.custom_provider() is not None
+        return self.subscription_connected
+
+    @property
+    def subscription_connected(self) -> bool:
         return self.store.chat_credentials() is not None
+
+    @property
+    def custom_connected(self) -> bool:
+        return self.store.custom_provider() is not None
+
+    @property
+    def active_provider(self) -> str:
+        provider = self.store.app_settings().provider
+        return provider if provider in PROVIDERS else "chatgpt"
+
+    @property
+    def provider_label(self) -> str:
+        if self.active_provider == "custom":
+            provider = self.store.custom_provider()
+            return provider.name if provider else "Custom API"
+        return "ChatGPT subscription"
 
     @property
     def email(self) -> str | None:
@@ -184,6 +232,31 @@ class ChatGPTClient:
         effort: str,
         *,
         purpose: str = "conversation",
+        max_output_tokens: int | None = None,
+    ) -> str:
+        try:
+            if self.active_provider == "custom":
+                result = await self._complete_custom(
+                    messages, instructions, model, purpose, max_output_tokens
+                )
+            else:
+                result = await self._complete_subscription(
+                    messages, instructions, model, effort, purpose, max_output_tokens
+                )
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+        self.last_error = None
+        return result
+
+    async def _complete_subscription(
+        self,
+        messages: list[dict[str, str]],
+        instructions: str,
+        model: str,
+        effort: str,
+        purpose: str,
+        max_output_tokens: int | None,
     ) -> str:
         creds = await self.credentials()
         assert self.session
@@ -218,6 +291,8 @@ class ChatGPTClient:
             "store": False,
             "reasoning": {"effort": effort, "summary": "auto"},
         }
+        if max_output_tokens is not None:
+            body["max_output_tokens"] = max(1, max_output_tokens)
         chunks: list[str] = []
         usage_record: dict | None = None
         async with self.session.post(f"{BACKEND_URL}/responses", headers=headers, json=body) as response:
@@ -258,6 +333,115 @@ class ChatGPTClient:
             raise RuntimeError("ChatGPT returned an empty response")
         return result
 
+    async def _complete_custom(
+        self,
+        messages: list[dict[str, str]],
+        instructions: str,
+        model: str,
+        purpose: str,
+        max_output_tokens: int | None,
+    ) -> str:
+        provider = self.store.custom_provider()
+        if provider is None:
+            raise RuntimeError("The custom OpenAI-compatible provider is not configured")
+        assert self.session
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if provider.api_key:
+            headers["Authorization"] = f"Bearer {provider.api_key}"
+        body = {
+            "model": model,
+            "messages": [{"role": "system", "content": instructions}, *messages],
+            "stream": False,
+        }
+        if max_output_tokens is not None:
+            body["max_completion_tokens"] = max(1, max_output_tokens)
+        url = normalize_custom_base_url(provider.base_url) + "/chat/completions"
+        async with self.session.post(url, headers=headers, json=body) as response:
+            try:
+                payload = await response.json(content_type=None)
+            except (aiohttp.ContentTypeError, json.JSONDecodeError) as exc:
+                detail = (await response.text())[:1000].strip()
+                raise RuntimeError(
+                    f"{provider.name} returned HTTP {response.status} with invalid JSON"
+                    + (f": {detail}" if detail else "")
+                ) from exc
+            if response.status >= 400:
+                error = payload.get("error") if isinstance(payload, dict) else None
+                if isinstance(error, dict):
+                    detail = error.get("message") or error.get("type")
+                else:
+                    detail = error or (payload.get("message") if isinstance(payload, dict) else None)
+                raise RuntimeError(
+                    f"{provider.name} returned HTTP {response.status}: {detail or 'unknown error'}"
+                )
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{provider.name} returned an invalid JSON response")
+        result = self._chat_completion_text(payload)
+        if not result:
+            raise RuntimeError(f"{provider.name} returned an empty response")
+        usage_record = self._usage_from_chat_completion(payload)
+        if usage_record:
+            response_id = usage_record["response_id"]
+            if response_id:
+                provider_id = hashlib.sha256(provider.base_url.encode()).hexdigest()[:12]
+                response_id = f"custom:{provider_id}:{response_id}"
+            self.store.record_chatgpt_usage(
+                response_id=response_id,
+                model=usage_record["model"] or model,
+                purpose=purpose,
+                input_tokens=usage_record["input_tokens"],
+                cached_input_tokens=usage_record["cached_input_tokens"],
+                output_tokens=usage_record["output_tokens"],
+                reasoning_tokens=usage_record["reasoning_tokens"],
+                total_tokens=usage_record["total_tokens"],
+            )
+        return result
+
+    @staticmethod
+    def _chat_completion_text(payload: dict) -> str:
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            return ""
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") in {"text", "output_text"}
+            ).strip()
+        return ""
+
+    @classmethod
+    def _usage_from_chat_completion(cls, payload: object) -> dict | None:
+        if not isinstance(payload, dict) or not isinstance(payload.get("usage"), dict):
+            return None
+        usage = payload["usage"]
+        prompt_details = usage.get("prompt_tokens_details")
+        completion_details = usage.get("completion_tokens_details")
+        prompt_details = prompt_details if isinstance(prompt_details, dict) else {}
+        completion_details = completion_details if isinstance(completion_details, dict) else {}
+        input_tokens = cls._token_count(usage.get("prompt_tokens"))
+        output_tokens = cls._token_count(usage.get("completion_tokens"))
+        total_tokens = cls._token_count(usage.get("total_tokens")) or input_tokens + output_tokens
+        return {
+            "response_id": payload.get("id"),
+            "model": payload.get("model"),
+            "input_tokens": input_tokens,
+            "cached_input_tokens": cls._token_count(prompt_details.get("cached_tokens")),
+            "output_tokens": output_tokens,
+            "reasoning_tokens": cls._token_count(completion_details.get("reasoning_tokens")),
+            "total_tokens": total_tokens,
+        }
+
+    @staticmethod
+    def _token_count(value: object) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
     @staticmethod
     def _usage_from_response(response: object) -> dict | None:
         if not isinstance(response, dict) or not isinstance(response.get("usage"), dict):
@@ -268,18 +452,12 @@ class ChatGPTClient:
         input_details = input_details if isinstance(input_details, dict) else {}
         output_details = output_details if isinstance(output_details, dict) else {}
 
-        def token_count(value: object) -> int:
-            try:
-                return max(0, int(value or 0))
-            except (TypeError, ValueError):
-                return 0
-
         return {
             "response_id": response.get("id"),
             "model": response.get("model"),
-            "input_tokens": token_count(usage.get("input_tokens")),
-            "cached_input_tokens": token_count(input_details.get("cached_tokens")),
-            "output_tokens": token_count(usage.get("output_tokens")),
-            "reasoning_tokens": token_count(output_details.get("reasoning_tokens")),
-            "total_tokens": token_count(usage.get("total_tokens")),
+            "input_tokens": ChatGPTClient._token_count(usage.get("input_tokens")),
+            "cached_input_tokens": ChatGPTClient._token_count(input_details.get("cached_tokens")),
+            "output_tokens": ChatGPTClient._token_count(usage.get("output_tokens")),
+            "reasoning_tokens": ChatGPTClient._token_count(output_details.get("reasoning_tokens")),
+            "total_tokens": ChatGPTClient._token_count(usage.get("total_tokens")),
         }

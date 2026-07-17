@@ -6,8 +6,11 @@ from dataclasses import asdict, dataclass
 @dataclass(slots=True)
 class AppSettings:
     enabled: bool = False
+    silent_replies: bool = False
+    provider: str = "chatgpt"
     model: str = "gpt-5.4-mini"
     reasoning_effort: str = "low"
+    max_reply_tokens: int = 256
     debounce_seconds: float = 1.8
     min_delay_seconds: float = 2.2
     max_delay_seconds: float = 6.5
@@ -37,6 +40,16 @@ class ChatCredentials:
     expires_at: float
     account_id: str | None
     email: str | None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class CustomProvider:
+    name: str
+    base_url: str
+    api_key: str
 
     def to_dict(self) -> dict:
         return asdict(self)

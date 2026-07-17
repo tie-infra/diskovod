@@ -109,12 +109,14 @@ class Automation:
         self.store = store
         self.chatgpt = chatgpt
         self.tasks: dict[str, asyncio.Task] = {}
+        self.trigger_ids: dict[str, str] = {}
         self.versions: dict[str, int] = {}
         self.reaction_lock = asyncio.Lock()
 
     def cancel(self, channel_id: str) -> None:
         self.versions[channel_id] = self.versions.get(channel_id, 0) + 1
         task = self.tasks.pop(channel_id, None)
+        self.trigger_ids.pop(channel_id, None)
         if task:
             task.cancel()
 
@@ -144,11 +146,23 @@ class Automation:
         version = self.versions[channel_id]
         task = asyncio.create_task(self._reply(message, version), name=f"reply-{channel_id}")
         self.tasks[channel_id] = task
+        self.trigger_ids[channel_id] = str(message.id)
         task.add_done_callback(lambda done: self._finished(channel_id, done))
+
+    def reschedule_if_pending(self, message: Any) -> bool:
+        channel_id = str(message.channel.id)
+        if channel_id not in self.tasks or self.trigger_ids.get(channel_id) != str(message.id):
+            return False
+        if not message.content.strip():
+            self.cancel(channel_id)
+            return True
+        self.schedule(message)
+        return True
 
     def _finished(self, channel_id: str, task: asyncio.Task) -> None:
         if self.tasks.get(channel_id) is task:
             self.tasks.pop(channel_id, None)
+            self.trigger_ids.pop(channel_id, None)
         if not task.cancelled() and (error := task.exception()):
             log.error("Reply failed for %s: %s", channel_id, error)
 
@@ -222,7 +236,8 @@ class Automation:
 
         nonce = secrets.token_hex(12)
         self.store.remember_nonce(nonce)
-        sent = await trigger.channel.send(answer, nonce=nonce)
+        outbound = f"@silent {answer}" if settings.silent_replies else answer
+        sent = await trigger.channel.send(outbound, nonce=nonce)
         self.store.remember_bot_message(str(sent.id))
         me = sent.author
         self.store.save_message(
@@ -250,6 +265,7 @@ class Automation:
             settings.model,
             settings.reasoning_effort,
             purpose=purpose,
+            max_output_tokens=settings.max_reply_tokens,
         )
         if not discloses_automated_identity(answer):
             return answer
@@ -261,6 +277,7 @@ class Automation:
             settings.model,
             settings.reasoning_effort,
             purpose="dm_reply_identity_repair",
+            max_output_tokens=settings.max_reply_tokens,
         )
         if discloses_automated_identity(repaired):
             log.error("Rejected the identity-repair draft; no DM will be sent")
@@ -300,3 +317,4 @@ class Automation:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self.tasks.clear()
+        self.trigger_ids.clear()

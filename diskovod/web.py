@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -12,13 +13,14 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
 from .automation import Automation
-from .chatgpt import ChatGPTClient
+from .chatgpt import PROVIDERS, ChatGPTClient, normalize_custom_base_url
 from .discord import DiscordService
-from .models import AppSettings
+from .models import AppSettings, CustomProvider
 from .security import password_matches
 from .store import Store
 
-PERSONALITY_PROMPT_VERSION = "style-base-rates-v2"
+PERSONALITY_PROMPT_VERSION = "style-base-rates-and-examples-v3"
+PERSONALITY_MAX_OUTPUT_TOKENS = 2000
 PERSONALITY_INSTRUCTIONS = """Infer a comprehensive, reusable personality and writing-style profile of the person who authored these messages. Model base rates and dominant patterns, not a checklist of every behavior that appears. Never promote a rare trait or format to a default merely because it occurs once.
 
 Make the profile operational for another model. Cover:
@@ -28,6 +30,7 @@ Make the profile operational for another model. Cover:
 - Preferred languages and switching patterns.
 - Recurring interests, habits, preferences, apparent values, temperament, decision-making tendencies, and other stable traits supported by the history.
 - Rare or context-dependent deviations, clearly labeled with when they occur and what must not be overused.
+- A final "Representative examples" section containing 8–12 newly written example messages that demonstrate the inferred style across common DM contexts. These must be synthetic examples, not samples, quotations, close paraphrases, or reconstructions of any source message. Make most examples reflect the dominant short-form style; include rare formats only in realistic proportion and label their context.
 
 Give highest priority to the default reply shape and useful negative constraints. Quantify approximate frequencies or ranges when the evidence permits. Distinguish strong evidence from tentative impressions. Do not quote private messages, name conversation partners, reveal secrets, or infer highly sensitive attributes. Return only the detailed profile."""
 
@@ -105,15 +108,28 @@ class WebApp:
 
         @self.app.get("/")
         async def dashboard(request: Request, _: str = Depends(auth)):
+            custom_provider = self.store.custom_provider()
             return self.templates.TemplateResponse(
                 request,
                 "index.html",
                 {
                     "app_settings": self.store.app_settings(),
                     "public_url": self.public_url,
-                    "chat_connected": self.chatgpt.connected,
+                    "chat_connected": self.chatgpt.subscription_connected,
                     "chat_email": self.chatgpt.email,
                     "chat_error": self.chatgpt.last_error,
+                    "model_connected": self.chatgpt.connected,
+                    "active_provider": self.chatgpt.active_provider,
+                    "provider_label": self.chatgpt.provider_label,
+                    "custom_provider": (
+                        {
+                            "name": custom_provider.name,
+                            "base_url": custom_provider.base_url,
+                            "has_api_key": bool(custom_provider.api_key),
+                        }
+                        if custom_provider
+                        else None
+                    ),
                     "discord_connected": self.discord.connected,
                     "discord_identity": self.discord.identity,
                     "discord_error": self.discord.error,
@@ -148,12 +164,58 @@ class WebApp:
                 await self.chatgpt.finish_oauth(code=code, state=state, error=error)
             except Exception as exc:
                 return self._back(error=str(exc))
-            return self._back(message="ChatGPT connected")
+            self._set_provider("chatgpt")
+            return self._back(message="ChatGPT connected and selected")
 
         @self.app.post("/chatgpt/disconnect")
         async def chat_disconnect(_: str = Depends(auth)):
             self.store.clear_chat_credentials()
+            self.chatgpt.last_error = None
             return self._back(message="ChatGPT disconnected")
+
+        @self.app.post("/provider/custom")
+        async def custom_provider_save(
+            name: str = Form(...),
+            base_url: str = Form(...),
+            api_key: str = Form(""),
+            clear_api_key: str | None = Form(None),
+            _: str = Depends(auth),
+        ):
+            name = name.strip()
+            if not name or len(name) > 80:
+                return self._back(error="Provider name must contain between 1 and 80 characters")
+            try:
+                base_url = normalize_custom_base_url(base_url)
+            except ValueError as exc:
+                return self._back(error=str(exc))
+            existing = self.store.custom_provider()
+            api_key = api_key.strip()
+            if not api_key and clear_api_key is None and existing:
+                api_key = existing.api_key
+            self.store.set_custom_provider(CustomProvider(name, base_url, api_key))
+            self._set_provider("custom")
+            self.chatgpt.last_error = None
+            return self._back(message=f"{name} saved and selected")
+
+        @self.app.post("/provider/custom/remove")
+        async def custom_provider_remove(_: str = Depends(auth)):
+            self.store.clear_custom_provider()
+            if self.chatgpt.active_provider == "custom":
+                self._set_provider("chatgpt")
+            self.chatgpt.last_error = None
+            return self._back(message="Custom provider removed")
+
+        @self.app.post("/provider/select")
+        async def provider_select(provider: str = Form(...), _: str = Depends(auth)):
+            if provider not in PROVIDERS:
+                return self._back(error="Unknown model provider")
+            if provider == "chatgpt" and not self.chatgpt.subscription_connected:
+                return self._back(error="Connect ChatGPT before selecting it")
+            if provider == "custom" and not self.chatgpt.custom_connected:
+                return self._back(error="Configure a custom provider before selecting it")
+            self._set_provider(provider)
+            self.chatgpt.last_error = None
+            return self._back(message=f"{self.chatgpt.provider_label} selected")
 
         @self.app.post("/discord/connect")
         async def discord_connect(token: str = Form(...), _: str = Depends(auth)):
@@ -187,8 +249,11 @@ class WebApp:
         @self.app.post("/settings")
         async def settings(
             enabled: str | None = Form(None),
+            silent_replies: str | None = Form(None),
+            provider: str = Form("chatgpt"),
             model: str = Form(...),
             reasoning_effort: str = Form("low"),
+            max_reply_tokens: int = Form(256),
             debounce_seconds: float = Form(...),
             min_delay_seconds: float = Form(...),
             max_delay_seconds: float = Form(...),
@@ -200,6 +265,13 @@ class WebApp:
             base_instructions: str = Form(...),
             _: str = Depends(auth),
         ):
+            if provider not in PROVIDERS:
+                return self._back(error="Unknown model provider")
+            if provider == "custom" and not self.chatgpt.custom_connected:
+                return self._back(error="Configure a custom provider before selecting it")
+            model = model.strip()
+            if not model:
+                return self._back(error="Model name cannot be empty")
             if (
                 min_delay_seconds > max_delay_seconds
                 or min_typing_cps > max_typing_cps
@@ -208,8 +280,11 @@ class WebApp:
                 return self._back(error="Minimum values cannot exceed maximum values")
             value = AppSettings(
                 enabled=enabled is not None,
-                model=model.strip(),
+                silent_replies=silent_replies is not None,
+                provider=provider,
+                model=model,
                 reasoning_effort=reasoning_effort,
+                max_reply_tokens=max(32, min(max_reply_tokens, 2048)),
                 debounce_seconds=debounce_seconds,
                 min_delay_seconds=min_delay_seconds,
                 max_delay_seconds=max_delay_seconds,
@@ -286,6 +361,11 @@ class WebApp:
             )
         return stats
 
+    def _set_provider(self, provider: str) -> None:
+        if provider not in PROVIDERS:
+            raise ValueError("Unknown model provider")
+        self.store.set_app_settings(replace(self.store.app_settings(), provider=provider))
+
     async def _infer_personality(self, samples: str, *, source: str) -> RedirectResponse:
         source_hash = personality_source_hash(samples)
         cached = self.store.personality()
@@ -299,6 +379,7 @@ class WebApp:
                 cfg.model,
                 cfg.reasoning_effort,
                 purpose="personality_inference",
+                max_output_tokens=PERSONALITY_MAX_OUTPUT_TOKENS,
             )
         except Exception as exc:
             return self._back(error=str(exc))

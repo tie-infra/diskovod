@@ -43,6 +43,9 @@ def test_auth_callbacks_and_redirects_use_public_url():
 
     route_paths = {route.path for route in web.app.routes}
     assert "/chatgpt/oauth/callback" in route_paths
+    assert "/provider/custom" in route_paths
+    assert "/provider/custom/remove" in route_paths
+    assert "/provider/select" in route_paths
     assert "/discord/connect" in route_paths
     assert "/discord/settings" not in route_paths
     assert "/discord/captcha/{request_id}" in route_paths
@@ -94,6 +97,8 @@ def test_personality_inference_requests_a_full_profile():
         "preferences",
         "temperament",
         "Rare or context-dependent",
+        "Representative examples",
+        "synthetic examples, not samples",
     ):
         assert topic in PERSONALITY_INSTRUCTIONS
 

@@ -17,6 +17,14 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
         chat_connected=False,
         chat_email=None,
         chat_error=None,
+        model_connected=True,
+        active_provider="custom",
+        provider_label="Local model",
+        custom_provider={
+            "name": "Local model",
+            "base_url": "http://localhost:8000/v1",
+            "has_api_key": True,
+        },
         discord_connected=False,
         discord_identity=None,
         discord_error=None,
@@ -109,9 +117,16 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'name="min_human_quiet_minutes"' in rendered
     assert 'name="max_human_quiet_minutes"' in rendered
     assert 'name="history_limit"' in rendered
+    assert 'name="max_reply_tokens"' in rendered
+    assert 'name="silent_replies"' in rendered
+    assert "Prefix generated replies with <code>@silent</code>" in rendered
     assert 'action="/personality/save"' in rendered
     assert 'action="/personality/infer-history"' in rendered
     assert 'action="/discord/connect"' in rendered
+    assert 'action="/provider/custom"' in rendered
+    assert 'name="provider"' in rendered
+    assert "http://localhost:8000/v1/chat/completions" in rendered
+    assert "Local model" in rendered
     assert 'action="/discord/settings"' not in rendered
     assert 'name="api_base"' not in rendered
     assert 'action="/discord/captcha/captcha-id"' in rendered
@@ -121,7 +136,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "http://localhost:3090/chatgpt/oauth/callback" in rendered
     assert "http://localhost:1455/auth/callback" in rendered
     assert "keep the complete query string" in rendered
-    assert "ChatGPT token usage" in rendered
+    assert "Model token usage" in rendered
     assert "1,434" in rendered
     assert "Dm Reply" in rendered
     assert "2026-07-17 12:00:00 MSK" in rendered

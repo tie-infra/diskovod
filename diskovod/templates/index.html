@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Diskovod</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+
+  <body>
+    <header class="site-header">
+      <div>
+        <span class="eyebrow">Private DM automation</span>
+        <h1>Diskovod</h1>
+        <p>Natural replies that step aside whenever you join the conversation.</p>
+      </div>
+
+      <div class="system-status">
+        <span class="status-dot {{ 'is-on' if app_settings.enabled else '' }}"></span>
+        {{ "Automation enabled" if app_settings.enabled else "Automation disabled" }}
+      </div>
+    </header>
+
+    <main>
+      {% if message %}
+        <div class="notice notice-success" role="status">{{ message }}</div>
+      {% endif %}
+
+      {% if error %}
+        <div class="notice notice-error" role="alert">{{ error }}</div>
+      {% endif %}
+
+      <section class="card-grid" aria-label="Connections">
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <span class="step">01</span>
+              <h2>ChatGPT subscription</h2>
+            </div>
+            <span class="pill {{ 'is-good' if chat_connected else '' }}">
+              {{ chat_email or ("Connected" if chat_connected else "Not connected") }}
+            </span>
+          </div>
+
+          <p>
+            Direct Plus/Pro OAuth and subscription-backed Responses. Credentials are encrypted
+            locally.
+          </p>
+
+          {% if chat_error %}
+            <p class="inline-error">{{ chat_error }}</p>
+          {% endif %}
+
+          <form method="post" action="/chatgpt/{{ 'disconnect' if chat_connected else 'connect' }}">
+            <button class="{{ 'button-secondary' if chat_connected else '' }}">
+              {{ "Disconnect" if chat_connected else "Sign in with ChatGPT" }}
+            </button>
+          </form>
+
+          <small>
+            OAuth returns to {{ public_url }}/chatgpt/oauth/callback.
+          </small>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <span class="step">02</span>
+              <h2>Discord</h2>
+            </div>
+            <span class="pill {{ 'is-good' if discord_connected else '' }}">
+              {{ discord_identity or ("Connecting" if has_discord_token else "Not connected") }}
+            </span>
+          </div>
+
+          {% if discord_error %}
+            <p class="inline-error">{{ discord_error }}</p>
+          {% endif %}
+
+          <form method="post" action="/discord/connect" class="form-stack">
+            <label>
+              User token
+              <input
+                type="password"
+                name="token"
+                autocomplete="off"
+                placeholder="Paste the Discord token"
+                required
+              >
+            </label>
+            <button>{{ "Replace token and reconnect" if has_discord_token else "Save token and connect" }}</button>
+          </form>
+
+          {% if has_discord_token %}
+            <form method="post" action="/discord/disconnect">
+              <button class="button-secondary">Disconnect and forget token</button>
+            </form>
+          {% endif %}
+
+          <div class="captcha-panel">
+            <div class="section-heading">
+              <h3>CAPTCHA requests</h3>
+              <span class="pill {{ 'is-warn' if captcha_requests else '' }}">
+                {{ captcha_requests | length }} pending
+              </span>
+            </div>
+
+            {% for captcha in captcha_requests %}
+              <div class="captcha-request">
+                <p>
+                  Solve this {{ captcha.service }} challenge and paste its solution token below.
+                  It expires in about {{ captcha.expires_in_seconds }} seconds.
+                </p>
+                <dl class="captcha-details">
+                  <dt>Site key</dt>
+                  <dd><code>{{ captcha.sitekey }}</code></dd>
+                  <dt>API page</dt>
+                  <dd><code>https://discord.com</code></dd>
+                  <dt>Mode</dt>
+                  <dd>{{ "invisible" if captcha.should_serve_invisible else "interactive" }}</dd>
+                  {% if captcha.rqdata %}
+                    <dt>Request data</dt>
+                    <dd><code>{{ captcha.rqdata }}</code></dd>
+                  {% endif %}
+                  {% if captcha.errors %}
+                    <dt>Errors</dt>
+                    <dd>{{ captcha.errors | join(", ") }}</dd>
+                  {% endif %}
+                </dl>
+                <form
+                  method="post"
+                  action="/discord/captcha/{{ captcha.id }}"
+                  class="form-stack"
+                >
+                  <label>
+                    CAPTCHA solution token
+                    <textarea name="solution" rows="3" autocomplete="off" required></textarea>
+                  </label>
+                  <button>Submit CAPTCHA solution</button>
+                </form>
+              </div>
+            {% else %}
+              <p class="field-help">
+                Pending challenges appear here. Refresh this page after Discord reports a CAPTCHA.
+              </p>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+
+      <section class="card-grid" aria-label="Behavior">
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <span class="step">03</span>
+              <h2>Personality cache</h2>
+            </div>
+            <span class="pill {{ 'is-good' if personality else '' }}">
+              {{ "Cached" if personality else "Empty" }}
+            </span>
+          </div>
+
+          <p>
+            Build a detailed description of communication habits, preferences, languages, and
+            other supported personality traits from human-authored message history.
+          </p>
+
+          <form method="post" action="/personality/infer-history" class="form-stack">
+            <label>
+              Recent Discord messages to inspect
+              <input
+                type="number"
+                name="history_limit"
+                value="100"
+                min="20"
+                max="500"
+                required
+              >
+            </label>
+            <button {% if not discord_connected or not chat_connected %}disabled{% endif %}>
+              Load history and infer personality
+            </button>
+            <small>
+              Requires Discord and ChatGPT. Generated replies are excluded from the sample.
+            </small>
+          </form>
+
+          <details>
+            <summary>Infer from pasted message history</summary>
+            <form method="post" action="/personality/infer" class="form-stack">
+              <label>
+                Human-authored message history
+                <textarea
+                  name="samples"
+                  rows="9"
+                  placeholder="Paste at least 200 characters…"
+                  required
+                ></textarea>
+              </label>
+              <button {% if not chat_connected %}disabled{% endif %}>
+                Infer personality from pasted history
+              </button>
+            </form>
+          </details>
+
+          <form method="post" action="/personality/save" class="form-stack profile-editor">
+            <label>
+              Cached personality description
+              <textarea
+                name="profile"
+                rows="14"
+                placeholder="Infer a personality first, or write one manually…"
+                required
+              >{{ personality.profile if personality else "" }}</textarea>
+            </label>
+            {% if personality %}
+              <small>Last source: {{ personality.source or "inferred history" }}</small>
+            {% endif %}
+            <button class="button-secondary">Save edited personality</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <span class="step">04</span>
+              <h2>Reply behavior</h2>
+            </div>
+          </div>
+
+          <form method="post" action="/settings" class="form-stack">
+            <label class="toggle">
+              <input type="checkbox" name="enabled" {% if app_settings.enabled %}checked{% endif %}>
+              Enable automated replies
+            </label>
+
+            <div class="field-grid field-grid-two">
+              <label>
+                Model
+                <input name="model" value="{{ app_settings.model }}">
+              </label>
+
+              <label>
+                Reasoning
+                <select name="reasoning_effort">
+                  {% for effort in ["low", "medium", "high"] %}
+                    <option {% if effort == app_settings.reasoning_effort %}selected{% endif %}>
+                      {{ effort }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </label>
+            </div>
+
+            <fieldset>
+              <legend>Reply timing</legend>
+              <div class="field-grid field-grid-three">
+                <label>
+                  Debounce (seconds)
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    name="debounce_seconds"
+                    value="{{ app_settings.debounce_seconds }}"
+                  >
+                </label>
+                <label>
+                  Minimum delay
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    name="min_delay_seconds"
+                    value="{{ app_settings.min_delay_seconds }}"
+                  >
+                </label>
+                <label>
+                  Maximum delay
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    name="max_delay_seconds"
+                    value="{{ app_settings.max_delay_seconds }}"
+                  >
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Human activity quiet window</legend>
+              <p class="field-help">
+                A manual outgoing message cancels pending work and keeps Diskovod quiet for a
+                randomized duration in this range.
+              </p>
+              <div class="field-grid field-grid-two">
+                <label>
+                  Minimum quiet minutes
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    name="min_human_quiet_minutes"
+                    value="{{ app_settings.min_human_quiet_minutes }}"
+                  >
+                </label>
+                <label>
+                  Maximum quiet minutes
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    name="max_human_quiet_minutes"
+                    value="{{ app_settings.max_human_quiet_minutes }}"
+                  >
+                </label>
+              </div>
+            </fieldset>
+
+            <div class="field-grid field-grid-three">
+              <label>
+                Minimum characters/s
+                <input
+                  type="number"
+                  step="0.1"
+                  min="1"
+                  name="min_typing_cps"
+                  value="{{ app_settings.min_typing_cps }}"
+                >
+              </label>
+              <label>
+                Maximum characters/s
+                <input
+                  type="number"
+                  step="0.1"
+                  min="1"
+                  name="max_typing_cps"
+                  value="{{ app_settings.max_typing_cps }}"
+                >
+              </label>
+              <label>
+                History messages
+                <input
+                  type="number"
+                  min="4"
+                  max="100"
+                  name="history_limit"
+                  value="{{ app_settings.history_limit }}"
+                >
+              </label>
+            </div>
+
+            <label>
+              Base instructions
+              <textarea name="base_instructions" rows="7">{{ app_settings.base_instructions }}</textarea>
+            </label>
+
+            <button>Save behavior</button>
+          </form>
+        </article>
+      </section>
+
+      <section aria-label="ChatGPT usage">
+        <article class="card usage-card">
+          <div class="card-header">
+            <div>
+              <span class="step">05</span>
+              <h2>ChatGPT token usage</h2>
+            </div>
+            <span class="pill">{{ "{:,}".format(usage_stats.all_time.requests) }} calls</span>
+          </div>
+
+          <p>
+            Actual counters reported by completed ChatGPT responses. Only usage metadata is stored;
+            prompts and generated text are not copied into these records.
+          </p>
+
+          <div class="usage-summary" aria-label="All-time usage summary">
+            <div class="metric">
+              <span>Total tokens</span>
+              <strong>{{ "{:,}".format(usage_stats.all_time.total_tokens) }}</strong>
+            </div>
+            <div class="metric">
+              <span>Input</span>
+              <strong>{{ "{:,}".format(usage_stats.all_time.input_tokens) }}</strong>
+            </div>
+            <div class="metric">
+              <span>Cached input</span>
+              <strong>{{ "{:,}".format(usage_stats.all_time.cached_input_tokens) }}</strong>
+              <small>{{ usage_stats.all_time.cache_rate }}% of input</small>
+            </div>
+            <div class="metric">
+              <span>Output</span>
+              <strong>{{ "{:,}".format(usage_stats.all_time.output_tokens) }}</strong>
+            </div>
+            <div class="metric">
+              <span>Reasoning · of output</span>
+              <strong>{{ "{:,}".format(usage_stats.all_time.reasoning_tokens) }}</strong>
+            </div>
+            <div class="metric">
+              <span>Average / call</span>
+              <strong>{{ "{:,}".format(usage_stats.all_time.average_tokens) }}</strong>
+            </div>
+          </div>
+
+          <div class="table-section">
+            <h3>Time windows</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Window</th>
+                    <th>Calls</th>
+                    <th>Input</th>
+                    <th>Cached</th>
+                    <th>Output</th>
+                    <th>Reasoning</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for window in usage_stats.windows %}
+                    <tr>
+                      <th>{{ window.label }}</th>
+                      <td>{{ "{:,}".format(window.requests) }}</td>
+                      <td>{{ "{:,}".format(window.input_tokens) }}</td>
+                      <td>
+                        {{ "{:,}".format(window.cached_input_tokens) }}
+                        <span class="subvalue">{{ window.cache_rate }}%</span>
+                      </td>
+                      <td>{{ "{:,}".format(window.output_tokens) }}</td>
+                      <td>{{ "{:,}".format(window.reasoning_tokens) }}</td>
+                      <td>{{ "{:,}".format(window.total_tokens) }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="usage-breakdown">
+            <div class="table-section">
+              <h3>By model</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Model</th>
+                      <th>Calls</th>
+                      <th>Input</th>
+                      <th>Cached</th>
+                      <th>Output</th>
+                      <th>Reasoning</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for group in usage_stats.by_model %}
+                      <tr>
+                        <th>{{ group.name }}</th>
+                        <td>{{ "{:,}".format(group.requests) }}</td>
+                        <td>{{ "{:,}".format(group.input_tokens) }}</td>
+                        <td>{{ "{:,}".format(group.cached_input_tokens) }}</td>
+                        <td>{{ "{:,}".format(group.output_tokens) }}</td>
+                        <td>{{ "{:,}".format(group.reasoning_tokens) }}</td>
+                        <td>{{ "{:,}".format(group.total_tokens) }}</td>
+                      </tr>
+                    {% else %}
+                      <tr><td colspan="7" class="table-empty">No completed calls yet.</td></tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="table-section">
+              <h3>By operation</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Operation</th>
+                      <th>Calls</th>
+                      <th>Input</th>
+                      <th>Cached</th>
+                      <th>Output</th>
+                      <th>Reasoning</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for group in usage_stats.by_purpose %}
+                      <tr>
+                        <th>{{ group.name | replace("_", " ") | title }}</th>
+                        <td>{{ "{:,}".format(group.requests) }}</td>
+                        <td>{{ "{:,}".format(group.input_tokens) }}</td>
+                        <td>{{ "{:,}".format(group.cached_input_tokens) }}</td>
+                        <td>{{ "{:,}".format(group.output_tokens) }}</td>
+                        <td>{{ "{:,}".format(group.reasoning_tokens) }}</td>
+                        <td>{{ "{:,}".format(group.total_tokens) }}</td>
+                      </tr>
+                    {% else %}
+                      <tr><td colspan="7" class="table-empty">No completed calls yet.</td></tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <details class="usage-details" {% if usage_stats.recent %}open{% endif %}>
+            <summary>Recent calls · {{ usage_stats.recent | length }}</summary>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Operation</th>
+                    <th>Model</th>
+                    <th>Input</th>
+                    <th>Cached</th>
+                    <th>Output</th>
+                    <th>Reasoning</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for call in usage_stats.recent %}
+                    <tr>
+                      <td class="time-cell">{{ call.recorded_at_label }}</td>
+                      <td>{{ call.purpose | replace("_", " ") | title }}</td>
+                      <td>{{ call.model }}</td>
+                      <td>{{ "{:,}".format(call.input_tokens) }}</td>
+                      <td>{{ "{:,}".format(call.cached_input_tokens) }}</td>
+                      <td>{{ "{:,}".format(call.output_tokens) }}</td>
+                      <td>{{ "{:,}".format(call.reasoning_tokens) }}</td>
+                      <td>{{ "{:,}".format(call.total_tokens) }}</td>
+                    </tr>
+                  {% else %}
+                    <tr><td colspan="8" class="table-empty">No usage has been recorded yet.</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </article>
+      </section>
+
+      <section aria-label="Conversations">
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <span class="step">06</span>
+              <h2>Conversations</h2>
+            </div>
+            <span class="pill">{{ conversations | length }} known</span>
+          </div>
+
+          <p>
+            Manual activity starts a temporary quiet window. Permanent pause is an independent
+            per-chat control.
+          </p>
+
+          <div class="conversation-list">
+            {% for conversation in conversations %}
+              <div class="conversation">
+                <div class="conversation-name">
+                  <strong>{{ conversation.peer_name }}</strong>
+                  <small>Channel {{ conversation.channel_id }}</small>
+                </div>
+
+                {% if conversation.paused %}
+                  <span class="pill is-danger">Permanently paused</span>
+                {% elif conversation.snoozed %}
+                  <span class="pill is-warn">
+                    Human active · {{ conversation.quiet_minutes_remaining }} min
+                  </span>
+                {% else %}
+                  <span class="pill is-good">Automatic</span>
+                {% endif %}
+
+                <div class="conversation-actions">
+                  {% if conversation.paused or conversation.snoozed %}
+                    <form method="post" action="/conversations/{{ conversation.channel_id }}/resume">
+                      <button class="button-secondary">Resume now</button>
+                    </form>
+                  {% endif %}
+
+                  {% if not conversation.paused %}
+                    <form method="post" action="/conversations/{{ conversation.channel_id }}/pause">
+                      <button class="button-quiet">Pause permanently</button>
+                    </form>
+                  {% endif %}
+                </div>
+              </div>
+            {% else %}
+              <div class="empty-state">No DMs observed yet.</div>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <footer>Diskovod · Discord DM assistant</footer>
+  </body>
+</html>

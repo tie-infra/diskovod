@@ -1,0 +1,9 @@
+{
+  "host": "::1",
+  "port": 3090,
+  "public_url": "http://localhost:3090",
+  "data_dir": "./data",
+  "log_level": "INFO",
+  "admin_password_file": "./admin-password",
+  "secret_key_file": "./secret-key"
+}

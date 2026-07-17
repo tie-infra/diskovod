@@ -1,0 +1,288 @@
+from __future__ import annotations
+
+import hashlib
+import time
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlencode, urlparse
+
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.templating import Jinja2Templates
+
+from .automation import Automation
+from .chatgpt import ChatGPTClient
+from .discord import DiscordService
+from .models import AppSettings
+from .security import password_matches
+from .store import Store
+
+PERSONALITY_INSTRUCTIONS = (
+    "Infer a comprehensive, reusable personality profile of the person who authored these messages. "
+    "Cover their communication habits, tone, pacing, vocabulary, punctuation, humor, emoji use, "
+    "social style, preferred languages and how they switch between them, recurring interests and "
+    "preferences, apparent values, temperament, decision-making tendencies, and other stable traits "
+    "supported by the history. Distinguish strong evidence from tentative impressions. Do not quote "
+    "private messages, name conversation partners, reveal secrets, or infer highly sensitive "
+    "attributes. Return only the detailed personality profile that another model can use to converse "
+    "naturally as this person."
+)
+
+
+class WebApp:
+    def __init__(
+        self,
+        store: Store,
+        chatgpt: ChatGPTClient,
+        discord: DiscordService,
+        automation: Automation,
+        admin_password: str,
+        public_url: str,
+    ):
+        self.store, self.chatgpt, self.discord, self.automation = store, chatgpt, discord, automation
+        self.admin_password = admin_password
+        self.public_url = public_url.rstrip("/")
+        self.security = HTTPBasic()
+        base = Path(__file__).parent
+        self.templates = Jinja2Templates(directory=base / "templates")
+        self.app = FastAPI(title="Diskovod", docs_url=None, redoc_url=None, openapi_url=None)
+        self._security_headers()
+        self._routes()
+
+    def _security_headers(self) -> None:
+        @self.app.middleware("http")
+        async def headers(request: Request, call_next):
+            response = await call_next(request)
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+            )
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+    def require_admin(
+        self, request: Request, credentials: HTTPBasicCredentials = Depends(HTTPBasic())
+    ) -> str:
+        if credentials.username != "admin" or not password_matches(credentials.password, self.admin_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, headers={"WWW-Authenticate": "Basic"}
+            )
+        if origin := request.headers.get("origin"):
+            if urlparse(origin).netloc != request.headers.get("host"):
+                raise HTTPException(status_code=403, detail="Cross-origin form submission rejected")
+        return credentials.username
+
+    def _routes(self) -> None:
+        auth = self.require_admin
+
+        @self.app.get("/")
+        async def dashboard(request: Request, _: str = Depends(auth)):
+            return self.templates.TemplateResponse(
+                request,
+                "index.html",
+                {
+                    "app_settings": self.store.app_settings(),
+                    "public_url": self.public_url,
+                    "chat_connected": self.chatgpt.connected,
+                    "chat_email": self.chatgpt.email,
+                    "chat_error": self.chatgpt.last_error,
+                    "discord_connected": self.discord.connected,
+                    "discord_identity": self.discord.identity,
+                    "discord_error": self.discord.error,
+                    "has_discord_token": self.store.discord_token() is not None,
+                    "captcha_requests": self.discord.captcha_requests(),
+                    "personality": self.store.personality(),
+                    "conversations": self._conversation_views(),
+                    "usage_stats": self._usage_views(),
+                    "message": request.query_params.get("message"),
+                    "error": request.query_params.get("error"),
+                },
+            )
+
+        @self.app.get("/static/style.css")
+        async def css():
+            return FileResponse(Path(__file__).parent / "static" / "style.css", media_type="text/css")
+
+        @self.app.post("/chatgpt/connect")
+        async def chat_connect(_: str = Depends(auth)):
+            try:
+                callback = self._url("/chatgpt/oauth/callback")
+                return RedirectResponse(await self.chatgpt.begin_oauth(callback), status_code=303)
+            except Exception as exc:
+                return self._back(error=str(exc))
+
+        @self.app.get("/chatgpt/oauth/callback")
+        async def chat_callback(
+            code: str | None = None,
+            state: str | None = None,
+            error: str | None = None,
+        ):
+            try:
+                await self.chatgpt.finish_oauth(code=code, state=state, error=error)
+            except Exception as exc:
+                return self._back(error=str(exc))
+            return self._back(message="ChatGPT connected")
+
+        @self.app.post("/chatgpt/disconnect")
+        async def chat_disconnect(_: str = Depends(auth)):
+            self.store.clear_chat_credentials()
+            return self._back(message="ChatGPT disconnected")
+
+        @self.app.post("/discord/connect")
+        async def discord_connect(token: str = Form(...), _: str = Depends(auth)):
+            token = token.strip()
+            if len(token) < 20:
+                return self._back(error="Discord token appears to be incomplete")
+            self.store.set_discord_token(token)
+            self.discord.error = None
+            await self.discord.restart()
+            return self._back(message="Discord connection started")
+
+        @self.app.post("/discord/disconnect")
+        async def discord_disconnect(_: str = Depends(auth)):
+            await self.discord.stop()
+            self.store.clear_discord_token()
+            return self._back(message="Discord disconnected")
+
+        @self.app.post("/discord/captcha/{request_id}")
+        async def discord_captcha(
+            request_id: str,
+            solution: str = Form(...),
+            _: str = Depends(auth),
+        ):
+            solution = solution.strip()
+            if not solution:
+                return self._back(error="Enter the CAPTCHA solution token")
+            if not self.discord.solve_captcha(request_id, solution):
+                return self._back(error="The CAPTCHA request expired or was already answered")
+            return self._back(message="CAPTCHA solution submitted")
+
+        @self.app.post("/settings")
+        async def settings(
+            enabled: str | None = Form(None),
+            model: str = Form(...),
+            reasoning_effort: str = Form("low"),
+            debounce_seconds: float = Form(...),
+            min_delay_seconds: float = Form(...),
+            max_delay_seconds: float = Form(...),
+            min_typing_cps: float = Form(...),
+            max_typing_cps: float = Form(...),
+            min_human_quiet_minutes: float = Form(...),
+            max_human_quiet_minutes: float = Form(...),
+            history_limit: int = Form(...),
+            base_instructions: str = Form(...),
+            _: str = Depends(auth),
+        ):
+            if (
+                min_delay_seconds > max_delay_seconds
+                or min_typing_cps > max_typing_cps
+                or min_human_quiet_minutes > max_human_quiet_minutes
+            ):
+                return self._back(error="Minimum values cannot exceed maximum values")
+            value = AppSettings(
+                enabled=enabled is not None,
+                model=model.strip(),
+                reasoning_effort=reasoning_effort,
+                debounce_seconds=debounce_seconds,
+                min_delay_seconds=min_delay_seconds,
+                max_delay_seconds=max_delay_seconds,
+                min_typing_cps=min_typing_cps,
+                max_typing_cps=max_typing_cps,
+                min_human_quiet_minutes=max(0.0, min_human_quiet_minutes),
+                max_human_quiet_minutes=max(0.0, max_human_quiet_minutes),
+                history_limit=max(4, min(history_limit, 100)),
+                base_instructions=base_instructions.strip(),
+            )
+            self.store.set_app_settings(value)
+            return self._back(message="Automation settings saved")
+
+        @self.app.post("/personality/infer")
+        async def personality_infer(samples: str = Form(...), _: str = Depends(auth)):
+            samples = samples.strip()
+            if len(samples) < 200:
+                return self._back(error="Provide at least 200 characters of message history")
+            return await self._infer_personality(samples, source="pasted history")
+
+        @self.app.post("/personality/infer-history")
+        async def personality_infer_history(
+            history_limit: int = Form(100),
+            _: str = Depends(auth),
+        ):
+            try:
+                messages = await self.discord.personality_history(max(20, min(history_limit, 500)))
+            except Exception as exc:
+                return self._back(error=str(exc))
+            samples = "\n\n---\n\n".join(messages)
+            if len(samples) < 200:
+                return self._back(
+                    error="The selected Discord history did not contain enough human-authored text"
+                )
+            return await self._infer_personality(samples, source="Discord history")
+
+        @self.app.post("/personality/save")
+        async def personality_save(profile: str = Form(...), _: str = Depends(auth)):
+            profile = profile.strip()
+            if len(profile) < 50:
+                return self._back(error="The personality description must be at least 50 characters")
+            source_hash = hashlib.sha256(("edited\n" + profile).encode()).hexdigest()
+            self.store.set_personality(profile, source_hash, source="edited")
+            return self._back(message="Personality updated")
+
+        @self.app.post("/conversations/{channel_id}/pause")
+        async def pause(channel_id: str, _: str = Depends(auth)):
+            self.automation.permanently_pause(channel_id)
+            return self._back(message="Conversation permanently paused")
+
+        @self.app.post("/conversations/{channel_id}/resume")
+        async def resume(channel_id: str, _: str = Depends(auth)):
+            self.automation.cancel(channel_id)
+            self.store.set_permanent_pause(channel_id, False)
+            self.store.clear_snooze(channel_id)
+            return self._back(message="Conversation resumed; the next incoming DM may receive a reply")
+
+    def _conversation_views(self) -> list[dict]:
+        now = time.time()
+        result = self.store.conversations()
+        for conversation in result:
+            until = conversation["snoozed_until"]
+            conversation["snoozed"] = bool(until and until > now)
+            conversation["quiet_minutes_remaining"] = (
+                max(1, int((until - now + 59) // 60)) if until and until > now else 0
+            )
+        return result
+
+    def _usage_views(self) -> dict:
+        stats = self.store.chatgpt_usage_stats()
+        for record in stats["recent"]:
+            record["recorded_at_label"] = (
+                datetime.fromtimestamp(record["recorded_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            )
+        return stats
+
+    async def _infer_personality(self, samples: str, *, source: str) -> RedirectResponse:
+        source_hash = hashlib.sha256(samples.encode()).hexdigest()
+        cached = self.store.personality()
+        if cached and cached["source_hash"] == source_hash:
+            return self._back(message="This message history is already cached; no model call was made")
+        cfg = self.store.app_settings()
+        try:
+            profile = await self.chatgpt.complete(
+                [{"role": "user", "content": samples}],
+                PERSONALITY_INSTRUCTIONS,
+                cfg.model,
+                cfg.reasoning_effort,
+                purpose="personality_inference",
+            )
+        except Exception as exc:
+            return self._back(error=str(exc))
+        self.store.set_personality(profile, source_hash, source=source)
+        return self._back(message="Personality inferred and cached")
+
+    def _url(self, path: str) -> str:
+        return self.public_url + "/" + path.lstrip("/")
+
+    def _back(self, *, message: str | None = None, error: str | None = None) -> RedirectResponse:
+        query = urlencode({k: v for k, v in {"message": message, "error": error}.items() if v})
+        return RedirectResponse(self._url("/") + ("?" + query if query else ""), status_code=303)

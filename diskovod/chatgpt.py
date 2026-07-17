@@ -20,6 +20,8 @@ AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
 TOKEN_URL = "https://auth.openai.com/oauth/token"
 BACKEND_URL = "https://chatgpt.com/backend-api/codex"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+CALLBACK_URL = "http://localhost:1455/auth/callback"
+ORIGINATOR = "zed"
 
 
 @dataclass(slots=True)
@@ -54,18 +56,18 @@ class ChatGPTClient:
         creds = self.store.chat_credentials()
         return creds.email if creds else None
 
-    async def begin_oauth(self, redirect_uri: str) -> str:
+    async def begin_oauth(self) -> str:
         verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         state = secrets.token_hex(16)
-        self.oauth = OAuthAttempt(state, verifier, redirect_uri)
+        self.oauth = OAuthAttempt(state, verifier, CALLBACK_URL)
         return (
             AUTHORIZE_URL
             + "?"
             + urlencode(
                 {
                     "client_id": CLIENT_ID,
-                    "redirect_uri": redirect_uri,
+                    "redirect_uri": CALLBACK_URL,
                     "scope": "openid profile email offline_access",
                     "response_type": "code",
                     "code_challenge": challenge,
@@ -73,7 +75,7 @@ class ChatGPTClient:
                     "id_token_add_organizations": "true",
                     "state": state,
                     "codex_cli_simplified_flow": "true",
-                    "originator": "diskovod",
+                    "originator": ORIGINATOR,
                 }
             )
         )
@@ -204,7 +206,7 @@ class ChatGPTClient:
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
             "OpenAI-Beta": "responses=experimental",
-            "Originator": "diskovod",
+            "Originator": ORIGINATOR,
         }
         if creds.account_id:
             headers["ChatGPT-Account-Id"] = creds.account_id

@@ -74,8 +74,12 @@ Open `http://localhost:3090` and authenticate as `admin` using the password file
 
 ### ChatGPT sign-in
 
-Select **Sign in with ChatGPT**. The authorization request returns to
-`<public_url>/chatgpt/oauth/callback`, then redirects to the admin UI.
+Select **Sign in with ChatGPT**. The OAuth client is registered only for
+`http://localhost:1455/auth/callback`, so OpenAI redirects the browser there after sign-in. Because
+Diskovod is remote, that page normally fails to load. In the browser address bar, replace only
+`http://localhost:1455/auth/callback` with `<public_url>/chatgpt/oauth/callback`, preserving the
+entire `?code=...&state=...` query string. Diskovod then exchanges the code using the original,
+registered localhost callback and redirects to the admin UI.
 
 ### Discord sign-in
 

@@ -128,8 +128,7 @@ class WebApp:
         @self.app.post("/chatgpt/connect")
         async def chat_connect(_: str = Depends(auth)):
             try:
-                callback = self._url("/chatgpt/oauth/callback")
-                return RedirectResponse(await self.chatgpt.begin_oauth(callback), status_code=303)
+                return RedirectResponse(await self.chatgpt.begin_oauth(), status_code=303)
             except Exception as exc:
                 return self._back(error=str(exc))
 

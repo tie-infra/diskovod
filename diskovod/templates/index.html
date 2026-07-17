@@ -58,7 +58,10 @@
           </form>
 
           <small>
-            OAuth returns to {{ public_url }}/chatgpt/oauth/callback.
+            OpenAI redirects to <code>http://localhost:1455/auth/callback</code>, the fixed callback
+            registered for this OAuth client. When that page fails to load, replace only that
+            prefix in the browser's address bar with
+            <code>{{ public_url }}/chatgpt/oauth/callback</code> and keep the complete query string.
           </small>
         </article>
 

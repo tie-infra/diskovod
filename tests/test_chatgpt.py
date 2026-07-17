@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 import aiohttp
 import pytest
 
-from diskovod.chatgpt import ChatGPTClient
+from diskovod.chatgpt import CALLBACK_URL, ORIGINATOR, ChatGPTClient
 from diskovod.models import ChatCredentials
 from diskovod.store import Store
 
@@ -37,8 +37,10 @@ class FakeResponse:
 class FakeSession:
     def __init__(self, response: FakeResponse):
         self.response = response
+        self.last_kwargs = None
 
-    def post(self, *_args, **_kwargs):
+    def post(self, *_args, **kwargs):
+        self.last_kwargs = kwargs
         return self.response
 
 
@@ -117,7 +119,8 @@ async def test_completed_stream_records_usage(tmp_path: Path):
     ]
     stream = "".join(f"data: {json.dumps(event)}\n\n" for event in events).encode()
     client = ChatGPTClient(store)
-    client.session = cast(aiohttp.ClientSession, FakeSession(FakeResponse(stream)))
+    session = FakeSession(FakeResponse(stream))
+    client.session = cast(aiohttp.ClientSession, session)
 
     result = await client.complete([], "instructions", "gpt-5", "low", purpose="dm_reply")
 
@@ -126,16 +129,17 @@ async def test_completed_stream_records_usage(tmp_path: Path):
     assert stats["all_time"]["total_tokens"] == 28
     assert stats["by_model"][0]["name"] == "gpt-5-resolved"
     assert stats["by_purpose"][0]["name"] == "dm_reply"
+    assert session.last_kwargs["headers"]["Originator"] == ORIGINATOR
     store.close()
 
 
 @pytest.mark.asyncio
-async def test_oauth_uses_public_callback_url():
+async def test_oauth_uses_registered_codex_callback_url():
     client = ChatGPTClient(None)
-    callback = "https://diskovod.example/base/chatgpt/oauth/callback"
 
-    authorize_url = await client.begin_oauth(callback)
+    authorize_url = await client.begin_oauth()
 
     query = parse_qs(urlparse(authorize_url).query)
-    assert query["redirect_uri"] == [callback]
-    assert client.oauth.redirect_uri == callback
+    assert query["redirect_uri"] == [CALLBACK_URL]
+    assert query["originator"] == [ORIGINATOR]
+    assert client.oauth.redirect_uri == CALLBACK_URL

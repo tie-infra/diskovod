@@ -119,6 +119,8 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "site-key" in rendered
     assert "Human active · 12 min" in rendered
     assert "http://localhost:3090/chatgpt/oauth/callback" in rendered
+    assert "http://localhost:1455/auth/callback" in rendered
+    assert "keep the complete query string" in rendered
     assert "ChatGPT token usage" in rendered
     assert "1,434" in rendered
     assert "Dm Reply" in rendered

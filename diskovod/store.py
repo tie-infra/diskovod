@@ -38,6 +38,12 @@ class Store:
               CREATE INDEX IF NOT EXISTS messages_channel_time ON messages(channel_id, timestamp DESC);
               CREATE TABLE IF NOT EXISTS bot_nonces (nonce TEXT PRIMARY KEY, created_at REAL NOT NULL);
               CREATE TABLE IF NOT EXISTS bot_message_ids (id TEXT PRIMARY KEY, created_at REAL NOT NULL);
+              CREATE TABLE IF NOT EXISTS assistant_reactions (
+                trigger_message_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
+                emoji TEXT NOT NULL, created_at REAL NOT NULL
+              );
+              CREATE INDEX IF NOT EXISTS assistant_reactions_channel_time
+                ON assistant_reactions(channel_id, created_at DESC);
               CREATE TABLE IF NOT EXISTS chatgpt_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 response_id TEXT UNIQUE,
@@ -342,6 +348,54 @@ class Store:
                     "SELECT 1 FROM messages WHERE id=? AND source='assistant'", (message_id,)
                 ).fetchone()
                 is not None
+            )
+
+    def reaction_allowed(
+        self,
+        channel_id: str,
+        *,
+        now: float | None = None,
+        channel_cooldown_seconds: float = 6 * 60 * 60,
+        recent_action_limit: int = 12,
+    ) -> bool:
+        current_time = time.time() if now is None else now
+        with self._lock:
+            recent_in_channel = self._db.execute(
+                """SELECT 1 FROM assistant_reactions
+                   WHERE channel_id=? AND created_at>=? LIMIT 1""",
+                (channel_id, current_time - channel_cooldown_seconds),
+            ).fetchone()
+            if recent_in_channel:
+                return False
+            recent_actions = self._db.execute(
+                """SELECT kind FROM (
+                     SELECT timestamp AS action_time, 'message' AS kind
+                       FROM messages WHERE source='assistant'
+                     UNION ALL
+                     SELECT created_at AS action_time, 'reaction' AS kind
+                       FROM assistant_reactions
+                   ) ORDER BY action_time DESC LIMIT ?""",
+                (max(1, recent_action_limit),),
+            ).fetchall()
+        return all(row["kind"] != "reaction" for row in recent_actions)
+
+    def record_assistant_reaction(
+        self,
+        *,
+        trigger_message_id: str,
+        channel_id: str,
+        emoji: str,
+        created_at: float | None = None,
+    ) -> None:
+        timestamp = time.time() if created_at is None else created_at
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO assistant_reactions VALUES(?,?,?,?)",
+                (trigger_message_id, channel_id, emoji, timestamp),
+            )
+            self._db.execute(
+                "UPDATE conversations SET updated_at=? WHERE channel_id=?",
+                (timestamp, channel_id),
             )
 
     def prune(self) -> None:

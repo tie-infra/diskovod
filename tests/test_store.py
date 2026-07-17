@@ -54,6 +54,37 @@ def test_bot_markers_are_consumed_once(tmp_path: Path):
     store.close()
 
 
+def test_assistant_reactions_are_rate_limited_across_actions_and_channels(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.upsert_conversation("dm-1", "peer-1", "Sam")
+    store.upsert_conversation("dm-2", "peer-2", "Lee")
+    now = 2_000_000.0
+
+    assert store.reaction_allowed("dm-1", now=now)
+    store.record_assistant_reaction(
+        trigger_message_id="trigger-1", channel_id="dm-1", emoji="👍", created_at=now
+    )
+
+    assert not store.reaction_allowed("dm-1", now=now + 1)
+    assert not store.reaction_allowed("dm-2", now=now + 1)
+    for index in range(12):
+        store.save_message(
+            id=f"reply-{index}",
+            channel_id="dm-2",
+            author_id="me",
+            author_name="Me",
+            direction="out",
+            source="assistant",
+            content="ok",
+            timestamp=now + index + 2,
+        )
+
+    assert store.reaction_allowed("dm-2", now=now + 14)
+    assert not store.reaction_allowed("dm-1", now=now + 14)
+    assert store.reaction_allowed("dm-1", now=now + 6 * 60 * 60 + 1)
+    store.close()
+
+
 def test_personality_can_be_edited(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
     store.set_personality("Inferred profile", "history-hash", source="Discord history")

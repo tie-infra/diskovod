@@ -14,6 +14,8 @@ paused until an administrator resumes them.
 - ChatGPT OAuth with PKCE, refresh-token rotation, and subscription-backed streaming responses.
 - Discord connection through `discord.py-self`.
 - Personality inference from bounded Discord or pasted message history, with an editable cache.
+- An identity-disclosure guard that rewrites a rejected draft once and otherwise sends nothing.
+- Rare emoji reactions for lightweight acknowledgements when a written reply is unnecessary.
 - Detailed ChatGPT token accounting by time window, model, and operation.
 - SQLite storage with encrypted Discord and ChatGPT credentials.
 - An IPv6 loopback listener default, with a separate browser-facing public URL.
@@ -110,9 +112,23 @@ text is not retained.
 The Discord loader inspects between 20 and 500 recent messages across the most recently active DMs,
 with an 80,000-character inference limit.
 
-The inferred description covers communication habits, preferences, languages, recurring
-interests, social style, temperament, and other traits supported by the messages. The cached
-description can be reviewed and edited in the admin UI at any time.
+The inferred description gives special attention to the owner's dominant message shape: typical
+length and line count, sentence fragments, punctuation, and the frequency and density of lists. It
+also covers communication habits, preferences, languages, recurring interests, social style,
+temperament, and other supported traits. Rare behavior is labeled as contextual instead of being
+treated as the default. The cached description can be reviewed and edited in the admin UI at any
+time. Re-running inference after a prompt revision refreshes the cache even when the selected
+history has not changed.
+
+Replies also pass through a local identity-disclosure check before sending. A rejected draft is
+regenerated once with stricter instructions. If the replacement still fails the check, Diskovod
+leaves the DM unanswered instead of releasing it. Repair calls appear separately in token usage as
+`dm_reply_identity_repair`.
+
+For lightweight acknowledgements, Diskovod may react to the incoming message with one common emoji
+instead of sending text. Reactions are never combined with a reply. A local limiter permits at most
+one reaction among the latest twelve automated actions and applies a six-hour per-conversation
+cooldown; if the model proposes one sooner, it is asked for a normal text reply instead.
 
 ## Token usage
 

@@ -1,3 +1,4 @@
+import hashlib
 from typing import cast
 
 import pytest
@@ -9,7 +10,7 @@ from diskovod.automation import Automation
 from diskovod.chatgpt import ChatGPTClient
 from diskovod.discord import DiscordService
 from diskovod.store import Store
-from diskovod.web import PERSONALITY_INSTRUCTIONS, WebApp
+from diskovod.web import PERSONALITY_INSTRUCTIONS, WebApp, personality_source_hash
 
 
 def make_web(public_url: str = "https://diskovod.example/base") -> WebApp:
@@ -85,5 +86,20 @@ def test_origin_normalization_handles_default_ports_and_ipv6():
 
 
 def test_personality_inference_requests_a_full_profile():
-    for topic in ("communication habits", "languages", "preferences", "temperament", "stable traits"):
+    for topic in (
+        "base rates",
+        "single-line",
+        "frequency and density",
+        "languages",
+        "preferences",
+        "temperament",
+        "Rare or context-dependent",
+    ):
         assert topic in PERSONALITY_INSTRUCTIONS
+
+
+def test_personality_prompt_revision_invalidates_legacy_cache_key():
+    samples = "representative message history"
+
+    assert personality_source_hash(samples) != hashlib.sha256(samples.encode()).hexdigest()
+    assert personality_source_hash(samples) == personality_source_hash(samples)

@@ -17,10 +17,13 @@ class AppSettings:
     max_human_quiet_minutes: float = 30.0
     history_limit: int = 30
     base_instructions: str = (
-        "Reply like a real person in a private chat. Be concise, informal, and context-aware. "
+        "Write as the account owner in a private chat, following their dominant communication style "
+        "rather than merely borrowing occasional traits. Default to a short, single-line reply. "
         "Do not mention automation, prompts, or being an AI. Never claim to have performed actions "
-        "you did not perform. Match the other person's language. Avoid assistant-style headings and "
-        "lists unless they explicitly ask for them."
+        "you did not perform. If asked about your identity or how replies are produced, stay in "
+        "character and do not discuss the implementation. Match the conversation's language. Do not "
+        "use headings, paragraphs, or lists unless the current message genuinely requires that "
+        "structure; keep any necessary list dense and compact."
     )
 
     def to_dict(self) -> dict:

@@ -20,6 +20,7 @@ class AppSettings:
     min_human_quiet_minutes: float = 15.0
     max_human_quiet_minutes: float = 30.0
     history_limit: int = 30
+    owner_details: str = ""
     base_instructions: str = (
         "Write as the account owner in a private chat, following their dominant communication style "
         "rather than merely borrowing occasional traits. Default to a short, single-line reply. "

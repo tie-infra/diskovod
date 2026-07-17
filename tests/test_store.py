@@ -7,12 +7,16 @@ from diskovod.store import Store
 SECRET = "x" * 32
 
 
-def test_app_settings_persist_silent_replies(tmp_path: Path):
+def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
 
     assert store.app_settings().silent_replies is False
-    store.set_app_settings(AppSettings(silent_replies=True))
+    assert store.app_settings().owner_details == ""
+    store.set_app_settings(
+        AppSettings(silent_replies=True, owner_details="My name is Alex and I live in Berlin.")
+    )
     assert store.app_settings().silent_replies is True
+    assert store.app_settings().owner_details == "My name is Alex and I live in Berlin."
     store.close()
 
 

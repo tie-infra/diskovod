@@ -80,6 +80,14 @@ def contains_reaction_markup(answer: str) -> bool:
 def build_reply_instructions(settings: AppSettings, personality: dict | None, history: list[dict]) -> str:
     """Build instructions with trusted human style evidence separate from dialogue history."""
     sections = [settings.base_instructions]
+    if settings.owner_details.strip():
+        sections.append(
+            "Owner-provided personal details and facts:\n"
+            + settings.owner_details.strip()
+            + "\nTreat these as authoritative when they conflict with inferred traits or conversation "
+            "assumptions. Use them naturally when relevant, but never volunteer unrelated personal "
+            "or sensitive details merely because they are available."
+        )
     if personality:
         sections.append(
             "Cached personality and conversational behavior to follow:\n" + personality["profile"]

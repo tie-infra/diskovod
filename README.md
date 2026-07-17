@@ -15,6 +15,7 @@ paused until an administrator resumes them.
 - Custom OpenAI-compatible Chat Completions providers, including keyless local endpoints.
 - Discord connection through `discord.py-self`.
 - Personality inference from bounded Discord or pasted message history, with an editable cache.
+- Editable owner details for names, preferences, relationships, plans, and other personal context.
 - An identity-disclosure guard that rewrites a rejected draft once and otherwise sends nothing.
 - Rare emoji reactions for lightweight acknowledgements when a written reply is unnecessary.
 - Optional `@silent` prefix for generated text replies that should not notify the recipient.
@@ -137,6 +138,12 @@ history has not changed.
 The profile ends with 8–12 synthetic representative examples written from the inferred style.
 They are newly generated examples—not samples, quotations, or close paraphrases from the private
 history. This gives the reply model concrete style guidance without copying source messages.
+
+**Owner details** in Reply behavior provides facts that message history may not express clearly,
+such as the owner's name, location, work, interests, relationships, preferences, or recurring plans.
+These details are treated as authoritative when they conflict with an inferred trait. The reply
+prompt directs the model to use them only when relevant and not to volunteer unrelated personal or
+sensitive information.
 
 Replies also pass through a local identity-disclosure check before sending. A rejected draft is
 regenerated once with stricter instructions. If the replacement still fails the check, Diskovod

@@ -90,15 +90,23 @@ def test_reply_instructions_use_only_manual_owner_messages_as_style_evidence():
     ]
 
     instructions = build_reply_instructions(
-        AppSettings(base_instructions="base"), {"profile": "profile"}, history
+        AppSettings(
+            base_instructions="base",
+            owner_details="My name is Alex. My dog is called Pixel.",
+        ),
+        {"profile": "profile"},
+        history,
     )
 
+    assert "My name is Alex. My dog is called Pixel." in instructions
+    assert "never volunteer unrelated personal" in instructions
     assert '"yeah sounds good"' in instructions
     assert "Here are several options" not in instructions
     assert "Default to one short line" in instructions
     assert "dense and compact" in instructions
     assert "Identity boundary" in instructions
     assert "A reaction may replace the message" in instructions
+    assert instructions.index("My name is Alex") < instructions.index("profile")
     assert instructions.index("profile") < instructions.index("Default to one short line")
 
 

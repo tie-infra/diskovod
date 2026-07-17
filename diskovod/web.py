@@ -263,6 +263,7 @@ class WebApp:
             min_human_quiet_minutes: float = Form(...),
             max_human_quiet_minutes: float = Form(...),
             history_limit: int = Form(...),
+            owner_details: str = Form(""),
             base_instructions: str = Form(...),
             _: str = Depends(auth),
         ):
@@ -275,6 +276,9 @@ class WebApp:
             model = model.strip()
             if not model:
                 return self._back(error="Model name cannot be empty")
+            owner_details = owner_details.strip()
+            if len(owner_details) > 20_000:
+                return self._back(error="Owner details cannot exceed 20,000 characters")
             if (
                 min_delay_seconds > max_delay_seconds
                 or min_typing_cps > max_typing_cps
@@ -297,6 +301,7 @@ class WebApp:
                 min_human_quiet_minutes=max(0.0, min_human_quiet_minutes),
                 max_human_quiet_minutes=max(0.0, max_human_quiet_minutes),
                 history_limit=max(4, min(history_limit, 100)),
+                owner_details=owner_details,
                 base_instructions=base_instructions.strip(),
             )
             self.store.set_app_settings(value)

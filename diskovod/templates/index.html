@@ -529,6 +529,20 @@
             </div>
 
             <label>
+              Owner details
+              <textarea
+                name="owner_details"
+                rows="7"
+                maxlength="20000"
+                placeholder="Name, location, work, interests, relationships, preferences, recurring plans, and other facts the model should know…"
+              >{{ app_settings.owner_details }}</textarea>
+            </label>
+            <p class="field-help">
+              Authoritative personal context for generated replies. Diskovod tells the model to use
+              it only when relevant and not to volunteer unrelated private details.
+            </p>
+
+            <label>
               Base instructions
               <textarea name="base_instructions" rows="7">{{ app_settings.base_instructions }}</textarea>
             </label>

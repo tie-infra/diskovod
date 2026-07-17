@@ -16,6 +16,25 @@ def test_app_settings_persist_silent_replies(tmp_path: Path):
     store.close()
 
 
+def test_new_conversations_follow_default_without_changing_existing_enrollment(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.upsert_conversation("existing", "peer-1", "Existing")
+    assert store.can_automate("existing") is True
+
+    store.set_app_settings(AppSettings(default_conversation_enabled=False))
+    store.upsert_conversation("existing", "peer-1", "Existing renamed")
+    store.upsert_conversation("new", "peer-2", "New")
+
+    assert store.can_automate("existing") is True
+    assert store.conversation("existing")["peer_name"] == "Existing renamed"
+    assert store.conversation("new")["paused"] is True
+    assert store.can_automate("new") is False
+
+    store.set_permanent_pause("new", False)
+    assert store.can_automate("new") is True
+    store.close()
+
+
 def test_secrets_are_encrypted_and_round_trip(tmp_path: Path):
     path = tmp_path / "state.sqlite3"
     store = Store(path, SECRET)

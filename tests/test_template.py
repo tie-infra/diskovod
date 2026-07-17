@@ -118,7 +118,12 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'name="max_human_quiet_minutes"' in rendered
     assert 'name="history_limit"' in rendered
     assert 'name="max_reply_tokens"' in rendered
+    assert "Reply token budget" in rendered
+    assert "does not accept <code>max_output_tokens</code>" in rendered
     assert 'name="silent_replies"' in rendered
+    assert 'name="conversation_default"' in rendered
+    assert 'value="opt_in"' in rendered
+    assert 'value="opt_out"' in rendered
     assert "Prefix generated replies with <code>@silent</code>" in rendered
     assert 'action="/personality/save"' in rendered
     assert 'action="/personality/infer-history"' in rendered

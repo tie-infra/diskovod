@@ -292,7 +292,13 @@ class ChatGPTClient:
             "reasoning": {"effort": effort, "summary": "auto"},
         }
         if max_output_tokens is not None:
-            body["max_output_tokens"] = max(1, max_output_tokens)
+            # The ChatGPT Codex backend rejects the public Responses API's
+            # max_output_tokens field. Preserve the requested budget as a
+            # best-effort instruction while omitting the incompatible field.
+            body["instructions"] += (
+                f"\n\nLength budget: keep the final response within approximately "
+                f"{max(1, max_output_tokens)} tokens."
+            )
         chunks: list[str] = []
         usage_record: dict | None = None
         async with self.session.post(f"{BACKEND_URL}/responses", headers=headers, json=body) as response:

@@ -20,6 +20,7 @@ paused until an administrator resumes them.
 - Optional `@silent` prefix for generated text replies that should not notify the recipient.
 - Configurable generation caps for concise DM replies.
 - Edit-aware message history that refreshes a pending reply when its trigger changes.
+- Configurable opt-in or opt-out default with per-conversation enrollment controls.
 - Detailed model token accounting by time window, model, and operation.
 - SQLite storage with encrypted Discord, ChatGPT, and custom-provider credentials.
 - An IPv6 loopback listener default, with a separate browser-facing public URL.
@@ -150,10 +151,11 @@ cooldown; if the model proposes one sooner, it is asked for a normal text reply 
 **Prefix generated replies with `@silent`** adds Discord's notification-suppression marker to text
 sent by Diskovod. The marker is not stored in conversation history and does not affect reactions.
 
-**Maximum reply tokens** limits each DM generation and any repair or reaction-fallback generation.
-It maps to `max_output_tokens` for ChatGPT Subscription and `max_completion_tokens` for custom
-providers. Personality inference uses a separate 2,000-token allowance so its profile and examples
-are not truncated by the concise reply setting.
+**Reply token budget** applies to each DM generation and any repair or reaction-fallback generation.
+The ChatGPT Subscription transport rejects `max_output_tokens`, so Diskovod expresses its value as
+a best-effort length instruction instead. Custom providers receive a hard `max_completion_tokens`
+limit. Personality inference uses a separate 2,000-token budget so its profile and examples are not
+truncated by the concise reply setting.
 
 ## Token usage
 
@@ -169,14 +171,19 @@ reconstructed, and a completed response that omits usage metadata is not estimat
 
 ## Human activity
 
+The **New conversation default** determines enrollment when Diskovod first observes a DM. With
+**Opt in**, new conversations may be automated immediately. With **Opt out**, their messages are
+recorded but no reply is generated until automation is enabled for that conversation in the admin
+UI. Changing the default does not alter conversations already known to Diskovod.
+
 Diskovod records a nonce before each generated send. A self-authored Gateway event without that
 nonce is treated as human activity: active generation is cancelled and a random quiet window
 starts. The task checks the current generation and pause state before typing and again before
 sending. It also checks recent Discord history immediately before sending in case the Gateway
 event is delayed.
 
-Messages received during a quiet window are not queued for a later reply. Permanent pause is a
-separate per-conversation setting and remains active until **Resume now** is selected.
+Messages received during a quiet window are not queued for a later reply. Conversation enrollment
+is separate from the quiet window and remains disabled until **Enable automation** is selected.
 
 Message content edits are reflected in stored history. Editing an outgoing message marks its final
 version as human-authored, cancels pending automation, and starts the normal quiet window. If the

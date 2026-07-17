@@ -234,13 +234,22 @@ class Store:
         return [dict(row) for row in rows]
 
     def upsert_conversation(self, channel_id: str, peer_id: str, peer_name: str) -> None:
+        now = time.time()
+        default_paused = not self.app_settings().default_conversation_enabled
         with self._lock, self._db:
             self._db.execute(
                 """INSERT INTO conversations
                    (channel_id, peer_id, peer_name, paused, paused_at, updated_at, snoozed_until)
-                   VALUES(?,?,?,0,NULL,?,NULL)
+                   VALUES(?,?,?,?,?,?,NULL)
               ON CONFLICT(channel_id) DO UPDATE SET peer_id=excluded.peer_id, peer_name=excluded.peer_name, updated_at=excluded.updated_at""",
-                (channel_id, peer_id, peer_name, time.time()),
+                (
+                    channel_id,
+                    peer_id,
+                    peer_name,
+                    int(default_paused),
+                    now if default_paused else None,
+                    now,
+                ),
             )
 
     def set_permanent_pause(self, channel_id: str, paused: bool) -> None:

@@ -153,7 +153,8 @@ async def test_completed_stream_records_usage(tmp_path: Path):
     assert stats["by_model"][0]["name"] == "gpt-5-resolved"
     assert stats["by_purpose"][0]["name"] == "dm_reply"
     assert session.last_kwargs["headers"]["Originator"] == ORIGINATOR
-    assert session.last_kwargs["json"]["max_output_tokens"] == 256
+    assert "max_output_tokens" not in session.last_kwargs["json"]
+    assert "within approximately 256 tokens" in session.last_kwargs["json"]["instructions"]
     store.close()
 
 

@@ -353,6 +353,31 @@
               reactions are unaffected.
             </p>
 
+            <fieldset>
+              <legend>New conversation default</legend>
+              <label>
+                Enrollment policy
+                <select name="conversation_default">
+                  <option
+                    value="opt_in"
+                    {% if app_settings.default_conversation_enabled %}selected{% endif %}
+                  >
+                    Opt in — automate new conversations
+                  </option>
+                  <option
+                    value="opt_out"
+                    {% if not app_settings.default_conversation_enabled %}selected{% endif %}
+                  >
+                    Opt out — require manual enablement
+                  </option>
+                </select>
+              </label>
+              <p class="field-help">
+                Applies when a DM is first observed. Existing conversations retain their individual
+                setting.
+              </p>
+            </fieldset>
+
             <div class="field-grid field-grid-two">
               <label>
                 Provider
@@ -388,7 +413,7 @@
                 </select>
               </label>
               <label>
-                Maximum reply tokens
+                Reply token budget
                 <input
                   type="number"
                   min="32"
@@ -399,9 +424,9 @@
               </label>
             </div>
             <p class="field-help">
-              The reply cap is sent as <code>max_output_tokens</code> for ChatGPT Subscription and
-              <code>max_completion_tokens</code> for custom providers. Reasoning tokens can consume
-              part of this allowance.
+              ChatGPT Subscription treats this as a best-effort length instruction because its
+              transport does not accept <code>max_output_tokens</code>. Custom providers receive a
+              hard <code>max_completion_tokens</code> limit, whose allowance can include reasoning.
             </p>
 
             <fieldset>
@@ -710,8 +735,8 @@
           </div>
 
           <p>
-            Manual activity starts a temporary quiet window. Permanent pause is an independent
-            per-chat control.
+            Each conversation can be enrolled in automation independently. Manual activity starts
+            a temporary quiet window without changing that enrollment.
           </p>
 
           <div class="conversation-list">
@@ -723,7 +748,7 @@
                 </div>
 
                 {% if conversation.paused %}
-                  <span class="pill is-danger">Permanently paused</span>
+                  <span class="pill is-danger">Automation off</span>
                 {% elif conversation.snoozed %}
                   <span class="pill is-warn">
                     Human active · {{ conversation.quiet_minutes_remaining }} min
@@ -733,15 +758,18 @@
                 {% endif %}
 
                 <div class="conversation-actions">
-                  {% if conversation.paused or conversation.snoozed %}
+                  {% if conversation.paused %}
                     <form method="post" action="/conversations/{{ conversation.channel_id }}/resume">
-                      <button class="button-secondary">Resume now</button>
+                      <button class="button-secondary">Enable automation</button>
                     </form>
-                  {% endif %}
-
-                  {% if not conversation.paused %}
+                  {% else %}
+                    {% if conversation.snoozed %}
+                      <form method="post" action="/conversations/{{ conversation.channel_id }}/resume">
+                        <button class="button-secondary">Resume now</button>
+                      </form>
+                    {% endif %}
                     <form method="post" action="/conversations/{{ conversation.channel_id }}/pause">
-                      <button class="button-quiet">Pause permanently</button>
+                      <button class="button-quiet">Disable automation</button>
                     </form>
                   {% endif %}
                 </div>

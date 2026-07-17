@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 class AppSettings:
     enabled: bool = False
     silent_replies: bool = False
+    default_conversation_enabled: bool = True
     provider: str = "chatgpt"
     model: str = "gpt-5.4-mini"
     reasoning_effort: str = "low"

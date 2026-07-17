@@ -250,6 +250,7 @@ class WebApp:
         async def settings(
             enabled: str | None = Form(None),
             silent_replies: str | None = Form(None),
+            conversation_default: str = Form("opt_in"),
             provider: str = Form("chatgpt"),
             model: str = Form(...),
             reasoning_effort: str = Form("low"),
@@ -267,6 +268,8 @@ class WebApp:
         ):
             if provider not in PROVIDERS:
                 return self._back(error="Unknown model provider")
+            if conversation_default not in {"opt_in", "opt_out"}:
+                return self._back(error="Unknown new-conversation default")
             if provider == "custom" and not self.chatgpt.custom_connected:
                 return self._back(error="Configure a custom provider before selecting it")
             model = model.strip()
@@ -281,6 +284,7 @@ class WebApp:
             value = AppSettings(
                 enabled=enabled is not None,
                 silent_replies=silent_replies is not None,
+                default_conversation_enabled=conversation_default == "opt_in",
                 provider=provider,
                 model=model,
                 reasoning_effort=reasoning_effort,
@@ -333,14 +337,14 @@ class WebApp:
         @self.app.post("/conversations/{channel_id}/pause")
         async def pause(channel_id: str, _: str = Depends(auth)):
             self.automation.permanently_pause(channel_id)
-            return self._back(message="Conversation permanently paused")
+            return self._back(message="Automation disabled for this conversation")
 
         @self.app.post("/conversations/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
             self.automation.cancel(channel_id)
             self.store.set_permanent_pause(channel_id, False)
             self.store.clear_snooze(channel_id)
-            return self._back(message="Conversation resumed; the next incoming DM may receive a reply")
+            return self._back(message="Automation enabled; the next incoming DM may receive a reply")
 
     def _conversation_views(self) -> list[dict]:
         now = time.time()

@@ -199,19 +199,39 @@ class DiscordService:
         per_channel = max(1, (requested + len(channels) - 1) // len(channels))
         messages: list[tuple[float, str]] = []
         remaining = requested
-        for channel in channels:
+        for channel_index, channel in enumerate(channels, start=1):
             fetch_limit = min(per_channel, remaining)
             if fetch_limit <= 0:
                 break
             remaining -= fetch_limit
+            channel_messages = []
             async for message in channel.history(limit=fetch_limit):
+                channel_messages.append(message)
+
+            channel_messages.sort(key=lambda message: message.created_at.timestamp())
+            previous_was_manual_owner = False
+            previous_owner_timestamp: float | None = None
+            for message in channel_messages:
                 content = message.content.strip()[:4000]
-                if (
+                is_manual_owner = (
                     message.author == client.user
                     and content
                     and not self.store.is_assistant_message(str(message.id))
-                ):
-                    messages.append((message.created_at.timestamp(), content))
+                )
+                if not is_manual_owner:
+                    previous_was_manual_owner = False
+                    previous_owner_timestamp = None
+                    continue
+                timestamp = message.created_at.timestamp()
+                if previous_was_manual_owner and previous_owner_timestamp is not None:
+                    gap = max(0.0, timestamp - previous_owner_timestamp)
+                    shape = f"continuation in an owner message burst; {gap:.1f}s after its previous part"
+                else:
+                    shape = "standalone owner message"
+                annotated = f"[anonymous conversation {channel_index}; {shape}]\n{content}"
+                messages.append((timestamp, annotated))
+                previous_was_manual_owner = True
+                previous_owner_timestamp = timestamp
 
         messages.sort(key=lambda item: item[0])
         selected: list[str] = []

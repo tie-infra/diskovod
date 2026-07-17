@@ -19,12 +19,13 @@ from .models import AppSettings, CustomProvider
 from .security import password_matches
 from .store import Store
 
-PERSONALITY_PROMPT_VERSION = "style-base-rates-and-examples-v3"
+PERSONALITY_PROMPT_VERSION = "style-base-rates-examples-and-sequences-v4"
 PERSONALITY_MAX_OUTPUT_TOKENS = 2000
 PERSONALITY_INSTRUCTIONS = """Infer a comprehensive, reusable personality and writing-style profile of the person who authored these messages. Model base rates and dominant patterns, not a checklist of every behavior that appears. Never promote a rare trait or format to a default merely because it occurs once.
 
 Make the profile operational for another model. Cover:
 - Default message shape: approximate word or character range, usual line count, sentence versus fragment use, and the frequency and density of line breaks and lists. State explicitly whether single-line text is the norm.
+- Message sequencing: how often the owner sends consecutive-message bursts, the usual number of messages, timing and thought boundaries, and which contexts justify a sequence rather than one complete message. Distinguish true bursts from standalone messages using the anonymous history annotations.
 - Writing mechanics: vocabulary, casing, punctuation, contractions, abbreviations, emoji, humor, and pacing.
 - Tone and social behavior, including how responses differ by context or relationship when the evidence supports it.
 - Preferred languages and switching patterns.
@@ -250,6 +251,11 @@ class WebApp:
         async def settings(
             enabled: str | None = Form(None),
             silent_replies: str | None = Form(None),
+            multi_message_replies: str | None = Form(None),
+            multi_message_chance: float = Form(12.0),
+            max_reply_messages: int = Form(3),
+            min_message_gap_seconds: float = Form(0.7),
+            max_message_gap_seconds: float = Form(2.0),
             conversation_default: str = Form("opt_in"),
             provider: str = Form("chatgpt"),
             model: str = Form(...),
@@ -281,6 +287,7 @@ class WebApp:
                 return self._back(error="Owner details cannot exceed 20,000 characters")
             if (
                 min_delay_seconds > max_delay_seconds
+                or min_message_gap_seconds > max_message_gap_seconds
                 or min_typing_cps > max_typing_cps
                 or min_human_quiet_minutes > max_human_quiet_minutes
             ):
@@ -288,6 +295,11 @@ class WebApp:
             value = AppSettings(
                 enabled=enabled is not None,
                 silent_replies=silent_replies is not None,
+                multi_message_replies=multi_message_replies is not None,
+                multi_message_chance=max(0.0, min(multi_message_chance, 100.0)),
+                max_reply_messages=max(2, min(max_reply_messages, 5)),
+                min_message_gap_seconds=max(0.0, min(min_message_gap_seconds, 30.0)),
+                max_message_gap_seconds=max(0.0, min(max_message_gap_seconds, 30.0)),
                 default_conversation_enabled=conversation_default == "opt_in",
                 provider=provider,
                 model=model,

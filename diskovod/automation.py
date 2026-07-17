@@ -19,11 +19,19 @@ ALLOWED_REACTIONS = frozenset(
     {"👍", "❤️", "😂", "🔥", "🎉", "😮", "😢", "🙏", "👀", "✅", "💯", "🤝", "👌", "😊", "😅", "🤔", "🙌"}
 )
 REACTION_PATTERN = re.compile(r"\A<react>([^<>\s]+)</react>\Z")
+MESSAGE_BLOCK_PATTERN = re.compile(r"<message>(.*?)</message>", re.IGNORECASE | re.DOTALL)
 
-DM_STYLE_INSTRUCTIONS = """Unless choosing the reaction action described below, output exactly one Discord message as plain conversational text.
-Default to one short line. Match the dominant length, line count, sentence shape, capitalization, and punctuation of the account owner's recent manual messages. Rare behavior in the profile or examples must remain rare; observing a format once is not a reason to repeat it.
+DM_STYLE_INSTRUCTIONS = """Default to one short line per Discord message. Match the dominant length, line count, sentence shape, capitalization, and punctuation of the account owner's recent manual messages. Rare behavior in the profile or examples must remain rare; observing a format once is not a reason to repeat it.
 
-Do not add line breaks, separate paragraphs, bullets, numbering, headings, recaps, assistant-style framing, or unsolicited alternatives unless the latest incoming message explicitly calls for structured content or a closely analogous manual-owner example clearly supports it. If a list is genuinely needed, make it dense and compact, with no blank lines and only as many items as necessary. Answer only what the current conversation needs. Before returning, silently check that the reply's line count and structure match these rules."""
+Do not add line breaks, separate paragraphs, bullets, numbering, headings, recaps, assistant-style framing, or unsolicited alternatives unless the latest incoming message explicitly calls for structured content or a closely analogous manual-owner example clearly supports it. If a list is genuinely needed, make it dense and compact, with no blank lines and only as many items as necessary. In written replies, use emoji a little less often than the owner's style evidence would otherwise suggest: omit decorative emoji, usually use at most one, and include one only when it adds a natural emotional cue. This does not restrict the separate reaction action. Answer only what the current conversation needs. Before returning, silently check that the reply's line count and structure match these rules."""
+
+SINGLE_MESSAGE_INSTRUCTIONS = """Unless choosing the reaction action described below, output exactly one Discord message as plain conversational text. Do not output <message> tags."""
+
+SEQUENCE_INSTRUCTIONS = """For this turn, a brief sequence of 2–{max_messages} Discord messages is available when it would naturally match the owner's habits and the conversational moment. Prefer a sequence only when the thoughts have believable message boundaries; do not mechanically split a sentence, turn a compact reply into a sparse list, repeat yourself, or pad the response.
+
+To send a sequence, output exactly 2–{max_messages} adjacent blocks in this form and no text outside them: <message>first message</message><message>second message</message>. Each block is sent separately and should contain only its visible Discord text. If one message is more natural, output ordinary plain text without tags."""
+
+SEQUENCE_FALLBACK_INSTRUCTIONS = """The previous output used invalid multi-message formatting. Return exactly one ordinary plain-text Discord message. Do not use <message> tags, reaction markup, or an emoji-only response."""
 
 REACTION_INSTRUCTIONS = """A reaction may replace the message only on a rare occasion when the latest incoming message needs no written answer and a real person would naturally acknowledge it with one emoji. Suitable cases include a casual acknowledgement, a joke, a small win, or a reaction-worthy statement. Never react instead of replying to a question, request, plan needing confirmation, sensitive or emotional disclosure, conflict, or unclear context. When uncertain, write a normal reply.
 
@@ -77,7 +85,27 @@ def contains_reaction_markup(answer: str) -> bool:
     return "<react>" in answer.casefold() or "</react>" in answer.casefold()
 
 
-def build_reply_instructions(settings: AppSettings, personality: dict | None, history: list[dict]) -> str:
+def parse_message_sequence(answer: str, max_messages: int) -> list[str] | None:
+    stripped = answer.strip()
+    if not stripped:
+        return None
+    if "<message" not in stripped.casefold() and "</message" not in stripped.casefold():
+        return [stripped]
+    matches = list(MESSAGE_BLOCK_PATTERN.finditer(stripped))
+    remainder = MESSAGE_BLOCK_PATTERN.sub("", stripped).strip()
+    parts = [match.group(1).strip() for match in matches]
+    if remainder or not 2 <= len(parts) <= max_messages or any(not part for part in parts):
+        return None
+    return parts
+
+
+def build_reply_instructions(
+    settings: AppSettings,
+    personality: dict | None,
+    history: list[dict],
+    *,
+    allow_sequence: bool = False,
+) -> str:
     """Build instructions with trusted human style evidence separate from dialogue history."""
     sections = [settings.base_instructions]
     if settings.owner_details.strip():
@@ -106,7 +134,12 @@ def build_reply_instructions(settings: AppSettings, personality: dict | None, hi
             + json.dumps(owner_examples, ensure_ascii=False)
         )
 
-    sections.extend((IDENTITY_INSTRUCTIONS, DM_STYLE_INSTRUCTIONS, REACTION_INSTRUCTIONS))
+    message_shape = (
+        SEQUENCE_INSTRUCTIONS.format(max_messages=max(2, settings.max_reply_messages))
+        if allow_sequence
+        else SINGLE_MESSAGE_INSTRUCTIONS
+    )
+    sections.extend((IDENTITY_INSTRUCTIONS, message_shape, DM_STYLE_INSTRUCTIONS, REACTION_INSTRUCTIONS))
     return "\n\n".join(sections)
 
 
@@ -192,7 +225,15 @@ class Automation:
             if item["content"].strip()
         ]
         personality = self.store.personality()
-        instructions = build_reply_instructions(settings, personality, history)
+        allow_sequence = (
+            settings.multi_message_replies and random.random() * 100 < settings.multi_message_chance
+        )
+        instructions = build_reply_instructions(
+            settings,
+            personality,
+            history,
+            allow_sequence=allow_sequence,
+        )
         answer = await self._generate_reply(messages, instructions, settings)
         if answer is None:
             return
@@ -233,31 +274,66 @@ class Automation:
                 self.human_activity(channel_id)
                 return
 
-        cps = random.uniform(settings.min_typing_cps, settings.max_typing_cps)
-        async with trigger.channel.typing():
-            await asyncio.sleep(min(12.0, max(0.8, len(answer) / cps)))
-        if not self._still_allowed(channel_id, version):
-            return
-        if await self._manual_message_exists(trigger.channel, started_at):
-            self.human_activity(channel_id)
-            return
-
-        nonce = secrets.token_hex(12)
-        self.store.remember_nonce(nonce)
-        outbound = f"@silent {answer}" if settings.silent_replies else answer
-        sent = await trigger.channel.send(outbound, nonce=nonce)
-        self.store.remember_bot_message(str(sent.id))
-        me = sent.author
-        self.store.save_message(
-            id=str(sent.id),
-            channel_id=channel_id,
-            author_id=str(me.id),
-            author_name=str(me),
-            direction="out",
-            source="assistant",
-            content=answer,
-            timestamp=sent.created_at.timestamp(),
+        parts = parse_message_sequence(
+            answer,
+            settings.max_reply_messages if allow_sequence else 1,
         )
+        if parts is None:
+            answer = await self._generate_reply(
+                messages,
+                instructions + "\n\n" + SEQUENCE_FALLBACK_INSTRUCTIONS,
+                settings,
+                purpose="dm_reply_sequence_fallback",
+            )
+            parts = parse_message_sequence(answer, 1) if answer is not None else None
+            if (
+                parts is None
+                or len(parts) != 1
+                or parse_reaction(parts[0])
+                or contains_reaction_markup(parts[0])
+            ):
+                log.error("Rejected invalid multi-message fallback; no DM will be sent")
+                return
+
+        for index, part in enumerate(parts):
+            if index:
+                await asyncio.sleep(
+                    random.uniform(
+                        settings.min_message_gap_seconds,
+                        settings.max_message_gap_seconds,
+                    )
+                )
+                if not self._still_allowed(channel_id, version):
+                    return
+                if await self._manual_message_exists(trigger.channel, started_at):
+                    self.human_activity(channel_id)
+                    return
+
+            cps = random.uniform(settings.min_typing_cps, settings.max_typing_cps)
+            async with trigger.channel.typing():
+                await asyncio.sleep(min(12.0, max(0.8, len(part) / cps)))
+            if not self._still_allowed(channel_id, version):
+                return
+            if await self._manual_message_exists(trigger.channel, started_at):
+                self.human_activity(channel_id)
+                return
+
+            nonce = secrets.token_hex(12)
+            self.store.remember_nonce(nonce)
+            outbound = f"@silent {part}" if settings.silent_replies else part
+            sent = await trigger.channel.send(outbound, nonce=nonce)
+            self.store.remember_bot_message(str(sent.id))
+            me = sent.author
+            self.store.save_message(
+                id=str(sent.id),
+                channel_id=channel_id,
+                author_id=str(me.id),
+                author_name=str(me),
+                direction="out",
+                source="assistant",
+                content=part,
+                timestamp=sent.created_at.timestamp(),
+            )
 
     async def _generate_reply(
         self,

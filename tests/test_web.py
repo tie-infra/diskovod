@@ -92,6 +92,8 @@ def test_personality_inference_requests_a_full_profile():
     for topic in (
         "base rates",
         "single-line",
+        "Message sequencing",
+        "consecutive-message bursts",
         "frequency and density",
         "languages",
         "preferences",

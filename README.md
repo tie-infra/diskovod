@@ -18,6 +18,7 @@ paused until an administrator resumes them.
 - Editable owner details for names, preferences, relationships, plans, and other personal context.
 - An identity-disclosure guard that rewrites a rejected draft once and otherwise sends nothing.
 - Rare emoji reactions for lightweight acknowledgements when a written reply is unnecessary.
+- Model-composed multi-message replies with configurable frequency, count, and timing.
 - Optional `@silent` prefix for generated text replies that should not notify the recipient.
 - Configurable generation caps for concise DM replies.
 - Edit-aware message history that refreshes a pending reply when its trigger changes.
@@ -125,15 +126,17 @@ model provider and excludes generated replies. Identical history reuses the cach
 raw preload text is not retained.
 
 The Discord loader inspects between 20 and 500 recent messages across the most recently active DMs,
-with an 80,000-character inference limit.
+with an 80,000-character inference limit. It labels conversations anonymously and marks whether an
+owner message stands alone or immediately continues an owner-authored message burst; peer content is
+not included in these annotations.
 
 The inferred description gives special attention to the owner's dominant message shape: typical
 length and line count, sentence fragments, punctuation, and the frequency and density of lists. It
-also covers communication habits, preferences, languages, recurring interests, social style,
-temperament, and other supported traits. Rare behavior is labeled as contextual instead of being
-treated as the default. The cached description can be reviewed and edited in the admin UI at any
-time. Re-running inference after a prompt revision refreshes the cache even when the selected
-history has not changed.
+also covers consecutive-message frequency, typical burst size and boundaries, communication habits,
+preferences, languages, recurring interests, social style, temperament, and other supported traits.
+Rare behavior is labeled as contextual instead of being treated as the default. The cached
+description can be reviewed and edited in the admin UI at any time. Re-running inference after a
+prompt revision refreshes the cache even when the selected history has not changed.
 
 The profile ends with 8–12 synthetic representative examples written from the inferred style.
 They are newly generated examples—not samples, quotations, or close paraphrases from the private
@@ -154,6 +157,13 @@ For lightweight acknowledgements, Diskovod may react to the incoming message wit
 instead of sending text. Reactions are never combined with a reply. A local limiter permits at most
 one reaction among the latest twelve automated actions and applies a six-hour per-conversation
 cooldown; if the model proposes one sooner, it is asked for a normal text reply instead.
+
+**Multi-message replies** lets the model occasionally compose a sequence of two to five distinct
+Discord messages. The admin UI controls whether sequences are available, the percentage of turns
+on which they are offered, the maximum message count, and the randomized delay between messages.
+Diskovod does not split completed prose mechanically: the model chooses the boundaries and may keep
+a single message when a sequence would feel forced. Before every part, automation and recent manual
+owner activity are checked again, so the remainder stops if the owner joins the conversation.
 
 **Prefix generated replies with `@silent`** adds Discord's notification-suppression marker to text
 sent by Diskovod. The marker is not stored in conversation history and does not affect reactions.

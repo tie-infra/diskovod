@@ -430,6 +430,70 @@
             </p>
 
             <fieldset>
+              <legend>Multi-message replies</legend>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  name="multi_message_replies"
+                  {% if app_settings.multi_message_replies %}checked{% endif %}
+                >
+                Allow occasional message sequences
+              </label>
+              <p class="field-help">
+                On selected turns, the model may compose a natural sequence instead of Diskovod
+                mechanically splitting one response. One message remains valid when a split would
+                feel forced.
+              </p>
+              <div class="field-grid field-grid-two">
+                <label>
+                  Sequence chance (%)
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    max="100"
+                    name="multi_message_chance"
+                    value="{{ app_settings.multi_message_chance }}"
+                  >
+                </label>
+                <label>
+                  Maximum messages
+                  <input
+                    type="number"
+                    min="2"
+                    max="5"
+                    name="max_reply_messages"
+                    value="{{ app_settings.max_reply_messages }}"
+                  >
+                </label>
+              </div>
+              <div class="field-grid field-grid-two">
+                <label>
+                  Minimum gap (seconds)
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="30"
+                    name="min_message_gap_seconds"
+                    value="{{ app_settings.min_message_gap_seconds }}"
+                  >
+                </label>
+                <label>
+                  Maximum gap (seconds)
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="30"
+                    name="max_message_gap_seconds"
+                    value="{{ app_settings.max_message_gap_seconds }}"
+                  >
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset>
               <legend>Reply timing</legend>
               <div class="field-grid field-grid-three">
                 <label>

@@ -167,9 +167,68 @@ async def test_personality_history_is_limited_and_excludes_generated_messages(tm
     history = await service.personality_history(20)
 
     assert len(history) == 9
-    assert "human message 4" not in history
-    assert "human message 18" in history
-    assert "human message 20" not in history
+    assert not any("human message 4" in item for item in history)
+    assert any("human message 18" in item for item in history)
+    assert not any("human message 20" in item for item in history)
+    assert all("standalone owner message" in item for item in history)
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_personality_history_marks_consecutive_owner_message_bursts(tmp_path: Path):
+    user = object()
+    peer = object()
+    now = time.time()
+    messages = [
+        SimpleNamespace(
+            id="peer-1",
+            author=peer,
+            content="peer content is omitted",
+            created_at=datetime.fromtimestamp(now, timezone.utc),
+        ),
+        SimpleNamespace(
+            id="owner-1",
+            author=user,
+            content="first thought",
+            created_at=datetime.fromtimestamp(now + 1, timezone.utc),
+        ),
+        SimpleNamespace(
+            id="owner-2",
+            author=user,
+            content="continued thought",
+            created_at=datetime.fromtimestamp(now + 3, timezone.utc),
+        ),
+        SimpleNamespace(
+            id="peer-2",
+            author=peer,
+            content="peer content is omitted",
+            created_at=datetime.fromtimestamp(now + 4, timezone.utc),
+        ),
+        SimpleNamespace(
+            id="owner-3",
+            author=user,
+            content="new standalone thought",
+            created_at=datetime.fromtimestamp(now + 5, timezone.utc),
+        ),
+    ]
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    service = DiscordService(store, cast(Automation, None))
+    service.client = cast(
+        PrivateDiscordClient,
+        SimpleNamespace(
+            user=user,
+            private_channels=[FakeChannel(messages)],
+            is_ready=lambda: True,
+        ),
+    )
+
+    history = await service.personality_history(20)
+
+    assert len(history) == 3
+    assert "standalone owner message" in history[0]
+    assert "continuation in an owner message burst; 2.0s" in history[1]
+    assert "standalone owner message" in history[2]
+    assert all("peer content" not in item for item in history)
     store.close()
 
 

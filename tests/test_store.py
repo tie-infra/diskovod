@@ -13,9 +13,22 @@ def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
     assert store.app_settings().silent_replies is False
     assert store.app_settings().owner_details == ""
     store.set_app_settings(
-        AppSettings(silent_replies=True, owner_details="My name is Alex and I live in Berlin.")
+        AppSettings(
+            silent_replies=True,
+            multi_message_replies=True,
+            multi_message_chance=20,
+            max_reply_messages=4,
+            min_message_gap_seconds=1,
+            max_message_gap_seconds=3,
+            owner_details="My name is Alex and I live in Berlin.",
+        )
     )
     assert store.app_settings().silent_replies is True
+    assert store.app_settings().multi_message_replies is True
+    assert store.app_settings().multi_message_chance == 20
+    assert store.app_settings().max_reply_messages == 4
+    assert store.app_settings().min_message_gap_seconds == 1
+    assert store.app_settings().max_message_gap_seconds == 3
     assert store.app_settings().owner_details == "My name is Alex and I live in Berlin."
     store.close()
 

@@ -12,6 +12,7 @@ from diskovod.automation import (
     Automation,
     build_reply_instructions,
     discloses_automated_identity,
+    parse_message_sequence,
     parse_reaction,
 )
 from diskovod.chatgpt import ChatGPTClient
@@ -104,10 +105,43 @@ def test_reply_instructions_use_only_manual_owner_messages_as_style_evidence():
     assert "Here are several options" not in instructions
     assert "Default to one short line" in instructions
     assert "dense and compact" in instructions
+    assert "use emoji a little less often" in instructions
+    assert "does not restrict the separate reaction action" in instructions
     assert "Identity boundary" in instructions
     assert "A reaction may replace the message" in instructions
+    assert "output exactly one Discord message" in instructions
     assert instructions.index("My name is Alex") < instructions.index("profile")
     assert instructions.index("profile") < instructions.index("Default to one short line")
+
+
+def test_reply_instructions_offer_model_composed_sequences_only_when_selected():
+    instructions = build_reply_instructions(
+        AppSettings(base_instructions="base", max_reply_messages=4),
+        None,
+        [],
+        allow_sequence=True,
+    )
+
+    assert "sequence of 2–4 Discord messages" in instructions
+    assert "mechanically split a sentence" in instructions
+    assert "<message>first message</message>" in instructions
+
+
+@pytest.mark.parametrize(
+    ("answer", "maximum", "expected"),
+    (
+        ("plain reply", 3, ["plain reply"]),
+        ("<message>one</message><message>two</message>", 3, ["one", "two"]),
+        (" <MESSAGE> one </MESSAGE>\n<message>two</message> ", 3, ["one", "two"]),
+        ("<message>one</message><message>two</message><message>three</message>", 2, None),
+        ("<message>one</message>", 3, None),
+        ("<message>one</message>trailing", 3, None),
+        ("<message></message><message>two</message>", 3, None),
+        ("<message>one</message><message>two</message>", 1, None),
+    ),
+)
+def test_message_sequence_parser(answer: str, maximum: int, expected: list[str] | None):
+    assert parse_message_sequence(answer, maximum) == expected
 
 
 @pytest.mark.parametrize(
@@ -247,7 +281,7 @@ class TextChannel:
     async def send(self, content: str, *, nonce: str):
         self.sent.append((content, nonce))
         return SimpleNamespace(
-            id="sent",
+            id=f"sent-{len(self.sent)}",
             author=SimpleNamespace(id="me"),
             created_at=datetime.now(UTC),
         )
@@ -264,11 +298,18 @@ class TextTrigger:
 
 
 @pytest.mark.asyncio
-async def test_silent_prefix_is_sent_but_not_stored_in_model_history(tmp_path: Path):
+async def test_model_composed_sequence_is_sent_silently_and_stored_as_distinct_messages(
+    tmp_path: Path,
+):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     settings = AppSettings(
         enabled=True,
         silent_replies=True,
+        multi_message_replies=True,
+        multi_message_chance=100,
+        max_reply_messages=3,
+        min_message_gap_seconds=0,
+        max_message_gap_seconds=0,
         debounce_seconds=0,
         min_delay_seconds=0,
         max_delay_seconds=0,
@@ -285,16 +326,56 @@ async def test_silent_prefix_is_sent_but_not_stored_in_model_history(tmp_path: P
         content="hello",
         timestamp=time.time(),
     )
-    automation = Automation(store, cast(ChatGPTClient, ReplyingChatGPT(["hey"])))
+    chatgpt = ReplyingChatGPT(["<message>hey</message><message>what's up?</message>"])
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
     automation.versions["dm"] = 0
     trigger = TextTrigger()
 
     await automation._reply(trigger, 0)
 
-    assert trigger.channel.sent[0][0] == "@silent hey"
-    saved = store.history("dm", 10)[-1]
-    assert saved["content"] == "hey"
-    assert saved["source"] == "assistant"
+    assert [item[0] for item in trigger.channel.sent] == ["@silent hey", "@silent what's up?"]
+    saved = store.history("dm", 10)[-2:]
+    assert [item["content"] for item in saved] == ["hey", "what's up?"]
+    assert all(item["source"] == "assistant" for item in saved)
+    assert "sequence of 2–3 Discord messages" in chatgpt.calls[0]["instructions"]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_sequence_markup_is_replaced_with_one_plain_message(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_app_settings(
+        AppSettings(
+            enabled=True,
+            multi_message_replies=False,
+            debounce_seconds=0,
+            min_delay_seconds=0,
+            max_delay_seconds=0,
+        )
+    )
+    store.upsert_conversation("dm", "peer", "Peer")
+    store.save_message(
+        id="incoming",
+        channel_id="dm",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="hello",
+        timestamp=time.time(),
+    )
+    chatgpt = ReplyingChatGPT(["<message>invalid</message><message>sequence</message>", "fixed reply"])
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0)
+
+    assert [item[0] for item in trigger.channel.sent] == ["fixed reply"]
+    assert [call["purpose"] for call in chatgpt.calls] == [
+        "dm_reply",
+        "dm_reply_sequence_fallback",
+    ]
     store.close()
 
 

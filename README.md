@@ -176,6 +176,14 @@ truncated by the concise reply setting.
 
 ## Token usage
 
+Diskovod orders reusable base instructions, owner details, the cached personality, and reply-safety
+rules before changing manual-message examples and conversation history. This preserves the longest
+possible exact prompt prefix for automatic provider caching. ChatGPT Subscription requests also use
+a stable, hashed `prompt_cache_key` per model and DM so growing conversation prefixes are routed
+consistently without exposing Discord channel IDs. Personality inference uses a separate stable key.
+Custom providers receive the cache-friendly prompt order but no cache-specific request fields, since
+not every OpenAI-compatible server accepts them.
+
 Diskovod records the usage metadata reported with each completed response: input tokens, cached
 input tokens, output tokens, reasoning tokens, and total tokens. Both ChatGPT Subscription and
 custom Chat Completions usage formats are normalized into the same counters. The admin UI shows

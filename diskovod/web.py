@@ -13,7 +13,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
 from .automation import Automation
-from .chatgpt import PROVIDERS, ChatGPTClient, normalize_custom_base_url
+from .chatgpt import PROVIDERS, ChatGPTClient, make_prompt_cache_key, normalize_custom_base_url
 from .discord import DiscordService
 from .models import AppSettings, CustomProvider
 from .security import password_matches
@@ -401,6 +401,7 @@ class WebApp:
                 cfg.reasoning_effort,
                 purpose="personality_inference",
                 max_output_tokens=PERSONALITY_MAX_OUTPUT_TOKENS,
+                cache_key=make_prompt_cache_key("personality", cfg.model),
             )
         except Exception as exc:
             return self._back(error=str(exc))

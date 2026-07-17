@@ -112,6 +112,7 @@ def test_reply_instructions_use_only_manual_owner_messages_as_style_evidence():
     assert "output exactly one Discord message" in instructions
     assert instructions.index("My name is Alex") < instructions.index("profile")
     assert instructions.index("profile") < instructions.index("Default to one short line")
+    assert instructions.index("A reaction may replace the message") < instructions.index('"yeah sounds good"')
 
 
 def test_reply_instructions_offer_model_composed_sequences_only_when_selected():
@@ -181,12 +182,23 @@ class ReplyingChatGPT:
         self.answers = iter(answers)
         self.calls: list[dict] = []
 
-    async def complete(self, messages, instructions, model, effort, *, purpose, max_output_tokens=None):
+    async def complete(
+        self,
+        messages,
+        instructions,
+        model,
+        effort,
+        *,
+        purpose,
+        max_output_tokens=None,
+        cache_key=None,
+    ):
         self.calls.append(
             {
                 "instructions": instructions,
                 "purpose": purpose,
                 "max_output_tokens": max_output_tokens,
+                "cache_key": cache_key,
             }
         )
         return next(self.answers)
@@ -205,6 +217,7 @@ async def test_identity_disclosure_is_repaired_before_release():
         "dm_reply_identity_repair",
     ]
     assert all(call["max_output_tokens"] == 256 for call in chatgpt.calls)
+    assert all(call["cache_key"] is None for call in chatgpt.calls)
     assert "previous draft was rejected" in chatgpt.calls[1]["instructions"]
 
 
@@ -338,6 +351,8 @@ async def test_model_composed_sequence_is_sent_silently_and_stored_as_distinct_m
     assert [item["content"] for item in saved] == ["hey", "what's up?"]
     assert all(item["source"] == "assistant" for item in saved)
     assert "sequence of 2–3 Discord messages" in chatgpt.calls[0]["instructions"]
+    assert chatgpt.calls[0]["cache_key"].startswith("diskovod:dm:")
+    assert "dm" not in chatgpt.calls[0]["cache_key"].removeprefix("diskovod:dm:")
     store.close()
 
 

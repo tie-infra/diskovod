@@ -12,6 +12,7 @@ from diskovod.chatgpt import (
     CALLBACK_URL,
     ORIGINATOR,
     ChatGPTClient,
+    make_prompt_cache_key,
     normalize_custom_base_url,
 )
 from diskovod.models import AppSettings, ChatCredentials, CustomProvider
@@ -82,6 +83,16 @@ def test_malformed_jwt_has_no_claims():
     assert ChatGPTClient._jwt_claims("not-a-jwt") == {}
 
 
+def test_prompt_cache_keys_are_stable_and_do_not_expose_conversation_ids():
+    first = make_prompt_cache_key("dm", "gpt-5.4-mini\0private-channel-123")
+    second = make_prompt_cache_key("dm", "gpt-5.4-mini\0private-channel-123")
+
+    assert first == second
+    assert first.startswith("diskovod:dm:")
+    assert "private-channel-123" not in first
+    assert len(first) <= 64
+
+
 def test_extracts_usage_from_completed_response():
     usage = ChatGPTClient._usage_from_response(
         {
@@ -145,6 +156,7 @@ async def test_completed_stream_records_usage(tmp_path: Path):
         "low",
         purpose="dm_reply",
         max_output_tokens=256,
+        cache_key="diskovod:dm:cache-key",
     )
 
     assert result == "Hello"
@@ -154,6 +166,7 @@ async def test_completed_stream_records_usage(tmp_path: Path):
     assert stats["by_purpose"][0]["name"] == "dm_reply"
     assert session.last_kwargs["headers"]["Originator"] == ORIGINATOR
     assert "max_output_tokens" not in session.last_kwargs["json"]
+    assert session.last_kwargs["json"]["prompt_cache_key"] == "diskovod:dm:cache-key"
     assert "within approximately 256 tokens" in session.last_kwargs["json"]["instructions"]
     store.close()
 
@@ -225,6 +238,7 @@ async def test_custom_provider_uses_chat_completions_and_records_usage(tmp_path:
         "high",
         purpose="dm_reply",
         max_output_tokens=192,
+        cache_key="must-not-be-sent-to-custom-providers",
     )
 
     assert result == "hello"

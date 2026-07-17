@@ -25,6 +25,11 @@ ORIGINATOR = "zed"
 PROVIDERS = frozenset({"chatgpt", "custom"})
 
 
+def make_prompt_cache_key(scope: str, identity: str) -> str:
+    digest = hashlib.sha256(f"{scope}\0{identity}".encode()).hexdigest()[:32]
+    return f"diskovod:{scope}:{digest}"
+
+
 def normalize_custom_base_url(value: str) -> str:
     base_url = value.strip().rstrip("/")
     try:
@@ -233,6 +238,7 @@ class ChatGPTClient:
         *,
         purpose: str = "conversation",
         max_output_tokens: int | None = None,
+        cache_key: str | None = None,
     ) -> str:
         try:
             if self.active_provider == "custom":
@@ -241,7 +247,13 @@ class ChatGPTClient:
                 )
             else:
                 result = await self._complete_subscription(
-                    messages, instructions, model, effort, purpose, max_output_tokens
+                    messages,
+                    instructions,
+                    model,
+                    effort,
+                    purpose,
+                    max_output_tokens,
+                    cache_key,
                 )
         except Exception as exc:
             self.last_error = str(exc)
@@ -257,6 +269,7 @@ class ChatGPTClient:
         effort: str,
         purpose: str,
         max_output_tokens: int | None,
+        cache_key: str | None,
     ) -> str:
         creds = await self.credentials()
         assert self.session
@@ -299,6 +312,8 @@ class ChatGPTClient:
                 f"\n\nLength budget: keep the final response within approximately "
                 f"{max(1, max_output_tokens)} tokens."
             )
+        if cache_key:
+            body["prompt_cache_key"] = cache_key[:64]
         chunks: list[str] = []
         usage_record: dict | None = None
         async with self.session.post(f"{BACKEND_URL}/responses", headers=headers, json=body) as response:

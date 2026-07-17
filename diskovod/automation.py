@@ -9,7 +9,7 @@ import secrets
 import time
 from typing import Any
 
-from .chatgpt import ChatGPTClient
+from .chatgpt import ChatGPTClient, make_prompt_cache_key
 from .models import AppSettings
 from .store import Store
 
@@ -121,6 +121,13 @@ def build_reply_instructions(
             "Cached personality and conversational behavior to follow:\n" + personality["profile"]
         )
 
+    message_shape = (
+        SEQUENCE_INSTRUCTIONS.format(max_messages=max(2, settings.max_reply_messages))
+        if allow_sequence
+        else SINGLE_MESSAGE_INSTRUCTIONS
+    )
+    sections.extend((IDENTITY_INSTRUCTIONS, DM_STYLE_INSTRUCTIONS, REACTION_INSTRUCTIONS, message_shape))
+
     owner_examples = [
         item["content"]
         for item in history
@@ -134,12 +141,6 @@ def build_reply_instructions(
             + json.dumps(owner_examples, ensure_ascii=False)
         )
 
-    message_shape = (
-        SEQUENCE_INSTRUCTIONS.format(max_messages=max(2, settings.max_reply_messages))
-        if allow_sequence
-        else SINGLE_MESSAGE_INSTRUCTIONS
-    )
-    sections.extend((IDENTITY_INSTRUCTIONS, message_shape, DM_STYLE_INSTRUCTIONS, REACTION_INSTRUCTIONS))
     return "\n\n".join(sections)
 
 
@@ -234,7 +235,13 @@ class Automation:
             history,
             allow_sequence=allow_sequence,
         )
-        answer = await self._generate_reply(messages, instructions, settings)
+        cache_key = make_prompt_cache_key("dm", f"{settings.model}\0{channel_id}")
+        answer = await self._generate_reply(
+            messages,
+            instructions,
+            settings,
+            cache_key=cache_key,
+        )
         if answer is None:
             return
 
@@ -242,7 +249,12 @@ class Automation:
         if (emoji and not self.store.reaction_allowed(channel_id)) or (
             contains_reaction_markup(answer) and emoji is None
         ):
-            answer = await self._reaction_fallback(messages, instructions, settings)
+            answer = await self._reaction_fallback(
+                messages,
+                instructions,
+                settings,
+                cache_key=cache_key,
+            )
             if answer is None:
                 return
             emoji = parse_reaction(answer)
@@ -267,7 +279,12 @@ class Automation:
                         emoji=emoji,
                     )
                     return
-            answer = await self._reaction_fallback(messages, instructions, settings)
+            answer = await self._reaction_fallback(
+                messages,
+                instructions,
+                settings,
+                cache_key=cache_key,
+            )
             if answer is None or not self._still_allowed(channel_id, version):
                 return
             if await self._manual_message_exists(trigger.channel, started_at):
@@ -284,6 +301,7 @@ class Automation:
                 instructions + "\n\n" + SEQUENCE_FALLBACK_INSTRUCTIONS,
                 settings,
                 purpose="dm_reply_sequence_fallback",
+                cache_key=cache_key,
             )
             parts = parse_message_sequence(answer, 1) if answer is not None else None
             if (
@@ -342,6 +360,7 @@ class Automation:
         settings: AppSettings,
         *,
         purpose: str = "dm_reply",
+        cache_key: str | None = None,
     ) -> str | None:
         answer = await self.chatgpt.complete(
             messages,
@@ -350,6 +369,7 @@ class Automation:
             settings.reasoning_effort,
             purpose=purpose,
             max_output_tokens=settings.max_reply_tokens,
+            cache_key=cache_key,
         )
         if not discloses_automated_identity(answer):
             return answer
@@ -362,6 +382,7 @@ class Automation:
             settings.reasoning_effort,
             purpose="dm_reply_identity_repair",
             max_output_tokens=settings.max_reply_tokens,
+            cache_key=cache_key,
         )
         if discloses_automated_identity(repaired):
             log.error("Rejected the identity-repair draft; no DM will be sent")
@@ -369,13 +390,19 @@ class Automation:
         return repaired
 
     async def _reaction_fallback(
-        self, messages: list[dict[str, str]], instructions: str, settings: AppSettings
+        self,
+        messages: list[dict[str, str]],
+        instructions: str,
+        settings: AppSettings,
+        *,
+        cache_key: str | None = None,
     ) -> str | None:
         answer = await self._generate_reply(
             messages,
             instructions + "\n\n" + REACTION_FALLBACK_INSTRUCTIONS,
             settings,
             purpose="dm_reply_reaction_fallback",
+            cache_key=cache_key,
         )
         if answer is None:
             return None

@@ -171,7 +171,11 @@ class Store:
 
     def custom_provider(self) -> CustomProvider | None:
         value = self._get("openai_compatible.provider", None)
-        return CustomProvider(**value) if value else None
+        if not value:
+            return None
+        # Providers saved before protocol selection existed used Chat Completions.
+        value.setdefault("protocol", "chat_completions")
+        return CustomProvider(**value)
 
     def set_custom_provider(self, value: CustomProvider) -> None:
         self._set("openai_compatible.provider", value.to_dict(), secret=True)

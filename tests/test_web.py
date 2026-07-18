@@ -44,6 +44,7 @@ def test_auth_callbacks_and_redirects_use_public_url():
     route_paths = {route.path for route in web.app.routes}
     assert "/chatgpt/oauth/callback" in route_paths
     assert "/provider/custom" in route_paths
+    assert "/provider/custom/detect" in route_paths
     assert "/provider/custom/remove" in route_paths
     assert "/provider/select" in route_paths
     assert "/discord/connect" in route_paths

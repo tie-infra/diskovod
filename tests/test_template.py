@@ -29,6 +29,9 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
             "name": "Local model",
             "base_url": "http://localhost:8000/v1",
             "has_api_key": True,
+            "protocol": "chat_completions",
+            "probe_model": "local-model",
+            "draft_token": "",
         },
         discord_connected=False,
         discord_identity=None,
@@ -186,6 +189,9 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'action="/personality/infer-history"' in rendered
     assert 'action="/discord/connect"' in rendered
     assert 'action="/provider/custom"' in rendered
+    assert 'formaction="/provider/custom/detect"' in rendered
+    assert 'name="protocol"' in rendered
+    assert "Detect API support" in rendered
     assert 'name="provider"' in rendered
     assert "http://localhost:8000/v1/chat/completions" in rendered
     assert "Local model" in rendered

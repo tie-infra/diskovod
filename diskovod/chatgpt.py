@@ -14,7 +14,17 @@ from urllib.parse import urlencode, urlparse
 import aiohttp
 
 from .localization import prompts_for
-from .models import ChatCredentials, attachment_context, can_send_file, can_send_image
+from .models import (
+    ChatCredentials,
+    CustomProvider,
+    FunctionCall,
+    HostedToolCall,
+    ModelResult,
+    TextOutput,
+    attachment_context,
+    can_send_file,
+    can_send_image,
+)
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -25,6 +35,15 @@ CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CALLBACK_URL = "http://localhost:1455/auth/callback"
 ORIGINATOR = "zed"
 PROVIDERS = frozenset({"chatgpt", "custom"})
+CUSTOM_PROTOCOLS = frozenset({"responses", "chat_completions"})
+
+
+class ProviderHTTPError(RuntimeError):
+    def __init__(self, provider: str, status: int, detail: str):
+        self.provider = provider
+        self.status = status
+        self.detail = detail
+        super().__init__(f"{provider} returned HTTP {status}: {detail or 'unknown error'}")
 
 
 def make_prompt_cache_key(scope: str, identity: str) -> str:
@@ -243,10 +262,42 @@ class ChatGPTClient:
         cache_key: str | None = None,
         locale: str = "en",
     ) -> str:
+        result = await self.complete_result(
+            messages,
+            instructions,
+            model,
+            effort,
+            purpose=purpose,
+            max_output_tokens=max_output_tokens,
+            cache_key=cache_key,
+            locale=locale,
+        )
+        text = result.text
+        if not text:
+            raise RuntimeError(f"{self.provider_label} returned an empty response")
+        return text
+
+    async def complete_result(
+        self,
+        messages: list[dict[str, Any]],
+        instructions: str,
+        model: str,
+        effort: str,
+        *,
+        purpose: str = "conversation",
+        max_output_tokens: int | None = None,
+        cache_key: str | None = None,
+        locale: str = "en",
+    ) -> ModelResult:
         try:
             if self.active_provider == "custom":
                 result = await self._complete_custom(
-                    messages, instructions, model, purpose, max_output_tokens
+                    messages,
+                    instructions,
+                    model,
+                    purpose,
+                    max_output_tokens,
+                    cache_key,
                 )
             else:
                 result = await self._complete_subscription(
@@ -275,7 +326,7 @@ class ChatGPTClient:
         max_output_tokens: int | None,
         cache_key: str | None,
         locale: str,
-    ) -> str:
+    ) -> ModelResult:
         creds = await self.credentials()
         assert self.session
         input_items = [self._responses_message(message, model) for message in messages]
@@ -306,7 +357,7 @@ class ChatGPTClient:
         if cache_key:
             body["prompt_cache_key"] = cache_key[:64]
         chunks: list[str] = []
-        usage_record: dict | None = None
+        completed_response: dict[str, Any] | None = None
         async with self.session.post(f"{BACKEND_URL}/responses", headers=headers, json=body) as response:
             if response.status >= 400:
                 detail = (await response.text())[:1000]
@@ -326,23 +377,15 @@ class ChatGPTClient:
                         if payload.get("type") == "response.output_text.delta":
                             chunks.append(payload.get("delta", ""))
                         if payload.get("type") == "response.completed":
-                            usage_record = self._usage_from_response(payload.get("response"))
+                            candidate = payload.get("response")
+                            if isinstance(candidate, dict):
+                                completed_response = candidate
                         if payload.get("type") in ("error", "response.failed"):
                             raise RuntimeError(str(payload.get("error") or payload))
-        if usage_record:
-            self.store.record_chatgpt_usage(
-                response_id=usage_record["response_id"],
-                model=usage_record["model"] or model,
-                purpose=purpose,
-                input_tokens=usage_record["input_tokens"],
-                cached_input_tokens=usage_record["cached_input_tokens"],
-                output_tokens=usage_record["output_tokens"],
-                reasoning_tokens=usage_record["reasoning_tokens"],
-                total_tokens=usage_record["total_tokens"],
-            )
-        result = "".join(chunks).strip()
-        if not result:
-            raise RuntimeError("ChatGPT returned an empty response")
+        result = self._model_result_from_response(completed_response or {})
+        if not result.text and chunks:
+            result.text_outputs.append(TextOutput("".join(chunks).strip(), []))
+        self._record_usage(result, model=model, purpose=purpose)
         return result
 
     async def _complete_custom(
@@ -352,14 +395,68 @@ class ChatGPTClient:
         model: str,
         purpose: str,
         max_output_tokens: int | None,
-    ) -> str:
+        cache_key: str | None,
+    ) -> ModelResult:
         provider = self.store.custom_provider()
         if provider is None:
             raise RuntimeError("The custom OpenAI-compatible provider is not configured")
+        if provider.protocol not in CUSTOM_PROTOCOLS:
+            raise RuntimeError(f"Unsupported custom provider protocol: {provider.protocol}")
+        if provider.protocol == "responses":
+            return await self._complete_custom_responses(
+                provider,
+                messages,
+                instructions,
+                model,
+                purpose,
+                max_output_tokens,
+                cache_key,
+            )
+        return await self._complete_custom_chat_completions(
+            provider,
+            messages,
+            instructions,
+            model,
+            purpose,
+            max_output_tokens,
+        )
+
+    async def _complete_custom_responses(
+        self,
+        provider: CustomProvider,
+        messages: list[dict[str, Any]],
+        instructions: str,
+        model: str,
+        purpose: str,
+        max_output_tokens: int | None,
+        cache_key: str | None,
+    ) -> ModelResult:
+        body: dict[str, Any] = {
+            "model": model,
+            "instructions": instructions,
+            "input": [self._responses_message(message, model, provider="custom") for message in messages],
+            "stream": False,
+            "store": False,
+        }
+        if max_output_tokens is not None:
+            body["max_output_tokens"] = max(1, max_output_tokens)
+        # Cache fields are standard Responses fields, but custom providers must opt into them later
+        # through explicit capability settings. Preserve deterministic prompt layout regardless.
+        payload = await self._post_custom_json(provider, "/responses", body)
+        result = self._model_result_from_response(payload)
+        self._record_usage(result, model=model, purpose=purpose, provider_base_url=provider.base_url)
+        return result
+
+    async def _complete_custom_chat_completions(
+        self,
+        provider: CustomProvider,
+        messages: list[dict[str, Any]],
+        instructions: str,
+        model: str,
+        purpose: str,
+        max_output_tokens: int | None,
+    ) -> ModelResult:
         assert self.session
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if provider.api_key:
-            headers["Authorization"] = f"Bearer {provider.api_key}"
         provider_messages = [self._custom_message(message, model) for message in messages]
         body = {
             "model": model,
@@ -368,7 +465,19 @@ class ChatGPTClient:
         }
         if max_output_tokens is not None:
             body["max_completion_tokens"] = max(1, max_output_tokens)
-        url = normalize_custom_base_url(provider.base_url) + "/chat/completions"
+        payload = await self._post_custom_json(provider, "/chat/completions", body)
+        result = self._model_result_from_chat_completion(payload)
+        self._record_usage(result, model=model, purpose=purpose, provider_base_url=provider.base_url)
+        return result
+
+    async def _post_custom_json(
+        self, provider: CustomProvider, path: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        assert self.session
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if provider.api_key:
+            headers["Authorization"] = f"Bearer {provider.api_key}"
+        url = normalize_custom_base_url(provider.base_url) + path
         async with self.session.post(url, headers=headers, json=body) as response:
             try:
                 payload = await response.json(content_type=None)
@@ -379,45 +488,86 @@ class ChatGPTClient:
                     + (f": {detail}" if detail else "")
                 ) from exc
             if response.status >= 400:
-                error = payload.get("error") if isinstance(payload, dict) else None
-                if isinstance(error, dict):
-                    detail = error.get("message") or error.get("type")
-                else:
-                    detail = error or (payload.get("message") if isinstance(payload, dict) else None)
-                raise RuntimeError(
-                    f"{provider.name} returned HTTP {response.status}: {detail or 'unknown error'}"
-                )
+                raise ProviderHTTPError(provider.name, response.status, self._error_detail(payload))
         if not isinstance(payload, dict):
             raise RuntimeError(f"{provider.name} returned an invalid JSON response")
-        result = self._chat_completion_text(payload)
-        if not result:
-            raise RuntimeError(f"{provider.name} returned an empty response")
-        usage_record = self._usage_from_chat_completion(payload)
-        if usage_record:
-            response_id = usage_record["response_id"]
-            if response_id:
-                provider_id = hashlib.sha256(provider.base_url.encode()).hexdigest()[:12]
-                response_id = f"custom:{provider_id}:{response_id}"
-            self.store.record_chatgpt_usage(
-                response_id=response_id,
-                model=usage_record["model"] or model,
-                purpose=purpose,
-                input_tokens=usage_record["input_tokens"],
-                cached_input_tokens=usage_record["cached_input_tokens"],
-                output_tokens=usage_record["output_tokens"],
-                reasoning_tokens=usage_record["reasoning_tokens"],
-                total_tokens=usage_record["total_tokens"],
-            )
-        return result
+        return payload
+
+    async def detect_custom_protocol(
+        self,
+        *,
+        name: str,
+        base_url: str,
+        api_key: str,
+        model: str,
+    ) -> str:
+        """Probe setup endpoints without changing or consulting the active provider."""
+        provider = CustomProvider(name, normalize_custom_base_url(base_url), api_key, "responses")
+        responses_body = {
+            "model": model,
+            "instructions": "This is a connection test. Reply with OK.",
+            "input": [{"role": "user", "content": "Connection test"}],
+            "max_output_tokens": 16,
+            "stream": False,
+            "store": False,
+        }
+        try:
+            payload = await self._post_custom_json(provider, "/responses", responses_body)
+        except ProviderHTTPError as exc:
+            if not self._responses_conclusively_unsupported(exc.status, exc.detail):
+                raise
+        else:
+            result = self._model_result_from_response(payload)
+            if result.text or result.function_calls or result.hosted_tool_calls:
+                return "responses"
+            raise RuntimeError(f"{name} returned an invalid Responses API probe result")
+
+        chat_body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "This is a connection test. Reply with OK."},
+                {"role": "user", "content": "Connection test"},
+            ],
+            "max_completion_tokens": 16,
+            "stream": False,
+        }
+        payload = await self._post_custom_json(provider, "/chat/completions", chat_body)
+        result = self._model_result_from_chat_completion(payload)
+        if not result.text and not result.function_calls:
+            raise RuntimeError(f"{name} returned an invalid Chat Completions probe result")
+        return "chat_completions"
 
     @staticmethod
-    def _responses_message(message: dict[str, Any], model: str) -> dict[str, Any]:
+    def _responses_conclusively_unsupported(status: int, detail: str) -> bool:
+        if status in {404, 405, 501}:
+            return True
+        if status != 400:
+            return False
+        normalized = detail.casefold()
+        return "responses" in normalized and any(
+            marker in normalized
+            for marker in ("unsupported", "not supported", "unknown endpoint", "unimplemented")
+        )
+
+    @staticmethod
+    def _error_detail(payload: object) -> str:
+        if not isinstance(payload, dict):
+            return "unknown error"
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("type") or "unknown error")
+        return str(error or payload.get("message") or "unknown error")
+
+    @staticmethod
+    def _responses_message(
+        message: dict[str, Any], model: str, *, provider: str = "chatgpt"
+    ) -> dict[str, Any]:
         role = message["role"]
         attachments = message.get("attachments") or []
         text = attachment_context(
             str(message.get("content") or ""),
             attachments,
-            provider="chatgpt",
+            provider=provider,
             model=model,
             locale=str(message.get("locale") or "en"),
         )
@@ -434,7 +584,7 @@ class ChatGPTClient:
                             "detail": "auto",
                         }
                     )
-                elif can_send_file(attachment, "chatgpt", model):
+                elif can_send_file(attachment, provider, model):
                     content.append(
                         {
                             "type": "input_file",
@@ -486,6 +636,129 @@ class ChatGPTClient:
                 if isinstance(part, dict) and part.get("type") in {"text", "output_text"}
             ).strip()
         return ""
+
+    @classmethod
+    def _model_result_from_response(cls, payload: object) -> ModelResult:
+        if not isinstance(payload, dict):
+            return ModelResult([], [], [])
+        text_outputs: list[TextOutput] = []
+        function_calls: list[FunctionCall] = []
+        hosted_tool_calls: list[HostedToolCall] = []
+        output = payload.get("output")
+        for item in output if isinstance(output, list) else []:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "")
+            if item_type == "message":
+                content = item.get("content")
+                for part in content if isinstance(content, list) else []:
+                    if not isinstance(part, dict) or part.get("type") != "output_text":
+                        continue
+                    annotations = part.get("annotations")
+                    text_outputs.append(
+                        TextOutput(
+                            str(part.get("text") or "").strip(),
+                            [value for value in annotations if isinstance(value, dict)]
+                            if isinstance(annotations, list)
+                            else [],
+                        )
+                    )
+            elif item_type == "function_call":
+                arguments = str(item.get("arguments") or "")
+                function_calls.append(
+                    FunctionCall(
+                        call_id=str(item.get("call_id") or item.get("id") or ""),
+                        name=str(item.get("name") or ""),
+                        arguments=arguments,
+                        parsed_arguments=cls._parse_function_arguments(arguments),
+                    )
+                )
+            elif item_type.endswith("_call"):
+                metadata: dict[str, Any] = {}
+                action = item.get("action")
+                if isinstance(action, dict):
+                    metadata["action"] = {
+                        str(key): value
+                        for key, value in list(action.items())[:10]
+                        if isinstance(value, (str, int, float, bool)) or value is None
+                    }
+                hosted_tool_calls.append(HostedToolCall(item_type, str(item.get("status") or ""), metadata))
+        return ModelResult(
+            text_outputs,
+            function_calls,
+            hosted_tool_calls,
+            cls._usage_from_response(payload),
+            str(payload.get("id")) if payload.get("id") else None,
+        )
+
+    @classmethod
+    def _model_result_from_chat_completion(cls, payload: object) -> ModelResult:
+        if not isinstance(payload, dict):
+            return ModelResult([], [], [])
+        try:
+            message = payload["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError):
+            message = {}
+        text = cls._chat_completion_text(payload)
+        text_outputs = [TextOutput(text, [])] if text else []
+        function_calls: list[FunctionCall] = []
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        for item in calls if isinstance(calls, list) else []:
+            if not isinstance(item, dict) or item.get("type") not in {None, "function"}:
+                continue
+            function = item.get("function")
+            if not isinstance(function, dict):
+                continue
+            arguments = str(function.get("arguments") or "")
+            function_calls.append(
+                FunctionCall(
+                    call_id=str(item.get("id") or ""),
+                    name=str(function.get("name") or ""),
+                    arguments=arguments,
+                    parsed_arguments=cls._parse_function_arguments(arguments),
+                )
+            )
+        return ModelResult(
+            text_outputs,
+            function_calls,
+            [],
+            cls._usage_from_chat_completion(payload),
+            str(payload.get("id")) if payload.get("id") else None,
+        )
+
+    @staticmethod
+    def _parse_function_arguments(arguments: str) -> dict[str, Any] | None:
+        try:
+            value = json.loads(arguments)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def _record_usage(
+        self,
+        result: ModelResult,
+        *,
+        model: str,
+        purpose: str,
+        provider_base_url: str | None = None,
+    ) -> None:
+        usage = result.usage
+        if not usage:
+            return
+        response_id = usage.get("response_id") or result.provider_response_id
+        if response_id and provider_base_url:
+            provider_id = hashlib.sha256(provider_base_url.encode()).hexdigest()[:12]
+            response_id = f"custom:{provider_id}:{response_id}"
+        self.store.record_chatgpt_usage(
+            response_id=response_id,
+            model=usage.get("model") or model,
+            purpose=purpose,
+            input_tokens=usage["input_tokens"],
+            cached_input_tokens=usage["cached_input_tokens"],
+            output_tokens=usage["output_tokens"],
+            reasoning_tokens=usage["reasoning_tokens"],
+            total_tokens=usage["total_tokens"],
+        )
 
     @classmethod
     def _usage_from_chat_completion(cls, payload: object) -> dict | None:

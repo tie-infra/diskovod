@@ -117,6 +117,18 @@ def test_secrets_are_encrypted_and_round_trip(tmp_path: Path):
     store.close()
 
 
+def test_legacy_custom_provider_is_migrated_to_pinned_chat_completions(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store._set(
+        "openai_compatible.provider",
+        {"name": "Legacy", "base_url": "https://models.example/v1", "api_key": "key"},
+        secret=True,
+    )
+
+    assert store.custom_provider().protocol == "chat_completions"
+    store.close()
+
+
 def test_database_explorer_redacts_secrets_searches_and_deletes_mutable_rows(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
     store.set_discord_token("very-secret-token")

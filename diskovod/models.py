@@ -236,6 +236,41 @@ class CustomProvider:
     name: str
     base_url: str
     api_key: str
+    protocol: str = "responses"
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(slots=True)
+class TextOutput:
+    text: str
+    annotations: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class FunctionCall:
+    call_id: str
+    name: str
+    arguments: str
+    parsed_arguments: dict[str, Any] | None
+
+
+@dataclass(slots=True)
+class HostedToolCall:
+    kind: str
+    status: str
+    metadata: dict[str, Any]
+
+
+@dataclass(slots=True)
+class ModelResult:
+    text_outputs: list[TextOutput]
+    function_calls: list[FunctionCall]
+    hosted_tool_calls: list[HostedToolCall]
+    usage: dict[str, Any] | None = None
+    provider_response_id: str | None = None
+
+    @property
+    def text(self) -> str:
+        return "\n".join(output.text for output in self.text_outputs if output.text).strip()

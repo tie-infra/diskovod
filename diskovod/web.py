@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -13,7 +14,13 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
 from .automation import Automation
-from .chatgpt import PROVIDERS, ChatGPTClient, make_prompt_cache_key, normalize_custom_base_url
+from .chatgpt import (
+    CUSTOM_PROTOCOLS,
+    PROVIDERS,
+    ChatGPTClient,
+    make_prompt_cache_key,
+    normalize_custom_base_url,
+)
 from .discord import DiscordService
 from .localization import SUPPORTED_LOCALES, normalize_locale, prompts_for
 from .models import AppSettings, CustomProvider
@@ -24,6 +31,16 @@ from .ui_localization import ui_text
 PERSONALITY_PROMPT_VERSION = "style-base-rates-examples-and-sequences-v4"
 PERSONALITY_MAX_OUTPUT_TOKENS = 2000
 PERSONALITY_INSTRUCTIONS = prompts_for("en").personality
+
+
+@dataclass(slots=True)
+class ProviderDraft:
+    name: str
+    base_url: str
+    api_key: str
+    protocol: str
+    probe_model: str
+    expires_at: float
 
 
 def personality_source_hash(samples: str, locale: str = "en") -> str:
@@ -53,6 +70,7 @@ class WebApp:
         self.public_url = public_url.rstrip("/")
         self.public_origin = self._normalized_origin(self.public_url)
         self.security = HTTPBasic()
+        self.provider_drafts: dict[str, ProviderDraft] = {}
         base = Path(__file__).parent
         self.templates = Jinja2Templates(directory=base / "templates")
         self.app = FastAPI(title="Diskovod", docs_url=None, redoc_url=None, openapi_url=None)
@@ -112,10 +130,35 @@ class WebApp:
             db_table: str = "messages",
             db_page: int = 1,
             db_query: str = "",
+            provider_draft: str = "",
             _: str = Depends(auth),
         ):
             custom_provider = self.store.custom_provider()
             app_settings = self.store.app_settings()
+            draft = self._provider_draft(provider_draft)
+            provider_view = (
+                {
+                    "name": draft.name,
+                    "base_url": draft.base_url,
+                    "protocol": draft.protocol,
+                    "probe_model": draft.probe_model,
+                    "has_api_key": bool(draft.api_key),
+                    "draft_token": provider_draft,
+                }
+                if draft
+                else (
+                    {
+                        "name": custom_provider.name,
+                        "base_url": custom_provider.base_url,
+                        "protocol": custom_provider.protocol,
+                        "probe_model": app_settings.model,
+                        "has_api_key": bool(custom_provider.api_key),
+                        "draft_token": "",
+                    }
+                    if custom_provider
+                    else None
+                )
+            )
             return self.templates.TemplateResponse(
                 request,
                 "index.html",
@@ -131,15 +174,7 @@ class WebApp:
                     "model_connected": self.chatgpt.connected,
                     "active_provider": self.chatgpt.active_provider,
                     "provider_label": self.chatgpt.provider_label,
-                    "custom_provider": (
-                        {
-                            "name": custom_provider.name,
-                            "base_url": custom_provider.base_url,
-                            "has_api_key": bool(custom_provider.api_key),
-                        }
-                        if custom_provider
-                        else None
-                    ),
+                    "custom_provider": provider_view,
                     "discord_connected": self.discord.connected,
                     "discord_identity": self.discord.identity,
                     "discord_error": self.discord.error,
@@ -189,6 +224,8 @@ class WebApp:
             name: str = Form(...),
             base_url: str = Form(...),
             api_key: str = Form(""),
+            protocol: str = Form("responses"),
+            draft_token: str = Form(""),
             clear_api_key: str | None = Form(None),
             _: str = Depends(auth),
         ):
@@ -199,14 +236,80 @@ class WebApp:
                 base_url = normalize_custom_base_url(base_url)
             except ValueError as exc:
                 return self._back(error=str(exc))
+            if protocol not in CUSTOM_PROTOCOLS:
+                return self._back(error="Unknown API protocol")
             existing = self.store.custom_provider()
+            draft = self._provider_draft(draft_token)
             api_key = api_key.strip()
-            if not api_key and clear_api_key is None and existing:
+            if clear_api_key is not None:
+                api_key = ""
+            elif not api_key and draft and draft.name == name and draft.base_url == base_url:
+                api_key = draft.api_key
+            elif not api_key and existing:
                 api_key = existing.api_key
-            self.store.set_custom_provider(CustomProvider(name, base_url, api_key))
+            self.store.set_custom_provider(CustomProvider(name, base_url, api_key, protocol))
+            if draft_token:
+                self.provider_drafts.pop(draft_token, None)
             self._set_provider("custom")
             self.chatgpt.last_error = None
             return self._back(message=f"{name} saved and selected")
+
+        @self.app.post("/provider/custom/detect")
+        async def custom_provider_detect(
+            name: str = Form(...),
+            base_url: str = Form(...),
+            api_key: str = Form(""),
+            protocol: str = Form("responses"),
+            probe_model: str = Form(...),
+            draft_token: str = Form(""),
+            clear_api_key: str | None = Form(None),
+            _: str = Depends(auth),
+        ):
+            name = name.strip()
+            probe_model = probe_model.strip()
+            if not name or len(name) > 80:
+                return self._back(error="Provider name must contain between 1 and 80 characters")
+            if not probe_model:
+                return self._back(error="Enter a model name for API detection")
+            try:
+                base_url = normalize_custom_base_url(base_url)
+            except ValueError as exc:
+                return self._back(error=str(exc))
+            if protocol not in CUSTOM_PROTOCOLS:
+                protocol = "responses"
+            existing = self.store.custom_provider()
+            previous_draft = self._provider_draft(draft_token)
+            api_key = api_key.strip()
+            if clear_api_key is not None:
+                api_key = ""
+            elif not api_key and previous_draft:
+                api_key = previous_draft.api_key
+            elif not api_key and existing:
+                api_key = existing.api_key
+            token = secrets.token_urlsafe(24)
+            draft = ProviderDraft(
+                name,
+                base_url,
+                api_key,
+                protocol,
+                probe_model,
+                time.time() + 15 * 60,
+            )
+            self.provider_drafts[token] = draft
+            try:
+                draft.protocol = await self.chatgpt.detect_custom_protocol(
+                    name=name,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=probe_model,
+                )
+            except Exception as exc:
+                return self._provider_draft_back(token, error=str(exc))
+            label = "Responses" if draft.protocol == "responses" else "Chat Completions"
+            return self._provider_draft_back(
+                token,
+                message=f"Detected {label}. Review the preselected protocol, then save explicitly.",
+            )
 
         @self.app.post("/provider/custom/remove")
         async def custom_provider_remove(_: str = Depends(auth)):
@@ -541,6 +644,24 @@ class WebApp:
             self._url("/") + "?" + urlencode(parameters) + "#database",
             status_code=303,
         )
+
+    def _provider_draft(self, token: str) -> ProviderDraft | None:
+        now = time.time()
+        for key, value in list(self.provider_drafts.items()):
+            if value.expires_at <= now:
+                self.provider_drafts.pop(key, None)
+        return self.provider_drafts.get(token)
+
+    def _provider_draft_back(
+        self,
+        token: str,
+        *,
+        message: str | None = None,
+        error: str | None = None,
+    ) -> RedirectResponse:
+        values = {"provider_draft": token, "message": message, "error": error}
+        query = urlencode({key: value for key, value in values.items() if value})
+        return RedirectResponse(self._url("/") + "?" + query + "#connections", status_code=303)
 
     def _back(self, *, message: str | None = None, error: str | None = None) -> RedirectResponse:
         query = urlencode({k: v for k, v in {"message": message, "error": error}.items() if v})

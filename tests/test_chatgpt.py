@@ -12,6 +12,7 @@ from diskovod.chatgpt import (
     CALLBACK_URL,
     ORIGINATOR,
     ChatGPTClient,
+    ProviderHTTPError,
     make_prompt_cache_key,
     normalize_custom_base_url,
 )
@@ -49,6 +50,16 @@ class FakeSession:
         self.last_args = _args
         self.last_kwargs = kwargs
         return self.response
+
+
+class SequenceSession:
+    def __init__(self, responses: list[FakeResponse]):
+        self.responses = iter(responses)
+        self.calls: list[tuple[tuple, dict]] = []
+
+    def post(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return next(self.responses)
 
 
 class FakeJSONResponse(FakeResponse):
@@ -296,7 +307,9 @@ def test_custom_api_base_url_rejects_ambiguous_or_secret_urls(value: str):
 async def test_custom_provider_uses_chat_completions_and_records_usage(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     store.set_app_settings(AppSettings(provider="custom", model="local-model"))
-    store.set_custom_provider(CustomProvider("Local", "http://localhost:8000/v1", "provider-key"))
+    store.set_custom_provider(
+        CustomProvider("Local", "http://localhost:8000/v1", "provider-key", "chat_completions")
+    )
     payload = {
         "id": "chatcmpl-local",
         "model": "resolved-model",
@@ -346,7 +359,7 @@ async def test_custom_provider_uses_chat_completions_and_records_usage(tmp_path:
 async def test_keyless_custom_provider_omits_authorization_header(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     store.set_app_settings(AppSettings(provider="custom"))
-    store.set_custom_provider(CustomProvider("Keyless", "http://localhost:8000/v1", ""))
+    store.set_custom_provider(CustomProvider("Keyless", "http://localhost:8000/v1", "", "chat_completions"))
     payload = {"choices": [{"message": {"content": "ok"}}]}
     client = ChatGPTClient(store)
     session = FakeSession(FakeJSONResponse(payload))
@@ -361,7 +374,9 @@ async def test_keyless_custom_provider_omits_authorization_header(tmp_path: Path
 async def test_custom_provider_surfaces_api_errors(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     store.set_app_settings(AppSettings(provider="custom"))
-    store.set_custom_provider(CustomProvider("Gateway", "https://models.example/v1", "key"))
+    store.set_custom_provider(
+        CustomProvider("Gateway", "https://models.example/v1", "key", "chat_completions")
+    )
     client = ChatGPTClient(store)
     client.session = cast(
         aiohttp.ClientSession,
@@ -381,3 +396,102 @@ def test_custom_usage_falls_back_to_prompt_plus_completion_total():
     )
 
     assert usage["total_tokens"] == 15
+
+
+@pytest.mark.asyncio
+async def test_custom_responses_provider_is_pinned_and_normalized(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_app_settings(AppSettings(provider="custom", model="responses-model"))
+    store.set_custom_provider(
+        CustomProvider("Responses", "https://models.example/v1", "provider-key", "responses")
+    )
+    payload = {
+        "id": "resp-local",
+        "model": "resolved-model",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hello", "annotations": []}],
+            }
+        ],
+        "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+    }
+    client = ChatGPTClient(store)
+    session = FakeSession(FakeJSONResponse(payload))
+    client.session = cast(aiohttp.ClientSession, session)
+
+    result = await client.complete(
+        [{"role": "user", "content": "hi"}],
+        "system instructions",
+        "responses-model",
+        "low",
+        max_output_tokens=128,
+        cache_key="not-enabled-for-custom-yet",
+    )
+
+    assert result == "hello"
+    assert session.last_args == ("https://models.example/v1/responses",)
+    assert session.last_kwargs["json"] == {
+        "model": "responses-model",
+        "instructions": "system instructions",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+            }
+        ],
+        "stream": False,
+        "store": False,
+        "max_output_tokens": 128,
+    }
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_setup_detection_may_select_chat_completions_on_conclusive_404(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    client = ChatGPTClient(store)
+    session = SequenceSession(
+        [
+            FakeJSONResponse({"error": {"message": "missing"}}, status=404),
+            FakeJSONResponse({"choices": [{"message": {"content": "OK"}}]}),
+        ]
+    )
+    client.session = cast(aiohttp.ClientSession, session)
+
+    protocol = await client.detect_custom_protocol(
+        name="Gateway",
+        base_url="https://models.example/v1",
+        api_key="key",
+        model="model",
+    )
+
+    assert protocol == "chat_completions"
+    assert [call[0][0] for call in session.calls] == [
+        "https://models.example/v1/responses",
+        "https://models.example/v1/chat/completions",
+    ]
+    assert store.custom_provider() is None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_setup_detection_does_not_cross_fallback_on_ambiguous_failure(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    client = ChatGPTClient(store)
+    session = SequenceSession([FakeJSONResponse({"error": {"message": "temporary outage"}}, status=503)])
+    client.session = cast(aiohttp.ClientSession, session)
+
+    with pytest.raises(ProviderHTTPError, match="HTTP 503"):
+        await client.detect_custom_protocol(
+            name="Gateway",
+            base_url="https://models.example/v1",
+            api_key="key",
+            model="model",
+        )
+
+    assert len(session.calls) == 1
+    assert store.custom_provider() is None
+    store.close()

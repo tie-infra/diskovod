@@ -119,8 +119,8 @@
           </div>
 
           <p>
-            Connect any provider implementing the OpenAI Chat Completions API. The API key is
-            encrypted locally; keyless endpoints are supported.
+            Connect a provider implementing the Responses API or Chat Completions. New providers
+            default to Responses; the saved protocol is pinned for production requests.
           </p>
 
           {% if chat_error and active_provider == "custom" %}
@@ -128,6 +128,11 @@
           {% endif %}
 
           <form method="post" action="/provider/custom" class="form-stack">
+            <input
+              type="hidden"
+              name="draft_token"
+              value="{{ custom_provider.draft_token if custom_provider else '' }}"
+            >
             <label>
               Provider name
               <input
@@ -157,13 +162,42 @@
                 placeholder="{{ 'Leave empty to keep the saved key' if custom_provider and custom_provider.has_api_key else 'Optional for keyless endpoints' }}"
               >
             </label>
+            <label>
+              API protocol
+              <select name="protocol">
+                <option
+                  value="responses"
+                  {% if not custom_provider or custom_provider.protocol == "responses" %}selected{% endif %}
+                >Responses API</option>
+                <option
+                  value="chat_completions"
+                  {% if custom_provider and custom_provider.protocol == "chat_completions" %}selected{% endif %}
+                >Chat Completions</option>
+              </select>
+            </label>
+            <label>
+              Model used for detection
+              <input
+                name="probe_model"
+                value="{{ custom_provider.probe_model if custom_provider else app_settings.model }}"
+                placeholder="{{ app_settings.model }}"
+                required
+              >
+            </label>
             {% if custom_provider and custom_provider.has_api_key %}
               <label class="toggle">
                 <input type="checkbox" name="clear_api_key">
                 Remove the saved API key
               </label>
             {% endif %}
-            <button>{{ "Update and use provider" if custom_provider else "Save and use provider" }}</button>
+            <div class="button-row">
+              <button
+                type="submit"
+                class="button-secondary"
+                formaction="/provider/custom/detect"
+              >Detect API support</button>
+              <button>{{ "Update and use provider" if custom_provider else "Save and use provider" }}</button>
+            </div>
           </form>
 
           {% if custom_provider %}
@@ -181,8 +215,10 @@
           {% endif %}
 
           <small>
-            Diskovod sends non-streaming requests to
-            <code>{{ (custom_provider.base_url if custom_provider else 'http://localhost:8000/v1') }}/chat/completions</code>.
+            Detection only preselects the protocol; review it and save explicitly. Production sends
+            non-streaming requests only to
+            <code>{{ (custom_provider.base_url if custom_provider else 'http://localhost:8000/v1') }}/{{ 'chat/completions' if custom_provider and custom_provider.protocol == 'chat_completions' else 'responses' }}</code>
+            and never retries through the other protocol.
           </small>
         </article>
 

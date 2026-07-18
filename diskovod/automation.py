@@ -195,7 +195,7 @@ class Automation:
         channel_id = str(message.channel.id)
         if channel_id not in self.tasks or self.trigger_ids.get(channel_id) != str(message.id):
             return False
-        if not message.content.strip():
+        if not message.content.strip() and not getattr(message, "attachments", None):
             self.cancel(channel_id)
             return True
         self.schedule(message)
@@ -221,9 +221,18 @@ class Automation:
 
         history = self.store.history(channel_id, settings.history_limit)
         messages = [
-            {"role": "assistant" if item["direction"] == "out" else "user", "content": item["content"]}
+            {
+                "role": "assistant" if item["direction"] == "out" else "user",
+                "content": item["content"],
+                # Discord CDN URLs are signed and native inputs are expensive to replay.
+                # Keep historic metadata/retrieval text, but send only the trigger's URLs.
+                "attachments": [
+                    attachment if item["id"] == str(trigger.id) else attachment | {"url": ""}
+                    for attachment in item.get("attachments", [])
+                ],
+            }
             for item in history
-            if item["content"].strip()
+            if item["content"].strip() or item.get("attachments")
         ]
         personality = self.store.personality()
         allow_sequence = (
@@ -354,7 +363,7 @@ class Automation:
 
     async def _generate_reply(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         instructions: str,
         settings: AppSettings,
         *,
@@ -390,7 +399,7 @@ class Automation:
 
     async def _reaction_fallback(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         instructions: str,
         settings: AppSettings,
         *,

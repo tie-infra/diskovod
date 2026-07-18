@@ -8,11 +8,12 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlencode, urlparse
 
 import aiohttp
 
-from .models import ChatCredentials
+from .models import ChatCredentials, attachment_context, can_send_file, can_send_image
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -231,7 +232,7 @@ class ChatGPTClient:
 
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         instructions: str,
         model: str,
         effort: str,
@@ -263,7 +264,7 @@ class ChatGPTClient:
 
     async def _complete_subscription(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         instructions: str,
         model: str,
         effort: str,
@@ -273,20 +274,7 @@ class ChatGPTClient:
     ) -> str:
         creds = await self.credentials()
         assert self.session
-        input_items = [
-            {
-                "type": "message",
-                "role": m["role"],
-                "content": [
-                    {
-                        "type": "output_text" if m["role"] == "assistant" else "input_text",
-                        "text": m["content"],
-                        **({"annotations": []} if m["role"] == "assistant" else {}),
-                    }
-                ],
-            }
-            for m in messages
-        ]
+        input_items = [self._responses_message(message, model) for message in messages]
         headers = {
             "Authorization": f"Bearer {creds.access_token}",
             "Content-Type": "application/json",
@@ -356,7 +344,7 @@ class ChatGPTClient:
 
     async def _complete_custom(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         instructions: str,
         model: str,
         purpose: str,
@@ -369,9 +357,10 @@ class ChatGPTClient:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if provider.api_key:
             headers["Authorization"] = f"Bearer {provider.api_key}"
+        provider_messages = [self._custom_message(message, model) for message in messages]
         body = {
             "model": model,
-            "messages": [{"role": "system", "content": instructions}, *messages],
+            "messages": [{"role": "system", "content": instructions}, *provider_messages],
             "stream": False,
         }
         if max_output_tokens is not None:
@@ -417,6 +406,65 @@ class ChatGPTClient:
                 total_tokens=usage_record["total_tokens"],
             )
         return result
+
+    @staticmethod
+    def _responses_message(message: dict[str, Any], model: str) -> dict[str, Any]:
+        role = message["role"]
+        attachments = message.get("attachments") or []
+        text = attachment_context(
+            str(message.get("content") or ""),
+            attachments,
+            provider="chatgpt",
+            model=model,
+        )
+        if role == "assistant":
+            content = [{"type": "output_text", "text": text, "annotations": []}]
+        else:
+            content = [{"type": "input_text", "text": text}]
+            for attachment in attachments:
+                if can_send_image(attachment, model):
+                    content.append(
+                        {
+                            "type": "input_image",
+                            "image_url": attachment["url"],
+                            "detail": "auto",
+                        }
+                    )
+                elif can_send_file(attachment, "chatgpt", model):
+                    content.append(
+                        {
+                            "type": "input_file",
+                            "file_url": attachment["url"],
+                        }
+                    )
+        return {"type": "message", "role": role, "content": content}
+
+    @staticmethod
+    def _custom_message(message: dict[str, Any], model: str) -> dict[str, Any]:
+        role = message["role"]
+        attachments = message.get("attachments") or []
+        text = attachment_context(
+            str(message.get("content") or ""),
+            attachments,
+            provider="custom",
+            model=model,
+        )
+        images = (
+            [attachment for attachment in attachments if can_send_image(attachment, model)]
+            if role == "user"
+            else []
+        )
+        if not images:
+            return {"role": role, "content": text}
+        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        content.extend(
+            {
+                "type": "image_url",
+                "image_url": {"url": attachment["url"], "detail": "auto"},
+            }
+            for attachment in images
+        )
+        return {"role": role, "content": content}
 
     @staticmethod
     def _chat_completion_text(payload: dict) -> str:

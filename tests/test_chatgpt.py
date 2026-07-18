@@ -93,6 +93,88 @@ def test_prompt_cache_keys_are_stable_and_do_not_expose_conversation_ids():
     assert len(first) <= 64
 
 
+def test_subscription_messages_use_native_image_and_file_inputs():
+    message = ChatGPTClient._responses_message(
+        {
+            "role": "user",
+            "content": "what do you think?",
+            "attachments": [
+                {
+                    "filename": "photo.png",
+                    "content_type": "image/png",
+                    "size": 1024,
+                    "url": "https://cdn.example/photo.png",
+                },
+                {
+                    "filename": "brief.pdf",
+                    "content_type": "application/pdf",
+                    "size": 2048,
+                    "url": "https://cdn.example/brief.pdf",
+                },
+            ],
+        },
+        "gpt-5.4-mini",
+    )
+
+    assert message["content"][0]["type"] == "input_text"
+    assert message["content"][1] == {
+        "type": "input_image",
+        "image_url": "https://cdn.example/photo.png",
+        "detail": "auto",
+    }
+    assert message["content"][2] == {
+        "type": "input_file",
+        "file_url": "https://cdn.example/brief.pdf",
+    }
+
+
+def test_custom_text_only_model_gets_bounded_retrieval_context():
+    message = ChatGPTClient._custom_message(
+        {
+            "role": "user",
+            "content": "review this",
+            "attachments": [
+                {
+                    "filename": "sample.py",
+                    "content_type": "text/x-python",
+                    "size": 20,
+                    "url": "https://cdn.example/sample.py",
+                    "text": "print('hello')",
+                }
+            ],
+        },
+        "local-text-model",
+    )
+
+    assert message["role"] == "user"
+    assert "sample.py (text/x-python, 20 bytes)" in message["content"]
+    assert "print('hello')" in message["content"]
+
+
+def test_custom_vision_model_uses_chat_completions_image_url_shape():
+    message = ChatGPTClient._custom_message(
+        {
+            "role": "user",
+            "content": "describe it",
+            "attachments": [
+                {
+                    "filename": "photo.webp",
+                    "content_type": "image/webp",
+                    "size": 1024,
+                    "url": "https://cdn.example/photo.webp",
+                }
+            ],
+        },
+        "gpt-4o-mini",
+    )
+
+    assert message["content"][0]["type"] == "text"
+    assert message["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "https://cdn.example/photo.webp", "detail": "auto"},
+    }
+
+
 def test_extracts_usage_from_completed_response():
     usage = ChatGPTClient._usage_from_response(
         {

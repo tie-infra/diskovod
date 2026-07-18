@@ -10,6 +10,7 @@ import pytest
 import diskovod.discord as discord_module
 from diskovod.automation import Automation
 from diskovod.discord import CaptchaBroker, DiscordService, PrivateDiscordClient
+from diskovod.models import capture_discord_attachments, model_supports_vision
 from diskovod.store import Store
 
 
@@ -19,6 +20,44 @@ class FakeCaptcha(Exception):
     rqdata = "request-data"
     errors = ["captcha-required"]
     should_serve_invisible = False
+
+
+class FakeAttachment(SimpleNamespace):
+    async def read(self, *, use_cached: bool = False) -> bytes:
+        assert use_cached is True
+        return self.body
+
+
+@pytest.mark.asyncio
+async def test_captures_metadata_and_small_text_attachment_body():
+    attachment = FakeAttachment(
+        id="attachment-1",
+        filename="notes.txt",
+        content_type="text/plain; charset=utf-8",
+        size=11,
+        url="https://cdn.example/notes.txt",
+        description="meeting notes",
+        body=b"hello world",
+    )
+
+    assert await capture_discord_attachments([attachment]) == [
+        {
+            "id": "attachment-1",
+            "filename": "notes.txt",
+            "content_type": "text/plain",
+            "size": 11,
+            "url": "https://cdn.example/notes.txt",
+            "description": "meeting notes",
+            "text": "hello world",
+        }
+    ]
+
+
+def test_vision_capability_check_is_conservative():
+    assert model_supports_vision("gpt-5.4-mini") is True
+    assert model_supports_vision("gpt-4o-mini") is True
+    assert model_supports_vision("o1-mini") is False
+    assert model_supports_vision("local-text-model") is False
 
 
 @pytest.mark.asyncio

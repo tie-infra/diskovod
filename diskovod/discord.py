@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 import discord
 
 from .automation import Automation
+from .models import capture_discord_attachments
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ class PrivateDiscordClient(discord.Client):
         if not self.user or not isinstance(message.channel, discord.DMChannel):
             return
         channel_id = str(message.channel.id)
+        attachments = await capture_discord_attachments(getattr(message, "attachments", ()))
         if message.author == self.user:
             nonce = str(message.nonce) if message.nonce is not None else ""
             if (nonce and self.store.consume_nonce(nonce)) or self.store.is_bot_message(str(message.id)):
@@ -119,6 +121,7 @@ class PrivateDiscordClient(discord.Client):
                 source="human",
                 content=message.content,
                 timestamp=message.created_at.timestamp(),
+                attachments=attachments,
             )
             self.automation.human_activity(channel_id)
             return
@@ -134,6 +137,7 @@ class PrivateDiscordClient(discord.Client):
             source="remote",
             content=message.content,
             timestamp=message.created_at.timestamp(),
+            attachments=attachments,
         )
         self.automation.schedule(message)
 

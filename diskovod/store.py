@@ -33,7 +33,8 @@ class Store:
               CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, author_id TEXT NOT NULL,
                 author_name TEXT NOT NULL, direction TEXT NOT NULL, source TEXT NOT NULL,
-                content TEXT NOT NULL, timestamp REAL NOT NULL
+                content TEXT NOT NULL, timestamp REAL NOT NULL,
+                attachments TEXT NOT NULL DEFAULT '[]'
               );
               CREATE INDEX IF NOT EXISTS messages_channel_time ON messages(channel_id, timestamp DESC);
               CREATE TABLE IF NOT EXISTS bot_nonces (nonce TEXT PRIMARY KEY, created_at REAL NOT NULL);
@@ -59,6 +60,11 @@ class Store:
               CREATE INDEX IF NOT EXISTS chatgpt_usage_recorded_at
                 ON chatgpt_usage(recorded_at DESC);
             """)
+            message_columns = {
+                row["name"] for row in self._db.execute("PRAGMA table_info(messages)").fetchall()
+            }
+            if "attachments" not in message_columns:
+                self._db.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
 
     def close(self) -> None:
         with self._lock:
@@ -318,11 +324,24 @@ class Store:
         source: str,
         content: str,
         timestamp: float,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._lock, self._db:
             self._db.execute(
-                "INSERT OR IGNORE INTO messages VALUES(?,?,?,?,?,?,?,?)",
-                (id, channel_id, author_id, author_name, direction, source, content, timestamp),
+                """INSERT OR IGNORE INTO messages
+                   (id, channel_id, author_id, author_name, direction, source, content,
+                    timestamp, attachments) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    id,
+                    channel_id,
+                    author_id,
+                    author_name,
+                    direction,
+                    source,
+                    content,
+                    timestamp,
+                    json.dumps(attachments or [], ensure_ascii=False),
+                ),
             )
             self._db.execute(
                 "UPDATE conversations SET updated_at=? WHERE channel_id=?", (timestamp, channel_id)
@@ -334,7 +353,16 @@ class Store:
                 "SELECT * FROM messages WHERE channel_id=? ORDER BY timestamp DESC LIMIT ?",
                 (channel_id, limit),
             ).fetchall()
-        return [dict(row) for row in reversed(rows)]
+        result = []
+        for row in reversed(rows):
+            item = dict(row)
+            try:
+                attachments = json.loads(item.get("attachments") or "[]")
+            except (TypeError, json.JSONDecodeError):
+                attachments = []
+            item["attachments"] = attachments if isinstance(attachments, list) else []
+            result.append(item)
+        return result
 
     def update_message_content(
         self, message_id: str, content: str, *, source: str | None = None

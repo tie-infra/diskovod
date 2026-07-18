@@ -20,6 +20,7 @@ paused until an administrator resumes them.
 - Rare emoji reactions for lightweight acknowledgements when a written reply is unnecessary.
 - Model-composed multi-message replies with configurable frequency, count, and timing.
 - Optional Discord suppress-notifications flag for generated replies.
+- Capability-aware attachment context with native image/file inputs and bounded text retrieval.
 - Configurable generation caps for concise DM replies.
 - Edit-aware message history that refreshes a pending reply when its trigger changes.
 - Configurable opt-in or opt-out default with per-conversation enrollment controls.
@@ -167,6 +168,17 @@ owner activity are checked again, so the remainder stops if the owner joins the 
 
 **Send generated replies without notifications** uses Discord's suppress-notifications message
 flag. It does not modify the visible message text and does not affect reactions.
+
+Incoming messages retain metadata for up to four attachments. Supported images are passed as
+native vision inputs to documented vision-capable model families. With the ChatGPT Subscription
+transport, supported documents up to 20 MiB are passed as Responses `input_file` URLs. Custom
+Chat Completions providers receive the broadly compatible image-URL format, but not native document
+parts. For either transport, Diskovod downloads up to 64 KiB total from small text/code attachments
+when each message arrives and adds up to 24,000 characters per file to the prompt as bounded
+retrieval context. Unsupported and oversized files still contribute filename, media type, size,
+and description metadata, without downloading their bodies.
+Native image and document URLs are sent only for the message that triggered the current reply;
+later turns retain their metadata and captured text without replaying expiring Discord CDN URLs.
 
 **Reply token budget** applies to each DM generation and any repair or reaction-fallback generation.
 The ChatGPT Subscription transport rejects `max_output_tokens`, so Diskovod expresses its value as

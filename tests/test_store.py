@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 from diskovod.models import AppSettings, ChatCredentials, CustomProvider
@@ -122,6 +123,56 @@ def test_message_edits_replace_content_and_can_reclassify_owner_message(tmp_path
     assert store.history("dm", 1)[0]["content"] == "edited"
     assert store.history("dm", 1)[0]["source"] == "human"
     assert store.update_message_content("missing", "ignored") is None
+    store.close()
+
+
+def test_message_attachments_round_trip_as_structured_history(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.upsert_conversation("dm", "peer", "Peer")
+    attachments = [
+        {
+            "id": "file-1",
+            "filename": "notes.txt",
+            "content_type": "text/plain",
+            "size": 5,
+            "url": "https://cdn.example/notes.txt",
+            "text": "hello",
+        }
+    ]
+
+    store.save_message(
+        id="message-with-file",
+        channel_id="dm",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="",
+        timestamp=100,
+        attachments=attachments,
+    )
+
+    assert store.history("dm", 1)[0]["attachments"] == attachments
+    store.close()
+
+
+def test_existing_message_table_is_migrated_for_attachments(tmp_path: Path):
+    path = tmp_path / "state.sqlite3"
+    database = sqlite3.connect(path)
+    database.execute(
+        """CREATE TABLE messages (
+             id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, author_id TEXT NOT NULL,
+             author_name TEXT NOT NULL, direction TEXT NOT NULL, source TEXT NOT NULL,
+             content TEXT NOT NULL, timestamp REAL NOT NULL
+           )"""
+    )
+    database.commit()
+    database.close()
+
+    store = Store(path, SECRET)
+
+    columns = {row["name"] for row in store._db.execute("PRAGMA table_info(messages)").fetchall()}
+    assert "attachments" in columns
     store.close()
 
 

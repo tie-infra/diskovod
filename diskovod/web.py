@@ -105,7 +105,7 @@ class WebApp:
             if self._normalized_origin(origin) != self.public_origin:
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cross-origin form submission rejected; expected {self.public_url}",
+                    detail=self._t("cross_origin_rejected", url=self.public_url),
                 )
         return credentials.username
 
@@ -181,7 +181,11 @@ class WebApp:
                     ),
                     "model_connected": self.chatgpt.connected,
                     "automation_ready": self.chatgpt.automation_ready,
-                    "automation_error": self.chatgpt.automation_error,
+                    "automation_error": (
+                        ui_text(app_settings.admin_locale, "custom_provider_native_required")
+                        if self.chatgpt.automation_error
+                        else None
+                    ),
                     "active_provider": self.chatgpt.active_provider,
                     "provider_label": self.chatgpt.provider_label,
                     "custom_provider": provider_view,
@@ -190,7 +194,7 @@ class WebApp:
                     "discord_error": self.discord.error,
                     "has_discord_token": self.store.discord_token() is not None,
                     "captcha_requests": self.discord.captcha_requests(),
-                    "personality": self.store.personality(),
+                    "personality": self._personality_view(),
                     "escalations": self._escalation_views(),
                     "conversations": self._conversation_views(),
                     "usage_stats": self._usage_views(),
@@ -222,13 +226,13 @@ class WebApp:
             except Exception as exc:
                 return self._back(error=str(exc))
             self._set_provider("chatgpt")
-            return self._back(message="ChatGPT connected and selected")
+            return self._back(message=self._t("chatgpt_connected"))
 
         @self.app.post("/chatgpt/disconnect")
         async def chat_disconnect(_: str = Depends(auth)):
             self.store.clear_chat_credentials()
             self.chatgpt.last_error = None
-            return self._back(message="ChatGPT disconnected")
+            return self._back(message=self._t("chatgpt_disconnected"))
 
         @self.app.post("/chatgpt/web-search/detect")
         async def chat_web_search_detect(_: str = Depends(auth)):
@@ -237,14 +241,15 @@ class WebApp:
                 supported = await self.chatgpt.detect_subscription_web_search(
                     settings.model,
                     settings.reasoning_effort,
+                    settings.prompt_locale,
                 )
             except Exception as exc:
-                return self._back(error=f"Web search probe failed: {exc}")
+                return self._back(error=self._t("web_search_probe_failed", detail=exc))
             return self._back(
                 message=(
-                    "Hosted web search is available for the selected subscription model"
+                    self._t("web_search_probe_available")
                     if supported
-                    else "The selected subscription model did not complete the hosted search test"
+                    else self._t("web_search_probe_unavailable")
                 )
             )
 
@@ -265,13 +270,13 @@ class WebApp:
         ):
             name = name.strip()
             if not name or len(name) > 80:
-                return self._back(error="Provider name must contain between 1 and 80 characters")
+                return self._back(error=self._t("provider_name_invalid"))
             try:
                 base_url = normalize_custom_base_url(base_url)
-            except ValueError as exc:
-                return self._back(error=str(exc))
+            except ValueError:
+                return self._back(error=self._t("api_base_url_invalid"))
             if protocol not in CUSTOM_PROTOCOLS:
-                return self._back(error="Unknown API protocol")
+                return self._back(error=self._t("unknown_api_protocol"))
             existing = self.store.custom_provider()
             draft = self._provider_draft(draft_token)
             api_key = api_key.strip()
@@ -289,15 +294,13 @@ class WebApp:
                 "hosted_web_search": hosted_web_search is not None and protocol == "responses",
             }
             if self.store.app_settings().enabled and not capabilities["native_function_calls"]:
-                return self._back(
-                    error="Disable automation before selecting a provider without native function calls"
-                )
+                return self._back(error=self._t("disable_automation_for_provider"))
             self.store.set_custom_provider(CustomProvider(name, base_url, api_key, protocol, capabilities))
             if draft_token:
                 self.provider_drafts.pop(draft_token, None)
             self._set_provider("custom")
             self.chatgpt.last_error = None
-            return self._back(message=f"{name} saved and selected")
+            return self._back(message=self._t("provider_saved", name=name))
 
         @self.app.post("/provider/custom/detect")
         async def custom_provider_detect(
@@ -318,13 +321,13 @@ class WebApp:
             name = name.strip()
             probe_model = probe_model.strip()
             if not name or len(name) > 80:
-                return self._back(error="Provider name must contain between 1 and 80 characters")
+                return self._back(error=self._t("provider_name_invalid"))
             if not probe_model:
-                return self._back(error="Enter a model name for API detection")
+                return self._back(error=self._t("detection_model_required"))
             try:
                 base_url = normalize_custom_base_url(base_url)
-            except ValueError as exc:
-                return self._back(error=str(exc))
+            except ValueError:
+                return self._back(error=self._t("api_base_url_invalid"))
             if protocol not in CUSTOM_PROTOCOLS:
                 protocol = "responses"
             existing = self.store.custom_provider()
@@ -359,6 +362,7 @@ class WebApp:
                     base_url=base_url,
                     api_key=api_key,
                     model=probe_model,
+                    locale=self.store.app_settings().prompt_locale,
                 )
                 draft.protocol = detection.protocol
                 draft.capabilities["native_function_calls"] = detection.native_function_calls
@@ -369,20 +373,22 @@ class WebApp:
                 return self._provider_draft_back(token, error=str(exc))
             label = "Responses" if draft.protocol == "responses" else "Chat Completions"
             native_label = (
-                "native function calls available"
+                self._t("native_calls_available")
                 if draft.capabilities["native_function_calls"]
-                else "native function calls unavailable"
+                else self._t("native_calls_unavailable")
             )
             web_label = (
-                "hosted web search available"
+                self._t("hosted_search_available")
                 if draft.capabilities["hosted_web_search"]
-                else "hosted web search unavailable"
+                else self._t("hosted_search_unavailable")
             )
             return self._provider_draft_back(
                 token,
-                message=(
-                    f"Detected {label}; {native_label}; {web_label}. Review the preselected settings, then save "
-                    "explicitly."
+                message=self._t(
+                    "provider_detection_result",
+                    protocol=label,
+                    native=native_label,
+                    web=web_label,
                 ),
             )
 
@@ -392,16 +398,16 @@ class WebApp:
             if self.chatgpt.active_provider == "custom":
                 self._set_provider("chatgpt")
             self.chatgpt.last_error = None
-            return self._back(message="Custom provider removed")
+            return self._back(message=self._t("custom_provider_removed"))
 
         @self.app.post("/provider/select")
         async def provider_select(provider: str = Form(...), _: str = Depends(auth)):
             if provider not in PROVIDERS:
-                return self._back(error="Unknown model provider")
+                return self._back(error=self._t("unknown_model_provider"))
             if provider == "chatgpt" and not self.chatgpt.subscription_connected:
-                return self._back(error="Connect ChatGPT before selecting it")
+                return self._back(error=self._t("connect_chatgpt_first"))
             if provider == "custom" and not self.chatgpt.custom_connected:
-                return self._back(error="Configure a custom provider before selecting it")
+                return self._back(error=self._t("configure_custom_provider_first"))
             custom = self.store.custom_provider()
             if (
                 provider == "custom"
@@ -409,28 +415,26 @@ class WebApp:
                 and custom
                 and not custom.supports("native_function_calls")
             ):
-                return self._back(
-                    error="Disable automation or detect native function-call support before selecting it"
-                )
+                return self._back(error=self._t("detect_native_calls_before_select"))
             self._set_provider(provider)
             self.chatgpt.last_error = None
-            return self._back(message=f"{self.chatgpt.provider_label} selected")
+            return self._back(message=self._t("provider_selected", name=self.chatgpt.provider_label))
 
         @self.app.post("/discord/connect")
         async def discord_connect(token: str = Form(...), _: str = Depends(auth)):
             token = token.strip()
             if len(token) < 20:
-                return self._back(error="Discord token appears to be incomplete")
+                return self._back(error=self._t("discord_token_incomplete"))
             self.store.set_discord_token(token)
             self.discord.error = None
             await self.discord.restart()
-            return self._back(message="Discord connection started")
+            return self._back(message=self._t("discord_connection_started"))
 
         @self.app.post("/discord/disconnect")
         async def discord_disconnect(_: str = Depends(auth)):
             await self.discord.stop()
             self.store.clear_discord_token()
-            return self._back(message="Discord disconnected")
+            return self._back(message=self._t("discord_disconnected"))
 
         @self.app.post("/discord/captcha/{request_id}")
         async def discord_captcha(
@@ -440,10 +444,10 @@ class WebApp:
         ):
             solution = solution.strip()
             if not solution:
-                return self._back(error="Enter the CAPTCHA solution token")
+                return self._back(error=self._t("captcha_solution_required"))
             if not self.discord.solve_captcha(request_id, solution):
-                return self._back(error="The CAPTCHA request expired or was already answered")
-            return self._back(message="CAPTCHA solution submitted")
+                return self._back(error=self._t("captcha_expired"))
+            return self._back(message=self._t("captcha_submitted"))
 
         @self.app.post("/settings")
         async def settings(
@@ -479,35 +483,33 @@ class WebApp:
             try:
                 ZoneInfo(owner_timezone)
             except (KeyError, ValueError):
-                return self._back(error="Owner timezone must be a valid IANA timezone name")
+                return self._back(error=self._t("timezone_invalid"))
             if provider not in PROVIDERS:
-                return self._back(error="Unknown model provider")
+                return self._back(error=self._t("unknown_model_provider"))
             if conversation_default not in {"opt_in", "opt_out"}:
-                return self._back(error="Unknown new-conversation default")
+                return self._back(error=self._t("conversation_default_invalid"))
             if provider == "custom" and not self.chatgpt.custom_connected:
-                return self._back(error="Configure a custom provider before selecting it")
+                return self._back(error=self._t("configure_custom_provider_first"))
             custom = self.store.custom_provider()
             if (
                 enabled is not None
                 and provider == "custom"
                 and (not custom or not custom.supports("native_function_calls"))
             ):
-                return self._back(
-                    error="Detect and save native function-call support before enabling automation"
-                )
+                return self._back(error=self._t("detect_native_calls_before_enable"))
             model = model.strip()
             if not model:
-                return self._back(error="Model name cannot be empty")
+                return self._back(error=self._t("model_name_required"))
             owner_details = owner_details.strip()
             if len(owner_details) > 20_000:
-                return self._back(error="Owner details cannot exceed 20,000 characters")
+                return self._back(error=self._t("owner_details_too_long"))
             if (
                 min_delay_seconds > max_delay_seconds
                 or min_message_gap_seconds > max_message_gap_seconds
                 or min_typing_cps > max_typing_cps
                 or min_human_quiet_minutes > max_human_quiet_minutes
             ):
-                return self._back(error="Minimum values cannot exceed maximum values")
+                return self._back(error=self._t("minimum_exceeds_maximum"))
             previous = self.store.app_settings()
             normalized_prompt_locale = normalize_locale(prompt_locale)
             base_instructions = localized_base_instructions(
@@ -549,8 +551,8 @@ class WebApp:
         async def personality_infer(samples: str = Form(...), _: str = Depends(auth)):
             samples = samples.strip()
             if len(samples) < 200:
-                return self._back(error="Provide at least 200 characters of message history")
-            return await self._infer_personality(samples, source="pasted history")
+                return self._back(error=self._t("history_too_short"))
+            return await self._infer_personality(samples, source="pasted_history")
 
         @self.app.post("/personality/infer-history")
         async def personality_infer_history(
@@ -560,27 +562,25 @@ class WebApp:
             try:
                 messages = await self.discord.personality_history(max(20, min(history_limit, 500)))
             except Exception as exc:
-                return self._back(error=str(exc))
+                return self._back(error=self._localized_known_error(exc))
             samples = "\n\n---\n\n".join(messages)
             if len(samples) < 200:
-                return self._back(
-                    error="The selected Discord history did not contain enough human-authored text"
-                )
-            return await self._infer_personality(samples, source="Discord history")
+                return self._back(error=self._t("discord_history_too_short"))
+            return await self._infer_personality(samples, source="discord_history")
 
         @self.app.post("/personality/save")
         async def personality_save(profile: str = Form(...), _: str = Depends(auth)):
             profile = profile.strip()
             if len(profile) < 50:
-                return self._back(error="The personality description must be at least 50 characters")
+                return self._back(error=self._t("personality_too_short"))
             source_hash = hashlib.sha256(("edited\n" + profile).encode()).hexdigest()
             self.store.set_personality(profile, source_hash, source="edited")
-            return self._back(message="Personality updated")
+            return self._back(message=self._t("personality_updated"))
 
         @self.app.post("/conversations/{channel_id}/pause")
         async def pause(channel_id: str, _: str = Depends(auth)):
             self.automation.permanently_pause(channel_id)
-            return self._back(message="Automation disabled for this conversation")
+            return self._back(message=self._t("conversation_paused"))
 
         @self.app.post("/conversations/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
@@ -588,26 +588,29 @@ class WebApp:
             self.store.resolve_escalation_on_owner_reply(channel_id)
             self.store.set_permanent_pause(channel_id, False)
             self.store.clear_snooze(channel_id)
-            return self._back(message="Automation enabled; the next incoming DM may receive a reply")
+            return self._back(message=self._t("conversation_resumed"))
 
         @self.app.post("/conversations/{channel_id}/force-reply")
         async def force_reply(channel_id: str, _: str = Depends(auth)):
             if not self.chatgpt.automation_ready:
                 return self._back(
-                    error=self.chatgpt.automation_error
-                    or "Connect the active model provider before forcing a reply"
+                    error=(
+                        self._t("custom_provider_native_required")
+                        if self.chatgpt.automation_error
+                        else self._t("connect_provider_before_force")
+                    )
                 )
             try:
                 await self.discord.force_reply(channel_id)
             except Exception as exc:
-                return self._back(error=str(exc))
-            return self._back(message="Forced reply scheduled")
+                return self._back(error=self._localized_known_error(exc))
+            return self._back(message=self._t("forced_reply_scheduled"))
 
         @self.app.post("/escalations/{escalation_id}/claim")
         async def escalation_claim(escalation_id: int, _: str = Depends(auth)):
             if not self.store.set_escalation_state(escalation_id, "claimed"):
-                return self._back(error="Escalation was not found or is already closed")
-            return self._back(message="Escalation claimed")
+                return self._back(error=self._t("escalation_not_found"))
+            return self._back(message=self._t("escalation_claimed"))
 
         @self.app.post("/escalations/{escalation_id}/resolve")
         async def escalation_resolve(
@@ -620,9 +623,10 @@ class WebApp:
                 "resolved",
                 resume=resume is not None,
             ):
-                return self._back(error="Escalation was not found or is already closed")
+                return self._back(error=self._t("escalation_not_found"))
             return self._back(
-                message="Escalation resolved" + (" and automation resumed" if resume is not None else "")
+                message=self._t("escalation_resolved")
+                + (self._t("automation_resumed_suffix") if resume is not None else "")
             )
 
         @self.app.post("/escalations/{escalation_id}/dismiss")
@@ -636,9 +640,10 @@ class WebApp:
                 "dismissed",
                 resume=resume is not None,
             ):
-                return self._back(error="Escalation was not found or is already closed")
+                return self._back(error=self._t("escalation_not_found"))
             return self._back(
-                message="Escalation dismissed" + (" and automation resumed" if resume is not None else "")
+                message=self._t("escalation_dismissed")
+                + (self._t("automation_resumed_suffix") if resume is not None else "")
             )
 
         @self.app.post("/database/delete")
@@ -653,15 +658,24 @@ class WebApp:
                 return self._database_back(
                     table,
                     db_query,
-                    error="Confirm the row deletion before submitting",
+                    error=self._t("delete_confirmation_required"),
                 )
             try:
                 deleted = self.store.delete_database_row(table, row_key)
             except ValueError as exc:
-                return self._database_back(table, db_query, error=str(exc))
+                key = (
+                    "database_table_read_only"
+                    if str(exc) == "This database table is read-only"
+                    else "database_table_unknown"
+                )
+                return self._database_back(table, db_query, error=self._t(key))
             if not deleted:
-                return self._database_back(table, db_query, error="Database row was not found")
-            return self._database_back(table, db_query, message=f"Deleted row {row_key!r} from {table}")
+                return self._database_back(table, db_query, error=self._t("database_row_not_found"))
+            return self._database_back(
+                table,
+                db_query,
+                message=self._t("database_row_deleted", row=repr(row_key), table=table),
+            )
 
     def _conversation_views(self) -> list[dict]:
         now = time.time()
@@ -673,6 +687,14 @@ class WebApp:
                 max(1, int((until - now + 59) // 60)) if until and until > now else 0
             )
         return result
+
+    def _personality_view(self) -> dict[str, Any] | None:
+        personality = self.store.personality()
+        if not personality:
+            return None
+        source = str(personality.get("source") or "").lower().replace(" ", "_")
+        personality["source_label"] = self._t(f"source_{source}") if source else self._t("inferred_history")
+        return personality
 
     def _escalation_views(self) -> list[dict[str, Any]]:
         result = self.store.active_escalations()
@@ -690,7 +712,14 @@ class WebApp:
 
     def _usage_views(self) -> dict:
         stats = self.store.chatgpt_usage_stats()
+        locale = self.store.app_settings().admin_locale
+        window_keys = ("last_24_hours", "last_7_days", "last_30_days", "all_time")
+        for record, key in zip(stats["windows"], window_keys, strict=True):
+            record["label"] = ui_text(locale, key)
+        for record in stats["by_purpose"]:
+            record["name_label"] = ui_text(locale, f"purpose_{record['name']}")
         for record in stats["recent"]:
+            record["purpose_label"] = ui_text(locale, f"purpose_{record['purpose']}")
             record["recorded_at_label"] = (
                 datetime.fromtimestamp(record["recorded_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
             )
@@ -698,6 +727,9 @@ class WebApp:
 
     def _database_view(self, table: str, page: int, query: str) -> dict:
         tables = self.store.database_tables()
+        locale = self.store.app_settings().admin_locale
+        for item in tables:
+            item["label"] = ui_text(locale, f"table_{item['name']}")
         table_names = {item["name"] for item in tables}
         selected = table if table in table_names else "messages"
         search = query.strip()[:200]
@@ -753,7 +785,7 @@ class WebApp:
         source_hash = personality_source_hash(samples, cfg.prompt_locale)
         cached = self.store.personality()
         if cached and cached["source_hash"] == source_hash:
-            return self._back(message="This message history is already cached; no model call was made")
+            return self._back(message=self._t("personality_cached"))
         try:
             profile = await self.chatgpt.complete(
                 [{"role": "user", "content": samples}],
@@ -768,10 +800,25 @@ class WebApp:
         except Exception as exc:
             return self._back(error=str(exc))
         self.store.set_personality(profile, source_hash, source=source)
-        return self._back(message="Personality inferred and cached")
+        return self._back(message=self._t("personality_inferred"))
 
     def _url(self, path: str) -> str:
         return self.public_url + "/" + path.lstrip("/")
+
+    def _t(self, key: str, **values: object) -> str:
+        locale = self.store.app_settings().admin_locale if self.store is not None else "en"
+        return ui_text(locale, key, **values)
+
+    def _localized_known_error(self, error: Exception) -> str:
+        key = {
+            "Discord must be connected before forcing a reply": "discord_required_force",
+            "Invalid Discord channel ID": "discord_channel_invalid",
+            "Discord conversation is not available": "discord_conversation_unavailable",
+            "This conversation has no incoming message to answer": "discord_no_incoming_message",
+            "The latest incoming Discord message ID is invalid": "discord_message_id_invalid",
+            "Discord must be connected before loading message history": "discord_required_history",
+        }.get(str(error))
+        return self._t(key) if key else str(error)
 
     def _database_url(self, table: str, page: int, query: str) -> str:
         parameters = {"db_table": table, "db_page": max(1, page)}

@@ -3,8 +3,10 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from diskovod.models import FunctionCall
+from diskovod.localization import tool_text
 from diskovod.tooling import (
     execute_read_only_tool,
+    function_tools,
     validate_discord_action,
     validate_escalation_action,
     validate_hosted_web_search_calls,
@@ -125,3 +127,45 @@ def test_hosted_web_search_validation_enforces_capability_status_and_budget():
     assert validate_hosted_web_search_calls([completed], enabled=False) is False
     assert validate_hosted_web_search_calls([failed], enabled=True) is False
     assert validate_hosted_web_search_calls([completed] * 3, enabled=True) is False
+
+
+def test_function_schema_descriptions_follow_prompt_locale():
+    for locale in ("en", "ru", "uk", "ja", "zh", "de", "fr"):
+        text = tool_text(locale)
+        tools = {tool["name"]: tool for tool in function_tools(locale)}
+
+        assert tools["get_current_datetime"]["description"] == text["current_datetime"]
+        assert (
+            tools["get_current_datetime"]["parameters"]["properties"]["timezone"]["description"]
+            == text["timezone"]
+        )
+        assert tools["calculate"]["description"] == text["calculate"]
+        assert (
+            tools["calculate"]["parameters"]["properties"]["expression"]["description"] == text["expression"]
+        )
+        assert tools["send_messages"]["description"] == text["send_messages"]
+        assert (
+            tools["send_messages"]["parameters"]["properties"]["messages"]["description"] == text["messages"]
+        )
+        assert tools["react_to_message"]["description"] == text["react"]
+        assert tools["react_to_message"]["parameters"]["properties"]["emoji"]["description"] == text["emoji"]
+        assert tools["escalate_to_owner"]["description"] == text["escalate"]
+        escalation_properties = tools["escalate_to_owner"]["parameters"]["properties"]
+        assert escalation_properties["reason"]["description"] == text["escalation_reason"]
+        assert escalation_properties["acknowledgement"]["description"] == text["acknowledgement"]
+
+
+def test_tool_errors_and_weekdays_follow_prompt_locale():
+    invalid = FunctionCall("call", "calculate", "not-json", None)
+    assert execute_read_only_tool(invalid, owner_timezone="UTC", locale="fr") == {
+        "ok": False,
+        "error": "arguments invalides",
+    }
+
+    result = execute_read_only_tool(
+        call("get_current_datetime", {"timezone": None}),
+        owner_timezone="UTC",
+        locale="zh",
+        now=datetime(2026, 7, 19, 12, 30, tzinfo=UTC),
+    )
+    assert result["weekday"] == "星期日"

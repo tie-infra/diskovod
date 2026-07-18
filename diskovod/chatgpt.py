@@ -13,7 +13,7 @@ from urllib.parse import urlencode, urlparse
 
 import aiohttp
 
-from .localization import prompts_for
+from .localization import prompts_for, tool_text
 from .models import (
     ChatCredentials,
     CustomProvider,
@@ -589,13 +589,15 @@ class ChatGPTClient:
         base_url: str,
         api_key: str,
         model: str,
+        locale: str = "en",
     ) -> ProtocolDetection:
         """Probe setup endpoints without changing or consulting the active provider."""
+        text = tool_text(locale)
         provider = CustomProvider(name, normalize_custom_base_url(base_url), api_key, "responses")
         responses_body = {
             "model": model,
-            "instructions": "This is a connection test. Reply with OK.",
-            "input": [{"role": "user", "content": "Connection test"}],
+            "instructions": text["connection_test_system"],
+            "input": [{"role": "user", "content": text["connection_test_input"]}],
             "max_output_tokens": 16,
             "stream": False,
             "store": False,
@@ -608,16 +610,18 @@ class ChatGPTClient:
         else:
             result = self._model_result_from_response(payload)
             if result.text or result.function_calls or result.hosted_tool_calls:
-                native = await self._probe_native_function_calls(provider, "responses", model)
-                web_search = await self._probe_custom_hosted_web_search(provider, model) if native else False
+                native = await self._probe_native_function_calls(provider, "responses", model, locale)
+                web_search = (
+                    await self._probe_custom_hosted_web_search(provider, model, locale) if native else False
+                )
                 return ProtocolDetection("responses", native, web_search)
             raise RuntimeError(f"{name} returned an invalid Responses API probe result")
 
         chat_body = {
             "model": model,
             "messages": [
-                {"role": "system", "content": "This is a connection test. Reply with OK."},
-                {"role": "user", "content": "Connection test"},
+                {"role": "system", "content": text["connection_test_system"]},
+                {"role": "user", "content": text["connection_test_input"]},
             ],
             "max_completion_tokens": 16,
             "stream": False,
@@ -626,29 +630,32 @@ class ChatGPTClient:
         result = self._model_result_from_chat_completion(payload)
         if not result.text and not result.function_calls:
             raise RuntimeError(f"{name} returned an invalid Chat Completions probe result")
-        native = await self._probe_native_function_calls(provider, "chat_completions", model)
+        native = await self._probe_native_function_calls(provider, "chat_completions", model, locale)
         return ProtocolDetection("chat_completions", native, False)
 
-    async def detect_subscription_web_search(self, model: str, effort: str) -> bool:
+    async def detect_subscription_web_search(
+        self,
+        model: str,
+        effort: str,
+        locale: str = "en",
+    ) -> bool:
         """Probe the private subscription transport without assuming public API parity."""
+        text = tool_text(locale)
         result = await self._complete_subscription(
             [
                 {
                     "role": "user",
-                    "content": "Find the official OpenAI homepage, then complete the test.",
+                    "content": text["web_test_input"],
                 }
             ],
-            (
-                "This is a capability test. Use web search once, then call connection_test with "
-                "ok=true. Do not return ordinary text."
-            ),
+            text["web_test_system"],
             model,
             effort,
             "web_search_capability_probe",
             64,
             None,
-            "en",
-            [WEB_SEARCH_TOOL, self._connection_test_tool()],
+            locale,
+            [WEB_SEARCH_TOOL, self._connection_test_tool(locale)],
             "required",
             None,
         )
@@ -656,12 +663,19 @@ class ChatGPTClient:
         self.store.set_subscription_web_search_capability(model, supported)
         return supported
 
-    async def _probe_native_function_calls(self, provider: CustomProvider, protocol: str, model: str) -> bool:
-        tool = self._connection_test_tool()
+    async def _probe_native_function_calls(
+        self,
+        provider: CustomProvider,
+        protocol: str,
+        model: str,
+        locale: str,
+    ) -> bool:
+        text = tool_text(locale)
+        tool = self._connection_test_tool(locale)
         if protocol == "responses":
             body = {
                 "model": model,
-                "input": [{"role": "user", "content": "Complete the connection test."}],
+                "input": [{"role": "user", "content": text["connection_test_tool"]}],
                 "tools": [tool],
                 "tool_choice": {"type": "function", "name": "connection_test"},
                 "parallel_tool_calls": False,
@@ -674,7 +688,7 @@ class ChatGPTClient:
         else:
             body = {
                 "model": model,
-                "messages": [{"role": "user", "content": "Complete the connection test."}],
+                "messages": [{"role": "user", "content": text["connection_test_tool"]}],
                 "tools": [self._chat_tool(tool)],
                 "tool_choice": self._chat_tool_choice({"type": "function", "name": "connection_test"}),
                 "parallel_tool_calls": False,
@@ -698,15 +712,14 @@ class ChatGPTClient:
         self,
         provider: CustomProvider,
         model: str,
+        locale: str,
     ) -> bool:
+        text = tool_text(locale)
         body = {
             "model": model,
-            "instructions": (
-                "Use web search once to find the official OpenAI homepage, then call "
-                "connection_test with ok=true. Do not return ordinary text."
-            ),
-            "input": [{"role": "user", "content": "Complete the web search capability test."}],
-            "tools": [WEB_SEARCH_TOOL, self._connection_test_tool()],
+            "instructions": text["web_test_system"],
+            "input": [{"role": "user", "content": text["web_test_custom_input"]}],
+            "tools": [WEB_SEARCH_TOOL, self._connection_test_tool(locale)],
             "tool_choice": "required",
             "parallel_tool_calls": False,
             "max_output_tokens": 64,
@@ -723,11 +736,11 @@ class ChatGPTClient:
         return self._is_successful_web_search_probe(result)
 
     @staticmethod
-    def _connection_test_tool() -> dict[str, Any]:
+    def _connection_test_tool(locale: str) -> dict[str, Any]:
         return {
             "type": "function",
             "name": "connection_test",
-            "description": "Complete the connection test.",
+            "description": tool_text(locale)["connection_test_tool"],
             "parameters": {
                 "type": "object",
                 "properties": {"ok": {"type": "boolean"}},

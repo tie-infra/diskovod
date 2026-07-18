@@ -1,7 +1,11 @@
+import re
+from pathlib import Path
+
 from diskovod.automation import build_reply_instructions
 from diskovod.localization import (
     PROMPTS,
     SUPPORTED_LOCALES,
+    TOOL_TEXT,
     TOOL_POLICIES,
     prompts_for,
     tool_policy,
@@ -93,6 +97,28 @@ def test_every_admin_string_supports_every_locale():
         assert all(translations.values()), key
         for locale in SUPPORTED_LOCALES:
             assert ui_text(locale, key) == translations[locale]
+
+
+def test_every_tool_string_supports_every_locale():
+    assert set(TOOL_TEXT) == set(SUPPORTED_LOCALES)
+    expected_keys = set(TOOL_TEXT["en"])
+    for locale, translations in TOOL_TEXT.items():
+        assert set(translations) == expected_keys, locale
+        assert all(translations.values()), locale
+
+
+def test_every_literal_admin_template_key_exists_in_the_catalog():
+    template = (Path(__file__).parents[1] / "diskovod" / "templates" / "index.html").read_text()
+    referenced = set(re.findall(r"""\bt\(["']([^"']+)["']""", template))
+
+    assert referenced <= set(UI_TEXT)
+
+
+def test_chinese_admin_strings_are_declared_without_a_runtime_overlay():
+    source = (Path(__file__).parents[1] / "diskovod" / "ui_localization.py").read_text()
+
+    assert "_ZH_UI_TEXT" not in source
+    assert '"zh": "跳到内容"' in source
 
 
 def test_locale_switch_translates_only_the_stock_base_prompt():

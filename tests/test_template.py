@@ -118,6 +118,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
             "by_purpose": [
                 {
                     "name": "dm_reply",
+                    "name_label": "DM reply",
                     "requests": 2,
                     "input_tokens": 1234,
                     "cached_input_tokens": 900,
@@ -131,6 +132,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
                     "recorded_at_label": "2026-07-17 12:00:00 MSK",
                     "model": "gpt-5",
                     "purpose": "dm_reply",
+                    "purpose_label": "DM reply",
                     "input_tokens": 1234,
                     "cached_input_tokens": 900,
                     "output_tokens": 200,
@@ -193,7 +195,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'name="history_limit"' in rendered
     assert 'name="max_reply_tokens"' in rendered
     assert "Reply token budget" in rendered
-    assert "does not accept <code>max_output_tokens</code>" in rendered
+    assert "custom APIs receive a hard token limit" in rendered
     assert 'name="silent_replies"' in rendered
     assert 'name="robot_prefix"' in rendered
     assert 'name="multi_message_replies"' in rendered
@@ -206,7 +208,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'value="opt_in"' in rendered
     assert 'value="opt_out"' in rendered
     assert "Send generated replies without notifications" in rendered
-    assert "suppress-notifications message option" in rendered
+    assert "Uses Discord suppress-notifications" in rendered
     assert "Prefix generated replies with 🤖" in rendered
     assert 'action="/personality/save"' in rendered
     assert 'action="/personality/infer-history"' in rendered
@@ -217,7 +219,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'name="native_function_calls"' in rendered
     assert "Detect API support" in rendered
     assert 'name="provider"' in rendered
-    assert "http://localhost:8000/v1/chat/completions" in rendered
+    assert "http://localhost:8000/v1" in rendered
     assert "Local model" in rendered
     assert 'action="/discord/settings"' not in rendered
     assert 'name="api_base"' not in rendered
@@ -226,11 +228,11 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "site-key" in rendered
     assert "Human active · 12 min" in rendered
     assert "http://localhost:3090/chatgpt/oauth/callback" in rendered
-    assert "http://localhost:1455/auth/callback" in rendered
+    assert "localhost:1455" in rendered
     assert "keep the complete query string" in rendered
     assert "Model token usage" in rendered
     assert "1,434" in rendered
-    assert "Dm Reply" in rendered
+    assert "DM reply" in rendered
     assert "2026-07-17 12:00:00 MSK" in rendered
     assert "Database explorer" in rendered
     assert 'action="/database/delete"' in rendered

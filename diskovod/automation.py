@@ -9,14 +9,13 @@ import time
 from typing import Any
 
 from .chatgpt import ChatGPTClient, make_prompt_cache_key
-from .localization import escalation_fallback, prompts_for, tool_policy
+from .localization import escalation_fallback, prompts_for, tool_policy, tool_text
 from .models import AppSettings
 from .store import Store
 from .tooling import (
-    FUNCTION_AND_WEB_TOOLS,
-    FUNCTION_TOOLS,
     TOOL_SCHEMA_VERSION,
     DiscordAction,
+    action_tools,
     execute_read_only_tool,
     function_call_item,
     function_output_item,
@@ -246,7 +245,7 @@ class Automation:
                     return
             action = await self._generate_action(
                 messages,
-                instructions + "\n\nA written reply is required because a reaction is unavailable.",
+                instructions + "\n\n" + tool_text(settings.prompt_locale)["reaction_unavailable"],
                 settings,
                 max_messages=max_messages,
                 allow_reaction=False,
@@ -338,7 +337,7 @@ class Automation:
             return None
         continuation: list[dict[str, Any]] = []
         web_search_enabled = bool(getattr(self.chatgpt, "hosted_web_search_available", False))
-        tools = FUNCTION_AND_WEB_TOOLS if web_search_enabled else FUNCTION_TOOLS
+        tools = action_tools(settings.prompt_locale, web_search=web_search_enabled)
         repair_used = False
         read_only_calls = 0
         tool_choice: str | dict[str, Any] = "required"
@@ -375,6 +374,7 @@ class Automation:
             output = execute_read_only_tool(
                 call,
                 owner_timezone=settings.owner_timezone,
+                locale=settings.prompt_locale,
             )
             if output is not None:
                 if read_only_calls >= 2:

@@ -75,10 +75,7 @@
             </span>
           </div>
 
-          <p>
-            Direct Plus/Pro OAuth and subscription-backed Responses. Credentials are encrypted
-            locally.
-          </p>
+          <p>{{ t("subscription_help") }}</p>
 
           {% if chat_error and active_provider == "chatgpt" %}
             <p class="inline-error">{{ chat_error }}</p>
@@ -108,16 +105,11 @@
           {% if chat_connected and active_provider != "chatgpt" %}
             <form method="post" action="/provider/select">
               <input type="hidden" name="provider" value="chatgpt">
-              <button>Use ChatGPT subscription</button>
+              <button>{{ t("use_chatgpt") }}</button>
             </form>
           {% endif %}
 
-          <small>
-            OpenAI redirects to <code>http://localhost:1455/auth/callback</code>, the fixed callback
-            registered for this OAuth client. When that page fails to load, replace only that
-            prefix in the browser's address bar with
-            <code>{{ public_url }}/chatgpt/oauth/callback</code> and keep the complete query string.
-          </small>
+          <small>{{ t("oauth_help", callback=public_url ~ "/chatgpt/oauth/callback") }}</small>
         </article>
 
         <article class="card">
@@ -137,10 +129,7 @@
             </span>
           </div>
 
-          <p>
-            Connect a provider implementing the Responses API or Chat Completions. New providers
-            default to Responses; the saved protocol is pinned for production requests.
-          </p>
+          <p>{{ t("custom_provider_help") }}</p>
 
           {% if chat_error and active_provider == "custom" %}
             <p class="inline-error">{{ chat_error }}</p>
@@ -153,17 +142,17 @@
               value="{{ custom_provider.draft_token if custom_provider else '' }}"
             >
             <label>
-              Provider name
+              {{ t("provider_name") }}
               <input
                 name="name"
                 value="{{ custom_provider.name if custom_provider else '' }}"
                 maxlength="80"
-                placeholder="Local model"
+                placeholder="{{ t('local_model') }}"
                 required
               >
             </label>
             <label>
-              API base URL
+              {{ t("api_base_url") }}
               <input
                 type="url"
                 name="base_url"
@@ -173,16 +162,16 @@
               >
             </label>
             <label>
-              API key
+              {{ t("api_key") }}
               <input
                 type="password"
                 name="api_key"
                 autocomplete="off"
-                placeholder="{{ 'Leave empty to keep the saved key' if custom_provider and custom_provider.has_api_key else 'Optional for keyless endpoints' }}"
+                placeholder="{{ t('keep_saved_key') if custom_provider and custom_provider.has_api_key else t('key_optional') }}"
               >
             </label>
             <label>
-              API protocol
+              {{ t("api_protocol") }}
               <select name="protocol">
                 <option
                   value="responses"
@@ -195,7 +184,7 @@
               </select>
             </label>
             <label>
-              Model used for detection
+              {{ t("detection_model") }}
               <input
                 name="probe_model"
                 value="{{ custom_provider.probe_model if custom_provider else app_settings.model }}"
@@ -204,14 +193,14 @@
               >
             </label>
             <fieldset>
-              <legend>Provider capabilities</legend>
+              <legend>{{ t("provider_capabilities") }}</legend>
               <label class="toggle">
                 <input
                   type="checkbox"
                   name="native_function_calls"
                   {% if custom_provider and custom_provider.capabilities.native_function_calls %}checked{% endif %}
                 >
-                Native function calls (required for automated replies)
+                {{ t("native_function_calls") }}
               </label>
               <label class="toggle">
                 <input
@@ -227,7 +216,7 @@
                   name="strict_function_schemas"
                   {% if custom_provider and custom_provider.capabilities.strict_function_schemas %}checked{% endif %}
                 >
-                Strict function schemas
+                {{ t("strict_function_schemas") }}
               </label>
               <label class="toggle">
                 <input
@@ -235,7 +224,7 @@
                   name="parallel_tool_control"
                   {% if custom_provider and custom_provider.capabilities.parallel_tool_control %}checked{% endif %}
                 >
-                <code>parallel_tool_calls</code> control
+                {{ t("parallel_tool_control") }}
               </label>
               <label class="toggle">
                 <input
@@ -243,14 +232,14 @@
                   name="hosted_web_search"
                   {% if custom_provider and custom_provider.capabilities.hosted_web_search %}checked{% endif %}
                 >
-                Hosted web search
-                <small>Responses API only; detection verifies the complete search-to-reply flow.</small>
+                {{ t("hosted_web_search") }}
+                <small>{{ t("hosted_web_search_help") }}</small>
               </label>
             </fieldset>
             {% if custom_provider and custom_provider.has_api_key %}
               <label class="toggle">
                 <input type="checkbox" name="clear_api_key">
-                Remove the saved API key
+                {{ t("remove_saved_key") }}
               </label>
             {% endif %}
             <div class="button-row">
@@ -258,8 +247,8 @@
                 type="submit"
                 class="button-secondary"
                 formaction="/provider/custom/detect"
-              >Detect API support</button>
-              <button>{{ "Update and use provider" if custom_provider else "Save and use provider" }}</button>
+              >{{ t("detect_api_support") }}</button>
+              <button>{{ t("update_use_provider") if custom_provider else t("save_use_provider") }}</button>
             </div>
           </form>
 
@@ -268,21 +257,16 @@
               {% if active_provider != "custom" %}
                 <form method="post" action="/provider/select">
                   <input type="hidden" name="provider" value="custom">
-                  <button>Use {{ custom_provider.name }}</button>
+                  <button>{{ t("use_provider", name=custom_provider.name) }}</button>
                 </form>
               {% endif %}
               <form method="post" action="/provider/custom/remove">
-                <button class="button-secondary">Remove custom provider</button>
+                <button class="button-secondary">{{ t("remove_custom_provider") }}</button>
               </form>
             </div>
           {% endif %}
 
-          <small>
-            Detection only preselects the protocol; review it and save explicitly. Production sends
-            non-streaming requests only to
-            <code>{{ (custom_provider.base_url if custom_provider else 'http://localhost:8000/v1') }}/{{ 'chat/completions' if custom_provider and custom_provider.protocol == 'chat_completions' else 'responses' }}</code>
-            and never retries through the other protocol.
-          </small>
+          <small>{{ t("detection_help") }}</small>
         </article>
 
         <article class="card">
@@ -292,7 +276,7 @@
               <h2>{{ t("discord") }}</h2>
             </div>
             <span class="pill {{ 'is-good' if discord_connected else '' }}">
-              {{ discord_identity or ("Connecting" if has_discord_token else t("not_connected")) }}
+              {{ discord_identity or (t("connecting") if has_discord_token else t("not_connected")) }}
             </span>
           </div>
 
@@ -302,51 +286,50 @@
 
           <form method="post" action="/discord/connect" class="form-stack">
             <label>
-              User token
+              {{ t("user_token") }}
               <input
                 type="password"
                 name="token"
                 autocomplete="off"
-                placeholder="Paste the Discord token"
+                placeholder="{{ t('paste_discord_token') }}"
                 required
               >
             </label>
-            <button>{{ "Replace token and reconnect" if has_discord_token else t("save_connect") }}</button>
+            <button>{{ t("replace_reconnect") if has_discord_token else t("save_connect") }}</button>
           </form>
 
           {% if has_discord_token %}
             <form method="post" action="/discord/disconnect">
-              <button class="button-secondary">Disconnect and forget token</button>
+              <button class="button-secondary">{{ t("disconnect_forget") }}</button>
             </form>
           {% endif %}
 
           <div class="captcha-panel">
             <div class="section-heading">
-              <h3>CAPTCHA requests</h3>
+              <h3>{{ t("captcha_requests") }}</h3>
               <span class="pill {{ 'is-warn' if captcha_requests else '' }}">
-                {{ captcha_requests | length }} pending
+                {{ t("pending_count", count=captcha_requests | length) }}
               </span>
             </div>
 
             {% for captcha in captcha_requests %}
               <div class="captcha-request">
                 <p>
-                  Solve this {{ captcha.service }} challenge and paste its solution token below.
-                  It expires in about {{ captcha.expires_in_seconds }} seconds.
+                  {{ t("captcha_help", service=captcha.service, seconds=captcha.expires_in_seconds) }}
                 </p>
                 <dl class="captcha-details">
-                  <dt>Site key</dt>
+                  <dt>{{ t("site_key") }}</dt>
                   <dd><code>{{ captcha.sitekey }}</code></dd>
-                  <dt>API page</dt>
+                  <dt>{{ t("api_page") }}</dt>
                   <dd><code>https://discord.com</code></dd>
-                  <dt>Mode</dt>
-                  <dd>{{ "invisible" if captcha.should_serve_invisible else "interactive" }}</dd>
+                  <dt>{{ t("mode") }}</dt>
+                  <dd>{{ t("invisible") if captcha.should_serve_invisible else t("interactive") }}</dd>
                   {% if captcha.rqdata %}
-                    <dt>Request data</dt>
+                    <dt>{{ t("request_data") }}</dt>
                     <dd><code>{{ captcha.rqdata }}</code></dd>
                   {% endif %}
                   {% if captcha.errors %}
-                    <dt>Errors</dt>
+                    <dt>{{ t("errors") }}</dt>
                     <dd>{{ captcha.errors | join(", ") }}</dd>
                   {% endif %}
                 </dl>
@@ -356,15 +339,15 @@
                   class="form-stack"
                 >
                   <label>
-                    CAPTCHA solution token
+                    {{ t("captcha_solution") }}
                     <textarea name="solution" rows="3" autocomplete="off" required></textarea>
                   </label>
-                  <button>Submit CAPTCHA solution</button>
+                  <button>{{ t("submit_captcha") }}</button>
                 </form>
               </div>
             {% else %}
               <p class="field-help">
-                Pending challenges appear here. Refresh this page after Discord reports a CAPTCHA.
+                {{ t("captcha_empty") }}
               </p>
             {% endfor %}
           </div>
@@ -377,22 +360,16 @@
             <div>
               <span class="step">04</span>
               <h2>{{ t("personality_cache") }}</h2>
-            </div>
             <span class="pill {{ 'is-good' if personality else '' }}">
               {{ t("cached") if personality else t("empty") }}
             </span>
           </div>
 
-          <p>
-            Build a detailed description of communication habits, preferences, languages, and
-            other supported personality traits from human-authored message history. Dominant message
-            length and layout are separated from rare, context-specific behavior. The result also
-            includes newly written representative examples, never copied samples from the history.
-          </p>
+          <p>{{ t("personality_help") }}</p>
 
           <form method="post" action="/personality/infer-history" class="form-stack">
             <label>
-              Recent Discord messages to inspect
+              {{ t("recent_discord_messages") }}
               <input
                 type="number"
                 name="history_limit"
@@ -403,46 +380,45 @@
               >
             </label>
             <button {% if not discord_connected or not model_connected %}disabled{% endif %}>
-              Load history and infer personality
+              {{ t("load_infer_personality") }}
             </button>
             <small>
-              Requires Discord and the active model provider. Generated replies are excluded from
-              the sample.
+              {{ t("personality_requirements") }}
             </small>
           </form>
 
           <details>
-            <summary>Infer from pasted message history</summary>
+            <summary>{{ t("infer_pasted_history") }}</summary>
             <form method="post" action="/personality/infer" class="form-stack">
               <label>
-                Human-authored message history
+                {{ t("human_authored_history") }}
                 <textarea
                   name="samples"
                   rows="9"
-                  placeholder="Paste at least 200 characters…"
+                  placeholder="{{ t('paste_history_placeholder') }}"
                   required
                 ></textarea>
               </label>
               <button {% if not model_connected %}disabled{% endif %}>
-                Infer personality from pasted history
+                {{ t("infer_pasted_personality") }}
               </button>
             </form>
           </details>
 
           <form method="post" action="/personality/save" class="form-stack profile-editor">
             <label>
-              Cached personality description
+              {{ t("cached_personality_description") }}
               <textarea
                 name="profile"
                 rows="14"
-                placeholder="Infer a personality first, or write one manually…"
+                placeholder="{{ t('personality_placeholder') }}"
                 required
               >{{ personality.profile if personality else "" }}</textarea>
             </label>
             {% if personality %}
-              <small>Last source: {{ personality.source or "inferred history" }}</small>
+              <small>{{ t("last_source", source=personality.source_label) }}</small>
             {% endif %}
-            <button class="button-secondary">Save edited personality</button>
+            <button class="button-secondary">{{ t("save_edited_personality") }}</button>
           </form>
         </article>
 
@@ -484,9 +460,9 @@
               {{ t("enable_replies") }}
             </label>
             <label>
-              Owner timezone
+              {{ t("owner_timezone") }}
               <input name="owner_timezone" value="{{ app_settings.owner_timezone }}" required>
-              <small>Use an IANA name such as Europe/Berlin, Europe/Moscow, or Asia/Tokyo.</small>
+              <small>{{ t("owner_timezone_help") }}</small>
             </label>
 
             <label class="toggle">
@@ -497,10 +473,7 @@
               >
               {{ t("silent_replies") }}
             </label>
-            <p class="field-help">
-              Uses Discord's suppress-notifications message option. The visible reply text is not
-              modified; emoji reactions are unaffected.
-            </p>
+            <p class="field-help">{{ t("silent_replies_help") }}</p>
 
             <label class="toggle">
               <input
@@ -510,34 +483,28 @@
               >
               {{ t("robot_prefix") }}
             </label>
-            <p class="field-help">
-              Adds a visible robot emoji to every generated message so recipients can distinguish
-              assistant replies from messages written by the account owner.
-            </p>
+            <p class="field-help">{{ t("robot_prefix_help") }}</p>
 
             <fieldset>
               <legend>{{ t("new_conversation_default") }}</legend>
               <label>
-                Enrollment policy
+                {{ t("enrollment_policy") }}
                 <select name="conversation_default">
                   <option
                     value="opt_in"
                     {% if app_settings.default_conversation_enabled %}selected{% endif %}
                   >
-                    Opt in — automate new conversations
+                    {{ t("opt_in") }}
                   </option>
                   <option
                     value="opt_out"
                     {% if not app_settings.default_conversation_enabled %}selected{% endif %}
                   >
-                    Opt out — require manual enablement
+                    {{ t("opt_out") }}
                   </option>
                 </select>
               </label>
-              <p class="field-help">
-                Applies when a DM is first observed. Existing conversations retain their individual
-                setting.
-              </p>
+              <p class="field-help">{{ t("enrollment_help") }}</p>
             </fieldset>
 
             <div class="field-grid field-grid-two">
@@ -545,14 +512,14 @@
                 {{ t("provider") }}
                 <select name="provider">
                   <option value="chatgpt" {% if active_provider == "chatgpt" %}selected{% endif %}>
-                    ChatGPT subscription
+                    {{ t("chatgpt_subscription") }}
                   </option>
                   <option
                     value="custom"
                     {% if active_provider == "custom" %}selected{% endif %}
                     {% if not custom_provider %}disabled{% endif %}
                   >
-                    {{ custom_provider.name if custom_provider else "Custom API (not configured)" }}
+                    {{ custom_provider.name if custom_provider else t("custom_not_configured") }}
                   </option>
                 </select>
               </label>
@@ -569,7 +536,7 @@
                 <select name="reasoning_effort">
                   {% for effort in ["low", "medium", "high"] %}
                     <option {% if effort == app_settings.reasoning_effort %}selected{% endif %}>
-                      {{ effort }}
+                      {{ t(effort) }}
                     </option>
                   {% endfor %}
                 </select>
@@ -585,11 +552,7 @@
                 >
               </label>
             </div>
-            <p class="field-help">
-              ChatGPT Subscription treats this as a best-effort length instruction because its
-              transport does not accept <code>max_output_tokens</code>. Custom providers receive a
-              hard <code>max_completion_tokens</code> limit, whose allowance can include reasoning.
-            </p>
+            <p class="field-help">{{ t("token_budget_help") }}</p>
 
             <fieldset>
               <legend>{{ t("multi_message_replies") }}</legend>
@@ -599,14 +562,11 @@
                   name="multi_message_replies"
                   {% if app_settings.multi_message_replies %}checked{% endif %}
                 >
-                Allow occasional message sequences
+                {{ t("allow_message_sequences") }}
               </label>
-              <p class="field-help">
-                The model may compose a natural sequence instead of Diskovod mechanically splitting
-                one response. One message remains valid when a split would feel forced.
-              </p>
+              <p class="field-help">{{ t("message_sequences_help") }}</p>
               <label>
-                Maximum messages
+                {{ t("maximum_messages") }}
                 <input
                   type="number"
                   min="2"
@@ -617,7 +577,7 @@
               </label>
               <div class="field-grid field-grid-two">
                 <label>
-                  Minimum gap (seconds)
+                  {{ t("minimum_gap") }}
                   <input
                     type="number"
                     step="0.1"
@@ -628,7 +588,7 @@
                   >
                 </label>
                 <label>
-                  Maximum gap (seconds)
+                  {{ t("maximum_gap") }}
                   <input
                     type="number"
                     step="0.1"
@@ -645,7 +605,7 @@
               <legend>{{ t("reply_timing") }}</legend>
               <div class="field-grid field-grid-three">
                 <label>
-                  Debounce (seconds)
+                  {{ t("debounce") }}
                   <input
                     type="number"
                     step="0.1"
@@ -655,7 +615,7 @@
                   >
                 </label>
                 <label>
-                  Minimum delay
+                  {{ t("minimum_delay") }}
                   <input
                     type="number"
                     step="0.1"
@@ -665,7 +625,7 @@
                   >
                 </label>
                 <label>
-                  Maximum delay
+                  {{ t("maximum_delay") }}
                   <input
                     type="number"
                     step="0.1"
@@ -679,13 +639,10 @@
 
             <fieldset>
               <legend>{{ t("quiet_window") }}</legend>
-              <p class="field-help">
-                A manual outgoing message cancels pending work and keeps Diskovod quiet for a
-                randomized duration in this range.
-              </p>
+              <p class="field-help">{{ t("quiet_window_help") }}</p>
               <div class="field-grid field-grid-two">
                 <label>
-                  Minimum quiet minutes
+                  {{ t("minimum_quiet_minutes") }}
                   <input
                     type="number"
                     step="0.5"
@@ -695,7 +652,7 @@
                   >
                 </label>
                 <label>
-                  Maximum quiet minutes
+                  {{ t("maximum_quiet_minutes") }}
                   <input
                     type="number"
                     step="0.5"
@@ -709,7 +666,7 @@
 
             <div class="field-grid field-grid-three">
               <label>
-                Minimum characters/s
+                {{ t("minimum_typing_speed") }}
                 <input
                   type="number"
                   step="0.1"
@@ -719,7 +676,7 @@
                 >
               </label>
               <label>
-                Maximum characters/s
+                {{ t("maximum_typing_speed") }}
                 <input
                   type="number"
                   step="0.1"
@@ -729,7 +686,7 @@
                 >
               </label>
               <label>
-                History messages
+                {{ t("history_messages") }}
                 <input
                   type="number"
                   min="4"
@@ -746,13 +703,10 @@
                 name="owner_details"
                 rows="7"
                 maxlength="20000"
-                placeholder="Name, location, work, interests, relationships, preferences, recurring plans, and other facts the model should know…"
+                placeholder="{{ t('owner_details_placeholder') }}"
               >{{ app_settings.owner_details }}</textarea>
             </label>
-            <p class="field-help">
-              Authoritative personal context for generated replies. Diskovod tells the model to use
-              it only when relevant and not to volunteer unrelated private details.
-            </p>
+            <p class="field-help">{{ t("owner_details_help") }}</p>
 
             <label>
               {{ t("base_instructions") }}
@@ -771,55 +725,52 @@
               <span class="step">06</span>
               <h2>{{ t("model_token_usage") }}</h2>
             </div>
-            <span class="pill">{{ "{:,}".format(usage_stats.all_time.requests) }} calls</span>
+            <span class="pill">{{ t("calls_count", count="{:,}".format(usage_stats.all_time.requests)) }}</span>
           </div>
 
-          <p>
-            Actual counters reported by completed responses from either provider. Only usage
-            metadata is stored; prompts and generated text are not copied into these records.
-          </p>
+          <p>{{ t("usage_help") }}</p>
 
-          <div class="usage-summary" aria-label="All-time usage summary">
+          <div class="usage-summary" aria-label="{{ t('all_time_usage') }}">
             <div class="metric">
-              <span>Total tokens</span>
+              <span>{{ t("total_tokens") }}</span>
               <strong>{{ "{:,}".format(usage_stats.all_time.total_tokens) }}</strong>
             </div>
             <div class="metric">
-              <span>Input</span>
+              <span>{{ t("input") }}</span>
               <strong>{{ "{:,}".format(usage_stats.all_time.input_tokens) }}</strong>
             </div>
             <div class="metric">
-              <span>Cached input</span>
+              <span>{{ t("cached_input") }}</span>
               <strong>{{ "{:,}".format(usage_stats.all_time.cached_input_tokens) }}</strong>
-              <small>{{ usage_stats.all_time.cache_rate }}% of input</small>
+              <small>{{ t("percent_of_input", percent=usage_stats.all_time.cache_rate) }}</small>
             </div>
             <div class="metric">
-              <span>Output</span>
+              <span>{{ t("output") }}</span>
               <strong>{{ "{:,}".format(usage_stats.all_time.output_tokens) }}</strong>
             </div>
             <div class="metric">
-              <span>Reasoning · of output</span>
+              <span>{{ t("reasoning_output") }}</span>
               <strong>{{ "{:,}".format(usage_stats.all_time.reasoning_tokens) }}</strong>
             </div>
             <div class="metric">
-              <span>Average / call</span>
+              <span>{{ t("average_per_call") }}</span>
               <strong>{{ "{:,}".format(usage_stats.all_time.average_tokens) }}</strong>
             </div>
           </div>
 
           <div class="table-section">
-            <h3>Time windows</h3>
+            <h3>{{ t("time_windows") }}</h3>
             <div class="table-wrap">
               <table class="table table-dark table-hover align-middle mb-0">
                 <thead>
                   <tr>
-                    <th>Window</th>
-                    <th>Calls</th>
-                    <th>Input</th>
-                    <th>Cached</th>
-                    <th>Output</th>
-                    <th>Reasoning</th>
-                    <th>Total</th>
+                    <th>{{ t("window") }}</th>
+                    <th>{{ t("calls") }}</th>
+                    <th>{{ t("input") }}</th>
+                    <th>{{ t("cached") }}</th>
+                    <th>{{ t("output") }}</th>
+                    <th>{{ t("reasoning") }}</th>
+                    <th>{{ t("total") }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -844,18 +795,18 @@
 
           <div class="usage-breakdown">
             <div class="table-section">
-              <h3>By model</h3>
+              <h3>{{ t("by_model") }}</h3>
               <div class="table-wrap">
                 <table class="table table-dark table-hover align-middle mb-0">
                   <thead>
                     <tr>
-                      <th>Model</th>
-                      <th>Calls</th>
-                      <th>Input</th>
-                      <th>Cached</th>
-                      <th>Output</th>
-                      <th>Reasoning</th>
-                      <th>Total</th>
+                      <th>{{ t("model") }}</th>
+                      <th>{{ t("calls") }}</th>
+                      <th>{{ t("input") }}</th>
+                      <th>{{ t("cached") }}</th>
+                      <th>{{ t("output") }}</th>
+                      <th>{{ t("reasoning") }}</th>
+                      <th>{{ t("total") }}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -870,7 +821,7 @@
                         <td>{{ "{:,}".format(group.total_tokens) }}</td>
                       </tr>
                     {% else %}
-                      <tr><td colspan="7" class="table-empty">No completed calls yet.</td></tr>
+                      <tr><td colspan="7" class="table-empty">{{ t("no_completed_calls") }}</td></tr>
                     {% endfor %}
                   </tbody>
                 </table>
@@ -878,24 +829,24 @@
             </div>
 
             <div class="table-section">
-              <h3>By operation</h3>
+              <h3>{{ t("by_operation") }}</h3>
               <div class="table-wrap">
                 <table class="table table-dark table-hover align-middle mb-0">
                   <thead>
                     <tr>
-                      <th>Operation</th>
-                      <th>Calls</th>
-                      <th>Input</th>
-                      <th>Cached</th>
-                      <th>Output</th>
-                      <th>Reasoning</th>
-                      <th>Total</th>
+                      <th>{{ t("operation") }}</th>
+                      <th>{{ t("calls") }}</th>
+                      <th>{{ t("input") }}</th>
+                      <th>{{ t("cached") }}</th>
+                      <th>{{ t("output") }}</th>
+                      <th>{{ t("reasoning") }}</th>
+                      <th>{{ t("total") }}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {% for group in usage_stats.by_purpose %}
                       <tr>
-                        <th>{{ group.name | replace("_", " ") | title }}</th>
+                        <th>{{ group.name_label }}</th>
                         <td>{{ "{:,}".format(group.requests) }}</td>
                         <td>{{ "{:,}".format(group.input_tokens) }}</td>
                         <td>{{ "{:,}".format(group.cached_input_tokens) }}</td>
@@ -904,7 +855,7 @@
                         <td>{{ "{:,}".format(group.total_tokens) }}</td>
                       </tr>
                     {% else %}
-                      <tr><td colspan="7" class="table-empty">No completed calls yet.</td></tr>
+                      <tr><td colspan="7" class="table-empty">{{ t("no_completed_calls") }}</td></tr>
                     {% endfor %}
                   </tbody>
                 </table>
@@ -913,26 +864,26 @@
           </div>
 
           <details class="usage-details" {% if usage_stats.recent %}open{% endif %}>
-            <summary>Recent calls · {{ usage_stats.recent | length }}</summary>
+            <summary>{{ t("recent_calls", count=usage_stats.recent | length) }}</summary>
             <div class="table-wrap">
               <table class="table table-dark table-hover align-middle mb-0">
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Operation</th>
-                    <th>Model</th>
-                    <th>Input</th>
-                    <th>Cached</th>
-                    <th>Output</th>
-                    <th>Reasoning</th>
-                    <th>Total</th>
+                    <th>{{ t("time") }}</th>
+                    <th>{{ t("operation") }}</th>
+                    <th>{{ t("model") }}</th>
+                    <th>{{ t("input") }}</th>
+                    <th>{{ t("cached") }}</th>
+                    <th>{{ t("output") }}</th>
+                    <th>{{ t("reasoning") }}</th>
+                    <th>{{ t("total") }}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {% for call in usage_stats.recent %}
                     <tr>
                       <td class="time-cell">{{ call.recorded_at_label }}</td>
-                      <td>{{ call.purpose | replace("_", " ") | title }}</td>
+                      <td>{{ call.purpose_label }}</td>
                       <td>{{ call.model }}</td>
                       <td>{{ "{:,}".format(call.input_tokens) }}</td>
                       <td>{{ "{:,}".format(call.cached_input_tokens) }}</td>
@@ -941,7 +892,7 @@
                       <td>{{ "{:,}".format(call.total_tokens) }}</td>
                     </tr>
                   {% else %}
-                    <tr><td colspan="8" class="table-empty">No usage has been recorded yet.</td></tr>
+                    <tr><td colspan="8" class="table-empty">{{ t("no_usage") }}</td></tr>
                   {% endfor %}
                 </tbody>
               </table>
@@ -1018,32 +969,27 @@
               <span class="step">08</span>
               <h2>{{ t("conversations") }}</h2>
             </div>
-            <span class="pill">{{ conversations | length }} known</span>
+            <span class="pill">{{ t("known_count", count=conversations | length) }}</span>
           </div>
 
-          <p>
-            Each conversation can be enrolled in automation independently. Manual activity starts
-            a temporary quiet window without changing that enrollment. A forced reply bypasses the
-            global automation switch, enrollment, and quiet window once, but still stops if you
-            send a manual Discord message before it is released.
-          </p>
+          <p>{{ t("conversations_help") }}</p>
 
           <div class="conversation-list">
             {% for conversation in conversations %}
               <div class="conversation">
                 <div class="conversation-name">
                   <strong>{{ conversation.peer_name }}</strong>
-                  <small>Channel {{ conversation.channel_id }}</small>
+                  <small>{{ t("channel", id=conversation.channel_id) }}</small>
                 </div>
 
                 {% if conversation.paused %}
-                  <span class="pill is-danger">Automation off</span>
+                  <span class="pill is-danger">{{ t("automation_off") }}</span>
                 {% elif conversation.snoozed %}
                   <span class="pill is-warn">
-                    Human active · {{ conversation.quiet_minutes_remaining }} min
+                    {{ t("human_active", minutes=conversation.quiet_minutes_remaining) }}
                   </span>
                 {% else %}
-                  <span class="pill is-good">Automatic</span>
+                  <span class="pill is-good">{{ t("automatic") }}</span>
                 {% endif %}
 
                 <div class="conversation-actions">
@@ -1065,7 +1011,7 @@
                   {% else %}
                     {% if conversation.snoozed %}
                       <form method="post" action="/conversations/{{ conversation.channel_id }}/resume">
-                        <button class="button-secondary">Resume now</button>
+                        <button class="button-secondary">{{ t("resume_now") }}</button>
                       </form>
                     {% endif %}
                     <form method="post" action="/conversations/{{ conversation.channel_id }}/pause">
@@ -1075,7 +1021,7 @@
                 </div>
               </div>
             {% else %}
-              <div class="empty-state">No DMs observed yet.</div>
+              <div class="empty-state">{{ t("no_dms") }}</div>
             {% endfor %}
           </div>
         </article>
@@ -1088,15 +1034,12 @@
               <span class="step">09</span>
               <h2>{{ t("database_explorer") }}</h2>
             </div>
-            <span class="pill">{{ database.total }} matching rows</span>
+            <span class="pill">{{ t("matching_rows", count=database.total) }}</span>
           </div>
 
-          <p>
-            Browse Diskovod's local SQLite tables. Encrypted configuration values are redacted;
-            configuration is read-only and cannot be deleted here.
-          </p>
+          <p>{{ t("database_help") }}</p>
 
-          <nav class="database-tabs" aria-label="Database tables">
+          <nav class="database-tabs" aria-label="{{ t('database_tables') }}">
             {% for table in database.tables %}
               <a
                 href="{{ table.url }}"
@@ -1111,12 +1054,12 @@
           <form method="get" action="/" class="database-search">
             <input type="hidden" name="db_table" value="{{ database.name }}">
             <label>
-              Search {{ database.label | lower }}
+              {{ t("search_table", table=database.label) }}
               <input
                 name="db_query"
                 value="{{ database.query }}"
                 maxlength="200"
-                placeholder="Search visible columns…"
+                placeholder="{{ t('search_columns') }}"
               >
             </label>
             <button>{{ t("search") }}</button>
@@ -1144,7 +1087,7 @@
                 {% else %}
                   <tr>
                     <td colspan="{{ database.columns | length }}" class="table-empty">
-                      No rows match this view.
+                      {{ t("no_matching_rows") }}
                     </td>
                   </tr>
                 {% endfor %}
@@ -1153,7 +1096,7 @@
           </div>
 
           <div class="database-pagination">
-            <span>Page {{ database.page }} of {{ database.pages }}</span>
+            <span>{{ t("page_of", page=database.page, pages=database.pages) }}</span>
             <div class="button-row">
               {% if database.previous_url %}
                 <a class="btn btn-outline-secondary" href="{{ database.previous_url }}">{{ t("previous") }}</a>
@@ -1166,12 +1109,12 @@
 
           {% if not database.read_only %}
             <details class="database-delete">
-              <summary>Delete one row</summary>
+              <summary>{{ t("delete_one_row") }}</summary>
               <form method="post" action="/database/delete" class="form-stack">
                 <input type="hidden" name="table" value="{{ database.name }}">
                 <input type="hidden" name="db_query" value="{{ database.query }}">
                 <label>
-                  {{ database.primary_key }} value
+                  {{ t("key_value", column=database.primary_key) }}
                   <input name="row_key" list="database-row-keys" required autocomplete="off">
                 </label>
                 <datalist id="database-row-keys">
@@ -1179,9 +1122,9 @@
                 </datalist>
                 <label class="toggle">
                   <input type="checkbox" name="confirm" value="delete" required>
-                  I understand that this permanently deletes the selected row
+                  {{ t("confirm_delete") }}
                 </label>
-                <button class="button-danger">Delete row</button>
+                <button class="button-danger">{{ t("delete_row") }}</button>
               </form>
             </details>
           {% endif %}
@@ -1189,6 +1132,6 @@
       </section>
     </main>
 
-    <footer class="container-xl">Diskovod · Discord DM assistant</footer>
+    <footer class="container-xl">{{ t("footer") }}</footer>
   </body>
 </html>

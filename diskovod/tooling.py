@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .localization import tool_text
 from .models import FunctionCall
 
 ALLOWED_REACTIONS = frozenset(
@@ -17,109 +18,122 @@ ALLOWED_REACTIONS = frozenset(
 MAX_DISCORD_MESSAGE_LENGTH = 2000
 MAX_ACTION_MESSAGES = 5
 
-TOOL_SCHEMA_VERSION = "native-actions-localized-policy-v4"
+TOOL_SCHEMA_VERSION = "fully-localized-native-tools-v5"
 MAX_HOSTED_WEB_SEARCH_CALLS = 2
 ESCALATION_REASONS = frozenset({"peer_requested_owner", "owner_only_information", "other_explicit_request"})
-
-FUNCTION_TOOLS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "name": "get_current_datetime",
-        "description": (
-            "Return the current date, weekday, time, UTC offset, and timezone. Call this whenever "
-            "the answer depends on today, tomorrow, a weekday, relative dates, or the exact time."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "timezone": {
-                    "type": ["string", "null"],
-                    "description": "IANA timezone name, or null to use the owner's configured timezone.",
-                }
-            },
-            "required": ["timezone"],
-            "additionalProperties": False,
-        },
-        "strict": True,
-    },
-    {
-        "type": "function",
-        "name": "calculate",
-        "description": "Evaluate a bounded arithmetic expression exactly enough for an ordinary DM reply.",
-        "parameters": {
-            "type": "object",
-            "properties": {"expression": {"type": "string", "maxLength": 200}},
-            "required": ["expression"],
-            "additionalProperties": False,
-        },
-        "strict": True,
-    },
-    {
-        "type": "function",
-        "name": "send_messages",
-        "description": (
-            "Send one to five natural Discord DM messages. Usually send one short message. Use "
-            "multiple messages only when the thoughts have natural chat boundaries. After web "
-            "search, include useful source links conversationally rather than as a formal report."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "messages": {
-                    "type": "array",
-                    "items": {"type": "string", "minLength": 1, "maxLength": 2000},
-                    "minItems": 1,
-                    "maxItems": 5,
-                }
-            },
-            "required": ["messages"],
-            "additionalProperties": False,
-        },
-        "strict": True,
-    },
-    {
-        "type": "function",
-        "name": "react_to_message",
-        "description": (
-            "React instead of writing only when the latest message needs no written answer and a "
-            "human would naturally acknowledge it with one emoji. Never react to a question, "
-            "request, sensitive disclosure, conflict, or unclear context."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {"emoji": {"type": "string", "enum": sorted(ALLOWED_REACTIONS)}},
-            "required": ["emoji"],
-            "additionalProperties": False,
-        },
-        "strict": True,
-    },
-    {
-        "type": "function",
-        "name": "escalate_to_owner",
-        "description": (
-            "Use only when the peer explicitly asks to involve, contact, or hand the conversation "
-            "to the account owner. The acknowledgement must be a friendly, concise DM in the "
-            "conversation language. It may say the conversation was marked for the owner, but must "
-            "not claim the owner has read it, was externally notified, or will respond by any time."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string", "enum": sorted(ESCALATION_REASONS)},
-                "acknowledgement": {"type": "string", "minLength": 1, "maxLength": 2000},
-            },
-            "required": ["reason", "acknowledgement"],
-            "additionalProperties": False,
-        },
-        "strict": True,
-    },
-]
 
 WEB_SEARCH_TOOL: dict[str, Any] = {
     "type": "web_search",
     "search_context_size": "low",
 }
-FUNCTION_AND_WEB_TOOLS: list[dict[str, Any]] = [*FUNCTION_TOOLS, WEB_SEARCH_TOOL]
+
+
+def function_tools(locale: str) -> list[dict[str, Any]]:
+    text = tool_text(locale)
+    return [
+        {
+            "type": "function",
+            "name": "get_current_datetime",
+            "description": text["current_datetime"],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "timezone": {
+                        "type": ["string", "null"],
+                        "description": text["timezone"],
+                    }
+                },
+                "required": ["timezone"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+        {
+            "type": "function",
+            "name": "calculate",
+            "description": text["calculate"],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "maxLength": 200,
+                        "description": text["expression"],
+                    }
+                },
+                "required": ["expression"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+        {
+            "type": "function",
+            "name": "send_messages",
+            "description": text["send_messages"],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "messages": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1, "maxLength": 2000},
+                        "minItems": 1,
+                        "maxItems": 5,
+                        "description": text["messages"],
+                    }
+                },
+                "required": ["messages"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+        {
+            "type": "function",
+            "name": "react_to_message",
+            "description": text["react"],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "emoji": {
+                        "type": "string",
+                        "enum": sorted(ALLOWED_REACTIONS),
+                        "description": text["emoji"],
+                    }
+                },
+                "required": ["emoji"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+        {
+            "type": "function",
+            "name": "escalate_to_owner",
+            "description": text["escalate"],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "enum": sorted(ESCALATION_REASONS),
+                        "description": text["escalation_reason"],
+                    },
+                    "acknowledgement": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                        "description": text["acknowledgement"],
+                    },
+                },
+                "required": ["reason", "acknowledgement"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+    ]
+
+
+def action_tools(locale: str, *, web_search: bool) -> list[dict[str, Any]]:
+    tools = function_tools(locale)
+    return [*tools, WEB_SEARCH_TOOL] if web_search else tools
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,40 +166,42 @@ def execute_read_only_tool(
     call: FunctionCall,
     *,
     owner_timezone: str,
+    locale: str = "en",
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     if call.name not in {"get_current_datetime", "calculate"}:
         return None
+    text = tool_text(locale)
     arguments = call.parsed_arguments
     if arguments is None:
-        return {"ok": False, "error": "invalid arguments"}
+        return {"ok": False, "error": text["invalid_arguments"]}
     if call.name == "get_current_datetime":
         timezone = arguments.get("timezone")
         if timezone is not None and not isinstance(timezone, str):
-            return {"ok": False, "error": "timezone must be an IANA name or null"}
+            return {"ok": False, "error": text["timezone_type"]}
         zone_name = timezone or owner_timezone
         try:
             zone = ZoneInfo(zone_name)
         except (ZoneInfoNotFoundError, ValueError):
-            return {"ok": False, "error": "unknown IANA timezone"}
+            return {"ok": False, "error": text["unknown_timezone"]}
         current = (now or datetime.now(zone)).astimezone(zone)
         return {
             "ok": True,
             "iso": current.isoformat(timespec="seconds"),
             "date": current.date().isoformat(),
             "time": current.time().isoformat(timespec="seconds"),
-            "weekday": current.strftime("%A"),
+            "weekday": text["weekdays"][current.weekday()],
             "utc_offset": current.strftime("%z")[:3] + ":" + current.strftime("%z")[3:],
             "timezone": zone_name,
         }
     if call.name == "calculate":
         expression = arguments.get("expression")
         if not isinstance(expression, str) or not 1 <= len(expression) <= 200:
-            return {"ok": False, "error": "expression must contain 1 to 200 characters"}
+            return {"ok": False, "error": text["expression_length"]}
         try:
             value = _evaluate_expression(expression)
         except (SyntaxError, TypeError, ValueError, ZeroDivisionError, OverflowError):
-            return {"ok": False, "error": "invalid or unsupported arithmetic expression"}
+            return {"ok": False, "error": text["invalid_expression"]}
         return {"ok": True, "result": value}
     return None
 

@@ -53,6 +53,47 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert web._back(message="connected").headers["location"].startswith("https://diskovod.example/base/")
 
 
+@pytest.mark.asyncio
+async def test_security_policy_allows_only_the_pinned_bootstrap_stylesheet_origin():
+    web = make_web()
+    sent: list[dict] = []
+    received = False
+
+    async def receive():
+        nonlocal received
+        if not received:
+            received = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict):
+        sent.append(message)
+
+    await web.app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "https",
+            "path": "/static/style.css",
+            "raw_path": b"/static/style.css",
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 1234),
+            "server": ("diskovod.example", 443),
+        },
+        receive,
+        send,
+    )
+
+    response_start = next(message for message in sent if message["type"] == "http.response.start")
+    headers = {name.decode(): value.decode() for name, value in response_start["headers"]}
+    assert response_start["status"] == 200
+    assert "style-src 'self' https://cdn.jsdelivr.net" in headers["content-security-policy"]
+    assert "script-src" not in headers["content-security-policy"]
+
+
 def test_public_origin_is_accepted_behind_reverse_proxy():
     web = make_web()
     request = request_with_origin("https://diskovod.example", "[::1]:3090")

@@ -66,7 +66,8 @@ class WebApp:
         async def headers(request: Request, call_next):
             response = await call_next(request)
             response.headers["Content-Security-Policy"] = (
-                "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+                "default-src 'none'; style-src 'self' https://cdn.jsdelivr.net; "
+                "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
             )
             response.headers["X-Content-Type-Options"] = "nosniff"
             # `no-referrer` serializes the Origin of ordinary form POSTs as `null`.

@@ -114,6 +114,14 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     )
 
     assert "<script" not in rendered
+    assert "bootstrap@5.3.8/dist/css/bootstrap.min.css" in rendered
+    assert 'aria-label="Admin navigation"' in rendered
+    assert 'href="#connections"' in rendered
+    assert 'href="#personality"' in rendered
+    assert 'href="#behavior"' in rendered
+    assert 'href="#usage"' in rendered
+    assert 'href="#conversations"' in rendered
+    assert 'id="main-content"' in rendered
     assert 'name="min_human_quiet_minutes"' in rendered
     assert 'name="max_human_quiet_minutes"' in rendered
     assert 'name="history_limit"' in rendered

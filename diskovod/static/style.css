@@ -33,7 +33,57 @@ body {
     radial-gradient(circle at 82% -8%, rgb(44 55 30 / 72%) 0, transparent 31rem),
     var(--background);
   color: var(--text);
-  font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.navbar {
+  background: rgb(11 13 14 / 92%);
+  backdrop-filter: blur(16px);
+}
+
+.navbar-shell {
+  min-height: 58px;
+}
+
+.navbar-brand {
+  color: var(--text);
+  font-weight: 750;
+  letter-spacing: -0.03em;
+}
+
+.navbar-brand:hover,
+.navbar-brand:focus,
+.nav-link:hover,
+.nav-link:focus {
+  color: var(--accent);
+}
+
+.nav-link {
+  padding: 7px 10px !important;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.nav-link:hover,
+.nav-link:focus {
+  background: var(--accent-soft);
+}
+
+.skip-link {
+  position: fixed;
+  z-index: 1100;
+  top: 8px;
+  left: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #11140c;
+}
+
+.page-section,
+.card[id] {
+  scroll-margin-top: 76px;
 }
 
 .site-header,
@@ -48,14 +98,14 @@ footer {
   align-items: end;
   justify-content: space-between;
   gap: 32px;
-  padding-block: 56px 30px;
+  padding-block: 42px 30px;
   border-bottom: 1px solid var(--line);
 }
 
 h1 {
   margin: 8px 0 10px;
-  font: 720 clamp(44px, 7vw, 84px) / 0.9 system-ui, sans-serif;
-  letter-spacing: -0.07em;
+  font: 760 clamp(42px, 7vw, 72px) / 0.95 system-ui, sans-serif;
+  letter-spacing: -0.055em;
 }
 
 h2 {
@@ -284,7 +334,7 @@ button {
   border-radius: 7px;
   background: var(--accent);
   color: #11140c;
-  font: 700 13px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font: 700 13px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
   cursor: pointer;
   transition: transform 100ms ease, filter 100ms ease, border-color 100ms ease;
 }

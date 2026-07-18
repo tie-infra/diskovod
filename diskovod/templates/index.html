@@ -4,11 +4,31 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Diskovod</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB"
+      crossorigin="anonymous"
+    >
     <link rel="stylesheet" href="/static/style.css">
   </head>
 
-  <body>
-    <header class="site-header">
+  <body data-bs-theme="dark">
+    <a class="visually-hidden-focusable skip-link" href="#main-content">Skip to content</a>
+    <nav class="navbar navbar-expand-lg sticky-top border-bottom" aria-label="Admin navigation">
+      <div class="container-xl navbar-shell">
+        <a class="navbar-brand" href="#overview">Diskovod</a>
+        <div class="navbar-nav flex-row flex-wrap gap-1 ms-lg-auto">
+          <a class="nav-link" href="#connections">Connections</a>
+          <a class="nav-link" href="#personality">Personality</a>
+          <a class="nav-link" href="#behavior">Behavior</a>
+          <a class="nav-link" href="#usage">Usage</a>
+          <a class="nav-link" href="#conversations">Conversations</a>
+        </div>
+      </div>
+    </nav>
+
+    <header class="site-header" id="overview">
       <div>
         <span class="eyebrow">Private DM automation</span>
         <h1>Diskovod</h1>
@@ -25,7 +45,7 @@
       </div>
     </header>
 
-    <main>
+    <main id="main-content">
       {% if message %}
         <div class="notice notice-success" role="status">{{ message }}</div>
       {% endif %}
@@ -34,7 +54,7 @@
         <div class="notice notice-error" role="alert">{{ error }}</div>
       {% endif %}
 
-      <section class="card-grid connection-grid" aria-label="Connections">
+      <section id="connections" class="card-grid connection-grid page-section" aria-label="Connections">
         <article class="card">
           <div class="card-header">
             <div>
@@ -251,8 +271,8 @@
         </article>
       </section>
 
-      <section class="card-grid" aria-label="Behavior">
-        <article class="card">
+      <section class="card-grid page-section" aria-label="Behavior">
+        <article class="card" id="personality">
           <div class="card-header">
             <div>
               <span class="step">04</span>
@@ -326,7 +346,7 @@
           </form>
         </article>
 
-        <article class="card">
+        <article class="card" id="behavior">
           <div class="card-header">
             <div>
               <span class="step">05</span>
@@ -629,7 +649,7 @@
         </article>
       </section>
 
-      <section aria-label="ChatGPT usage">
+      <section id="usage" class="page-section" aria-label="ChatGPT usage">
         <article class="card usage-card">
           <div class="card-header">
             <div>
@@ -675,7 +695,7 @@
           <div class="table-section">
             <h3>Time windows</h3>
             <div class="table-wrap">
-              <table>
+              <table class="table table-dark table-hover align-middle mb-0">
                 <thead>
                   <tr>
                     <th>Window</th>
@@ -711,7 +731,7 @@
             <div class="table-section">
               <h3>By model</h3>
               <div class="table-wrap">
-                <table>
+                <table class="table table-dark table-hover align-middle mb-0">
                   <thead>
                     <tr>
                       <th>Model</th>
@@ -745,7 +765,7 @@
             <div class="table-section">
               <h3>By operation</h3>
               <div class="table-wrap">
-                <table>
+                <table class="table table-dark table-hover align-middle mb-0">
                   <thead>
                     <tr>
                       <th>Operation</th>
@@ -780,7 +800,7 @@
           <details class="usage-details" {% if usage_stats.recent %}open{% endif %}>
             <summary>Recent calls · {{ usage_stats.recent | length }}</summary>
             <div class="table-wrap">
-              <table>
+              <table class="table table-dark table-hover align-middle mb-0">
                 <thead>
                   <tr>
                     <th>Time</th>
@@ -815,7 +835,7 @@
         </article>
       </section>
 
-      <section aria-label="Conversations">
+      <section id="conversations" class="page-section" aria-label="Conversations">
         <article class="card">
           <div class="card-header">
             <div>
@@ -873,6 +893,6 @@
       </section>
     </main>
 
-    <footer>Diskovod · Discord DM assistant</footer>
+    <footer class="container-xl">Diskovod · Discord DM assistant</footer>
   </body>
 </html>

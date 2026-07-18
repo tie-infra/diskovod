@@ -14,6 +14,7 @@ paused until an administrator resumes them.
 - ChatGPT OAuth with PKCE, refresh-token rotation, and subscription-backed streaming responses.
 - Custom OpenAI-compatible Chat Completions providers, including keyless local endpoints.
 - Discord connection through `discord.py-self`.
+- Responsive Bootstrap admin navigation with a script-free interface.
 - Personality inference from bounded Discord or pasted message history, with an editable cache.
 - Editable owner details for names, preferences, relationships, plans, and other personal context.
 - Transparent AI-assistant identity with an optional visible robot-emoji marker.

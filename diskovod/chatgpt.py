@@ -46,6 +46,12 @@ class ProviderHTTPError(RuntimeError):
         super().__init__(f"{provider} returned HTTP {status}: {detail or 'unknown error'}")
 
 
+@dataclass(frozen=True, slots=True)
+class ProtocolDetection:
+    protocol: str
+    native_function_calls: bool
+
+
 def make_prompt_cache_key(scope: str, identity: str) -> str:
     digest = hashlib.sha256(f"{scope}\0{identity}".encode()).hexdigest()[:32]
     return f"diskovod:{scope}:{digest}"
@@ -112,6 +118,19 @@ class ChatGPTClient:
     @property
     def custom_connected(self) -> bool:
         return self.store.custom_provider() is not None
+
+    @property
+    def automation_ready(self) -> bool:
+        if self.active_provider != "custom":
+            return self.subscription_connected
+        provider = self.store.custom_provider()
+        return bool(provider and provider.supports("native_function_calls"))
+
+    @property
+    def automation_error(self) -> str | None:
+        if self.active_provider == "custom" and self.custom_connected and not self.automation_ready:
+            return "The custom provider must pass native function-call detection before automation."
+        return None
 
     @property
     def active_provider(self) -> str:
@@ -261,6 +280,9 @@ class ChatGPTClient:
         max_output_tokens: int | None = None,
         cache_key: str | None = None,
         locale: str = "en",
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        continuation_items: list[dict[str, Any]] | None = None,
     ) -> str:
         result = await self.complete_result(
             messages,
@@ -271,6 +293,9 @@ class ChatGPTClient:
             max_output_tokens=max_output_tokens,
             cache_key=cache_key,
             locale=locale,
+            tools=tools,
+            tool_choice=tool_choice,
+            continuation_items=continuation_items,
         )
         text = result.text
         if not text:
@@ -288,6 +313,9 @@ class ChatGPTClient:
         max_output_tokens: int | None = None,
         cache_key: str | None = None,
         locale: str = "en",
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        continuation_items: list[dict[str, Any]] | None = None,
     ) -> ModelResult:
         try:
             if self.active_provider == "custom":
@@ -298,6 +326,9 @@ class ChatGPTClient:
                     purpose,
                     max_output_tokens,
                     cache_key,
+                    tools,
+                    tool_choice,
+                    continuation_items,
                 )
             else:
                 result = await self._complete_subscription(
@@ -309,6 +340,9 @@ class ChatGPTClient:
                     max_output_tokens,
                     cache_key,
                     locale,
+                    tools,
+                    tool_choice,
+                    continuation_items,
                 )
         except Exception as exc:
             self.last_error = str(exc)
@@ -326,10 +360,14 @@ class ChatGPTClient:
         max_output_tokens: int | None,
         cache_key: str | None,
         locale: str,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        continuation_items: list[dict[str, Any]] | None,
     ) -> ModelResult:
         creds = await self.credentials()
         assert self.session
         input_items = [self._responses_message(message, model) for message in messages]
+        input_items.extend(continuation_items or [])
         headers = {
             "Authorization": f"Bearer {creds.access_token}",
             "Content-Type": "application/json",
@@ -356,6 +394,10 @@ class ChatGPTClient:
             )
         if cache_key:
             body["prompt_cache_key"] = cache_key[:64]
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = tool_choice or "required"
+            body["parallel_tool_calls"] = False
         chunks: list[str] = []
         completed_response: dict[str, Any] | None = None
         async with self.session.post(f"{BACKEND_URL}/responses", headers=headers, json=body) as response:
@@ -396,6 +438,9 @@ class ChatGPTClient:
         purpose: str,
         max_output_tokens: int | None,
         cache_key: str | None,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        continuation_items: list[dict[str, Any]] | None,
     ) -> ModelResult:
         provider = self.store.custom_provider()
         if provider is None:
@@ -411,6 +456,9 @@ class ChatGPTClient:
                 purpose,
                 max_output_tokens,
                 cache_key,
+                tools,
+                tool_choice,
+                continuation_items,
             )
         return await self._complete_custom_chat_completions(
             provider,
@@ -419,6 +467,10 @@ class ChatGPTClient:
             model,
             purpose,
             max_output_tokens,
+            cache_key,
+            tools,
+            tool_choice,
+            continuation_items,
         )
 
     async def _complete_custom_responses(
@@ -430,18 +482,27 @@ class ChatGPTClient:
         purpose: str,
         max_output_tokens: int | None,
         cache_key: str | None,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        continuation_items: list[dict[str, Any]] | None,
     ) -> ModelResult:
         body: dict[str, Any] = {
             "model": model,
             "instructions": instructions,
-            "input": [self._responses_message(message, model, provider="custom") for message in messages],
+            "input": [self._responses_message(message, model, provider="custom") for message in messages]
+            + (continuation_items or []),
             "stream": False,
             "store": False,
         }
         if max_output_tokens is not None:
             body["max_output_tokens"] = max(1, max_output_tokens)
-        # Cache fields are standard Responses fields, but custom providers must opt into them later
-        # through explicit capability settings. Preserve deterministic prompt layout regardless.
+        if tools:
+            body["tools"] = self._custom_tools(provider, tools)
+            body["tool_choice"] = tool_choice or "required"
+            if provider.supports("parallel_tool_control"):
+                body["parallel_tool_calls"] = False
+        if cache_key and provider.supports("prompt_cache_key"):
+            body["prompt_cache_key"] = cache_key[:64]
         payload = await self._post_custom_json(provider, "/responses", body)
         result = self._model_result_from_response(payload)
         self._record_usage(result, model=model, purpose=purpose, provider_base_url=provider.base_url)
@@ -455,16 +516,29 @@ class ChatGPTClient:
         model: str,
         purpose: str,
         max_output_tokens: int | None,
+        cache_key: str | None,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        continuation_items: list[dict[str, Any]] | None,
     ) -> ModelResult:
         assert self.session
         provider_messages = [self._custom_message(message, model) for message in messages]
+        chat_messages = [{"role": "system", "content": instructions}, *provider_messages]
+        chat_messages.extend(self._chat_continuation_messages(continuation_items or []))
         body = {
             "model": model,
-            "messages": [{"role": "system", "content": instructions}, *provider_messages],
+            "messages": chat_messages,
             "stream": False,
         }
         if max_output_tokens is not None:
             body["max_completion_tokens"] = max(1, max_output_tokens)
+        if cache_key and provider.supports("prompt_cache_key"):
+            body["prompt_cache_key"] = cache_key[:64]
+        if tools:
+            body["tools"] = [self._chat_tool(tool) for tool in self._custom_tools(provider, tools)]
+            body["tool_choice"] = self._chat_tool_choice(tool_choice or "required")
+            if provider.supports("parallel_tool_control"):
+                body["parallel_tool_calls"] = False
         payload = await self._post_custom_json(provider, "/chat/completions", body)
         result = self._model_result_from_chat_completion(payload)
         self._record_usage(result, model=model, purpose=purpose, provider_base_url=provider.base_url)
@@ -500,7 +574,7 @@ class ChatGPTClient:
         base_url: str,
         api_key: str,
         model: str,
-    ) -> str:
+    ) -> ProtocolDetection:
         """Probe setup endpoints without changing or consulting the active provider."""
         provider = CustomProvider(name, normalize_custom_base_url(base_url), api_key, "responses")
         responses_body = {
@@ -519,7 +593,8 @@ class ChatGPTClient:
         else:
             result = self._model_result_from_response(payload)
             if result.text or result.function_calls or result.hosted_tool_calls:
-                return "responses"
+                native = await self._probe_native_function_calls(provider, "responses", model)
+                return ProtocolDetection("responses", native)
             raise RuntimeError(f"{name} returned an invalid Responses API probe result")
 
         chat_body = {
@@ -535,7 +610,57 @@ class ChatGPTClient:
         result = self._model_result_from_chat_completion(payload)
         if not result.text and not result.function_calls:
             raise RuntimeError(f"{name} returned an invalid Chat Completions probe result")
-        return "chat_completions"
+        native = await self._probe_native_function_calls(provider, "chat_completions", model)
+        return ProtocolDetection("chat_completions", native)
+
+    async def _probe_native_function_calls(self, provider: CustomProvider, protocol: str, model: str) -> bool:
+        tool = {
+            "type": "function",
+            "name": "connection_test",
+            "description": "Complete the connection test.",
+            "parameters": {
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        }
+        if protocol == "responses":
+            body = {
+                "model": model,
+                "input": [{"role": "user", "content": "Complete the connection test."}],
+                "tools": [tool],
+                "tool_choice": {"type": "function", "name": "connection_test"},
+                "parallel_tool_calls": False,
+                "max_output_tokens": 32,
+                "stream": False,
+                "store": False,
+            }
+            path = "/responses"
+            parser = self._model_result_from_response
+        else:
+            body = {
+                "model": model,
+                "messages": [{"role": "user", "content": "Complete the connection test."}],
+                "tools": [self._chat_tool(tool)],
+                "tool_choice": self._chat_tool_choice({"type": "function", "name": "connection_test"}),
+                "parallel_tool_calls": False,
+                "max_completion_tokens": 32,
+                "stream": False,
+            }
+            path = "/chat/completions"
+            parser = self._model_result_from_chat_completion
+        try:
+            result = parser(await self._post_custom_json(provider, path, body))
+        except Exception as exc:
+            log.info("Native function-call capability probe failed for %s: %s", provider.name, exc)
+            return False
+        return (
+            len(result.function_calls) == 1
+            and result.function_calls[0].name == "connection_test"
+            and result.function_calls[0].parsed_arguments is not None
+        )
 
     @staticmethod
     def _responses_conclusively_unsupported(status: int, detail: str) -> bool:
@@ -557,6 +682,56 @@ class ChatGPTClient:
         if isinstance(error, dict):
             return str(error.get("message") or error.get("type") or "unknown error")
         return str(error or payload.get("message") or "unknown error")
+
+    @staticmethod
+    def _chat_tool(tool: dict[str, Any]) -> dict[str, Any]:
+        function = {key: tool[key] for key in ("name", "description", "parameters", "strict") if key in tool}
+        return {"type": "function", "function": function}
+
+    @staticmethod
+    def _custom_tools(provider: CustomProvider, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if provider.supports("strict_function_schemas"):
+            return tools
+        return [{key: value for key, value in tool.items() if key != "strict"} for tool in tools]
+
+    @staticmethod
+    def _chat_tool_choice(choice: str | dict[str, Any]) -> str | dict[str, Any]:
+        if isinstance(choice, str):
+            return choice
+        if choice.get("type") == "function" and isinstance(choice.get("name"), str):
+            return {"type": "function", "function": {"name": choice["name"]}}
+        return choice
+
+    @staticmethod
+    def _chat_continuation_messages(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        for item in items:
+            if item.get("type") == "function_call":
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": str(item.get("call_id") or item.get("id") or ""),
+                                "type": "function",
+                                "function": {
+                                    "name": str(item.get("name") or ""),
+                                    "arguments": str(item.get("arguments") or ""),
+                                },
+                            }
+                        ],
+                    }
+                )
+            elif item.get("type") == "function_call_output":
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(item.get("call_id") or ""),
+                        "content": str(item.get("output") or ""),
+                    }
+                )
+        return messages
 
     @staticmethod
     def _responses_message(

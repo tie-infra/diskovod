@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -194,6 +194,7 @@ class AppSettings:
     robot_prefix: bool = False
     admin_locale: str = "en"
     prompt_locale: str = "en"
+    owner_timezone: str = "UTC"
     default_conversation_enabled: bool = True
     provider: str = "chatgpt"
     model: str = "gpt-5.4-mini"
@@ -237,9 +238,13 @@ class CustomProvider:
     base_url: str
     api_key: str
     protocol: str = "responses"
+    capabilities: dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def supports(self, capability: str) -> bool:
+        return self.capabilities.get(capability, False) is True
 
 
 @dataclass(slots=True)

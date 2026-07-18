@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import random
-import re
 import secrets
 import time
 from typing import Any
@@ -13,50 +12,23 @@ from .chatgpt import ChatGPTClient, make_prompt_cache_key
 from .localization import prompts_for
 from .models import AppSettings
 from .store import Store
+from .tooling import (
+    FUNCTION_TOOLS,
+    TOOL_SCHEMA_VERSION,
+    DiscordAction,
+    execute_read_only_tool,
+    function_call_item,
+    function_output_item,
+    validate_discord_action,
+)
 
 log = logging.getLogger(__name__)
-
-ALLOWED_REACTIONS = frozenset(
-    {"👍", "❤️", "😂", "🔥", "🎉", "😮", "😢", "🙏", "👀", "✅", "💯", "🤝", "👌", "😊", "😅", "🤔", "🙌"}
-)
-REACTION_PATTERN = re.compile(r"\A<react>([^<>\s]+)</react>\Z")
-MESSAGE_BLOCK_PATTERN = re.compile(r"<message>(.*?)</message>", re.IGNORECASE | re.DOTALL)
-
-
-def parse_reaction(answer: str) -> str | None:
-    stripped = answer.strip()
-    match = REACTION_PATTERN.fullmatch(stripped)
-    if match and match.group(1) in ALLOWED_REACTIONS:
-        return match.group(1)
-    if stripped in ALLOWED_REACTIONS:
-        return stripped
-    return None
-
-
-def contains_reaction_markup(answer: str) -> bool:
-    return "<react>" in answer.casefold() or "</react>" in answer.casefold()
-
-
-def parse_message_sequence(answer: str, max_messages: int) -> list[str] | None:
-    stripped = answer.strip()
-    if not stripped:
-        return None
-    if "<message" not in stripped.casefold() and "</message" not in stripped.casefold():
-        return [stripped]
-    matches = list(MESSAGE_BLOCK_PATTERN.finditer(stripped))
-    remainder = MESSAGE_BLOCK_PATTERN.sub("", stripped).strip()
-    parts = [match.group(1).strip() for match in matches]
-    if remainder or not 2 <= len(parts) <= max_messages or any(not part for part in parts):
-        return None
-    return parts
 
 
 def build_reply_instructions(
     settings: AppSettings,
     personality: dict | None,
     history: list[dict],
-    *,
-    allow_sequence: bool = False,
 ) -> str:
     """Build instructions with trusted human style evidence separate from dialogue history."""
     prompts = prompts_for(settings.prompt_locale)
@@ -66,12 +38,13 @@ def build_reply_instructions(
     if personality:
         sections.append(prompts.cached_personality.format(profile=personality["profile"]))
 
-    message_shape = (
-        prompts.sequence.format(max_messages=max(2, settings.max_reply_messages))
-        if allow_sequence
-        else prompts.single_message
+    sections.append(prompts.dm_style)
+    sections.append(
+        "Use the available native tools for every action. Finish with exactly one terminal action: "
+        "send_messages for written replies or, only when genuinely appropriate, react_to_message. "
+        "Do not return final reply text outside a terminal action. Use get_current_datetime whenever "
+        "the answer depends on the current date or time, and calculate for non-trivial arithmetic."
     )
-    sections.extend((prompts.dm_style, prompts.reaction, message_shape))
 
     owner_examples = [
         item["content"]
@@ -192,38 +165,22 @@ class Automation:
             if item["content"].strip() or item.get("attachments")
         ]
         personality = self.store.personality()
-        allow_sequence = (
-            settings.multi_message_replies and random.random() * 100 < settings.multi_message_chance
-        )
-        instructions = build_reply_instructions(
-            settings,
-            personality,
-            history,
-            allow_sequence=allow_sequence,
-        )
-        cache_key = make_prompt_cache_key("dm", f"{settings.model}\0{channel_id}")
-        answer = await self._generate_reply(
+        instructions = build_reply_instructions(settings, personality, history)
+        if force:
+            instructions += "\n\n" + prompts.forced_reply
+        cache_key = self._profile_cache_key(settings, personality)
+        max_messages = settings.max_reply_messages if settings.multi_message_replies else 1
+        allow_reaction = not force and self.store.reaction_allowed(channel_id)
+        action = await self._generate_action(
             messages,
-            instructions + ("\n\n" + prompts.forced_reply if force else ""),
+            instructions,
             settings,
+            max_messages=max_messages,
+            allow_reaction=allow_reaction,
             cache_key=cache_key,
         )
-        if answer is None:
+        if action is None:
             return
-
-        emoji = parse_reaction(answer)
-        if (emoji and (force or not self.store.reaction_allowed(channel_id))) or (
-            contains_reaction_markup(answer) and emoji is None
-        ):
-            answer = await self._reaction_fallback(
-                messages,
-                instructions,
-                settings,
-                cache_key=cache_key,
-            )
-            if answer is None:
-                return
-            emoji = parse_reaction(answer)
 
         if not self._still_allowed(channel_id, version, force=force):
             return
@@ -237,51 +194,36 @@ class Automation:
             self.human_activity(channel_id)
             return
 
-        if emoji:
+        if action.kind == "reaction":
             async with self.reaction_lock:
                 if self.store.reaction_allowed(channel_id):
-                    await trigger.add_reaction(emoji)
+                    assert action.emoji
+                    await trigger.add_reaction(action.emoji)
                     self.store.record_assistant_reaction(
                         trigger_message_id=str(trigger.id),
                         channel_id=channel_id,
-                        emoji=emoji,
+                        emoji=action.emoji,
                     )
                     return
-            answer = await self._reaction_fallback(
+            action = await self._generate_action(
                 messages,
-                instructions,
+                instructions + "\n\nA written reply is required because a reaction is unavailable.",
                 settings,
+                max_messages=max_messages,
+                allow_reaction=False,
                 cache_key=cache_key,
             )
-            if answer is None or not self._still_allowed(channel_id, version, force=force):
+            if (
+                action is None
+                or action.kind != "messages"
+                or not self._still_allowed(channel_id, version, force=force)
+            ):
                 return
             if await self._manual_message_exists(trigger.channel, started_at):
                 self.human_activity(channel_id)
                 return
 
-        parts = parse_message_sequence(
-            answer,
-            settings.max_reply_messages if allow_sequence else 1,
-        )
-        if parts is None:
-            answer = await self._generate_reply(
-                messages,
-                instructions + "\n\n" + prompts.sequence_fallback,
-                settings,
-                purpose="dm_reply_sequence_fallback",
-                cache_key=cache_key,
-            )
-            parts = parse_message_sequence(answer, 1) if answer is not None else None
-            if (
-                parts is None
-                or len(parts) != 1
-                or parse_reaction(parts[0])
-                or contains_reaction_markup(parts[0])
-            ):
-                log.error("Rejected invalid multi-message fallback; no DM will be sent")
-                return
-
-        for index, part in enumerate(parts):
+        for index, part in enumerate(action.messages):
             if index:
                 await asyncio.sleep(
                     random.uniform(
@@ -321,48 +263,97 @@ class Automation:
                 timestamp=sent.created_at.timestamp(),
             )
 
-    async def _generate_reply(
-        self,
-        messages: list[dict[str, Any]],
-        instructions: str,
-        settings: AppSettings,
-        *,
-        purpose: str = "dm_reply",
-        cache_key: str | None = None,
-    ) -> str | None:
-        return await self.chatgpt.complete(
-            messages,
-            instructions,
-            settings.model,
-            settings.reasoning_effort,
-            purpose=purpose,
-            max_output_tokens=settings.max_reply_tokens,
-            cache_key=cache_key,
-            locale=settings.prompt_locale,
+    def _profile_cache_key(self, settings: AppSettings, personality: dict | None) -> str:
+        provider = getattr(self.chatgpt, "active_provider", "chatgpt")
+        custom = self.store.custom_provider() if provider == "custom" else None
+        protocol = custom.protocol if custom else "responses"
+        profile_hash = (personality or {}).get("source_hash", "no-personality")
+        identity = "\0".join(
+            (
+                provider,
+                protocol,
+                settings.model,
+                settings.prompt_locale,
+                TOOL_SCHEMA_VERSION,
+                settings.base_instructions,
+                settings.owner_details,
+                str(profile_hash),
+            )
         )
+        return make_prompt_cache_key("dm-profile", identity)
 
-    async def _reaction_fallback(
+    async def _generate_action(
         self,
         messages: list[dict[str, Any]],
         instructions: str,
         settings: AppSettings,
         *,
+        max_messages: int,
+        allow_reaction: bool,
         cache_key: str | None = None,
-    ) -> str | None:
-        prompts = prompts_for(settings.prompt_locale)
-        answer = await self._generate_reply(
-            messages,
-            instructions + "\n\n" + prompts.reaction_fallback,
-            settings,
-            purpose="dm_reply_reaction_fallback",
-            cache_key=cache_key,
-        )
-        if answer is None:
+    ) -> DiscordAction | None:
+        provider = self.store.custom_provider() if self.chatgpt.active_provider == "custom" else None
+        if provider and not provider.supports("native_function_calls"):
+            log.error("Custom provider %s has not passed native function-call validation", provider.name)
             return None
-        if parse_reaction(answer) or contains_reaction_markup(answer):
-            log.error("Rejected a reaction from the text-only fallback; no Discord action will be taken")
-            return None
-        return answer
+        continuation: list[dict[str, Any]] = []
+        repair_used = False
+        read_only_calls = 0
+        tool_choice: str | dict[str, Any] = "required"
+        for request_index in range(4):
+            result = await self.chatgpt.complete_result(
+                messages,
+                instructions,
+                settings.model,
+                settings.reasoning_effort,
+                purpose="dm_reply" if request_index == 0 else "dm_reply_tool_continuation",
+                max_output_tokens=settings.max_reply_tokens,
+                cache_key=cache_key,
+                locale=settings.prompt_locale,
+                tools=FUNCTION_TOOLS,
+                tool_choice=tool_choice,
+                continuation_items=continuation,
+            )
+            calls = result.function_calls
+            if len(calls) != 1 or result.text:
+                if repair_used:
+                    log.error("Rejected non-terminal or ambiguous model output after native repair")
+                    return None
+                repair_used = True
+                tool_choice = {"type": "function", "name": "send_messages"}
+                continue
+
+            call = calls[0]
+            output = execute_read_only_tool(
+                call,
+                owner_timezone=settings.owner_timezone,
+            )
+            if output is not None:
+                if read_only_calls >= 2:
+                    log.error("Rejected reply after exceeding the read-only tool budget")
+                    return None
+                read_only_calls += 1
+                continuation.extend((function_call_item(call), function_output_item(call, output)))
+                tool_choice = "required"
+                continue
+
+            action = validate_discord_action(
+                call,
+                max_messages=max_messages,
+                allow_reaction=allow_reaction,
+            )
+            if action is not None:
+                return action
+            if repair_used:
+                log.error("Rejected malformed native Discord action after one repair")
+                return None
+            repair_used = True
+            repair_name = call.name if call.name in {"send_messages", "react_to_message"} else "send_messages"
+            if repair_name == "react_to_message" and not allow_reaction:
+                repair_name = "send_messages"
+            tool_choice = {"type": "function", "name": repair_name}
+        log.error("Rejected reply after exceeding the total model request budget")
+        return None
 
     async def _manual_message_exists(self, channel: Any, since: float) -> bool:
         """Gateway delivery can lag; check recent server history immediately before sending."""

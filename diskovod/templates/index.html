@@ -54,6 +54,9 @@
       {% if error %}
         <div class="notice notice-error" role="alert">{{ error }}</div>
       {% endif %}
+      {% if automation_error %}
+        <div class="notice notice-error" role="alert">{{ automation_error }}</div>
+      {% endif %}
 
       <section id="connections" class="card-grid connection-grid page-section" aria-label="{{ t('connections') }}">
         <article class="card">
@@ -184,6 +187,49 @@
                 required
               >
             </label>
+            <fieldset>
+              <legend>Provider capabilities</legend>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  name="native_function_calls"
+                  {% if custom_provider and custom_provider.capabilities.native_function_calls %}checked{% endif %}
+                >
+                Native function calls (required for automated replies)
+              </label>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  name="prompt_cache_key"
+                  {% if custom_provider and custom_provider.capabilities.prompt_cache_key %}checked{% endif %}
+                >
+                <code>prompt_cache_key</code>
+              </label>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  name="strict_function_schemas"
+                  {% if custom_provider and custom_provider.capabilities.strict_function_schemas %}checked{% endif %}
+                >
+                Strict function schemas
+              </label>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  name="parallel_tool_control"
+                  {% if custom_provider and custom_provider.capabilities.parallel_tool_control %}checked{% endif %}
+                >
+                <code>parallel_tool_calls</code> control
+              </label>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  name="hosted_web_search"
+                  {% if custom_provider and custom_provider.capabilities.hosted_web_search %}checked{% endif %}
+                >
+                Hosted web search
+              </label>
+            </fieldset>
             {% if custom_provider and custom_provider.has_api_key %}
               <label class="toggle">
                 <input type="checkbox" name="clear_api_key">
@@ -403,8 +449,8 @@
                   {% endfor %}
                 </select>
               </label>
-              <label>
-                {{ t("prompt_language") }}
+            <label>
+              {{ t("prompt_language") }}
                 <select name="prompt_locale">
                   {% for code, name in locales.items() %}
                     <option value="{{ code }}" {% if code == app_settings.prompt_locale %}selected{% endif %}>
@@ -419,6 +465,11 @@
             <label class="toggle">
               <input type="checkbox" name="enabled" {% if app_settings.enabled %}checked{% endif %}>
               {{ t("enable_replies") }}
+            </label>
+            <label>
+              Owner timezone
+              <input name="owner_timezone" value="{{ app_settings.owner_timezone }}" required>
+              <small>Use an IANA name such as Europe/Berlin, Europe/Moscow, or Asia/Tokyo.</small>
             </label>
 
             <label class="toggle">

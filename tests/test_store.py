@@ -30,6 +30,7 @@ def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
     assert store.app_settings().silent_replies is False
     assert store.app_settings().robot_prefix is False
     assert store.app_settings().owner_details == ""
+    assert store.app_settings().owner_timezone == "UTC"
     store.set_app_settings(
         AppSettings(
             silent_replies=True,
@@ -40,6 +41,7 @@ def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
             min_message_gap_seconds=1,
             max_message_gap_seconds=3,
             owner_details="My name is Alex and I live in Berlin.",
+            owner_timezone="Europe/Berlin",
         )
     )
     assert store.app_settings().silent_replies is True
@@ -50,6 +52,7 @@ def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
     assert store.app_settings().min_message_gap_seconds == 1
     assert store.app_settings().max_message_gap_seconds == 3
     assert store.app_settings().owner_details == "My name is Alex and I live in Berlin."
+    assert store.app_settings().owner_timezone == "Europe/Berlin"
     store.close()
 
 
@@ -126,6 +129,25 @@ def test_legacy_custom_provider_is_migrated_to_pinned_chat_completions(tmp_path:
     )
 
     assert store.custom_provider().protocol == "chat_completions"
+    store.close()
+
+
+def test_custom_provider_capabilities_round_trip(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.set_custom_provider(
+        CustomProvider(
+            "Responses",
+            "https://models.example/v1",
+            "key",
+            "responses",
+            {"native_function_calls": True, "hosted_web_search": False},
+        )
+    )
+
+    provider = store.custom_provider()
+    assert provider.supports("native_function_calls") is True
+    assert provider.supports("hosted_web_search") is False
+    assert provider.supports("unknown") is False
     store.close()
 
 

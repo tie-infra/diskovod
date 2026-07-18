@@ -457,20 +457,43 @@ async def test_setup_detection_may_select_chat_completions_on_conclusive_404(tmp
         [
             FakeJSONResponse({"error": {"message": "missing"}}, status=404),
             FakeJSONResponse({"choices": [{"message": {"content": "OK"}}]}),
+            FakeJSONResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "probe-call",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "connection_test",
+                                            "arguments": '{"ok":true}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ),
         ]
     )
     client.session = cast(aiohttp.ClientSession, session)
 
-    protocol = await client.detect_custom_protocol(
+    detection = await client.detect_custom_protocol(
         name="Gateway",
         base_url="https://models.example/v1",
         api_key="key",
         model="model",
     )
 
-    assert protocol == "chat_completions"
+    assert detection.protocol == "chat_completions"
+    assert detection.native_function_calls is True
     assert [call[0][0] for call in session.calls] == [
         "https://models.example/v1/responses",
+        "https://models.example/v1/chat/completions",
         "https://models.example/v1/chat/completions",
     ]
     assert store.custom_provider() is None
@@ -495,3 +518,114 @@ async def test_setup_detection_does_not_cross_fallback_on_ambiguous_failure(tmp_
     assert len(session.calls) == 1
     assert store.custom_provider() is None
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_custom_chat_tools_and_continuation_use_protocol_native_shapes(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_app_settings(AppSettings(provider="custom"))
+    store.set_custom_provider(
+        CustomProvider(
+            "Gateway",
+            "https://models.example/v1",
+            "key",
+            "chat_completions",
+            {"native_function_calls": True, "prompt_cache_key": True},
+        )
+    )
+    payload = {
+        "id": "chatcmpl-tools",
+        "choices": [
+            {
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "send-call",
+                            "type": "function",
+                            "function": {
+                                "name": "send_messages",
+                                "arguments": '{"messages":["done"]}',
+                            },
+                        }
+                    ],
+                }
+            }
+        ],
+    }
+    client = ChatGPTClient(store)
+    session = FakeSession(FakeJSONResponse(payload))
+    client.session = cast(aiohttp.ClientSession, session)
+    tool = {
+        "type": "function",
+        "name": "send_messages",
+        "description": "Send",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        "strict": True,
+    }
+
+    result = await client.complete_result(
+        [{"role": "user", "content": "hi"}],
+        "instructions",
+        "model",
+        "low",
+        cache_key="shared-key",
+        tools=[tool],
+        tool_choice={"type": "function", "name": "send_messages"},
+        continuation_items=[
+            {
+                "type": "function_call",
+                "call_id": "time-call",
+                "name": "get_current_datetime",
+                "arguments": '{"timezone":null}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "time-call",
+                "output": '{"date":"2026-07-19"}',
+            },
+        ],
+    )
+
+    assert result.function_calls[0].parsed_arguments == {"messages": ["done"]}
+    request = session.last_kwargs["json"]
+    assert request["prompt_cache_key"] == "shared-key"
+    assert "strict" not in request["tools"][0]["function"]
+    assert "parallel_tool_calls" not in request
+    assert request["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "send_messages"},
+    }
+    assert [message["role"] for message in request["messages"]] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    store.close()
+
+
+def test_responses_parser_retains_structured_outputs_and_bounded_hosted_calls():
+    payload = {
+        "id": "resp-tools",
+        "output": [
+            {
+                "type": "web_search_call",
+                "status": "completed",
+                "action": {"query": "latest news", "ignored": ["raw result"]},
+            },
+            {
+                "type": "function_call",
+                "call_id": "send-call",
+                "name": "send_messages",
+                "arguments": '{"messages":["natural reply"]}',
+            },
+        ],
+    }
+
+    result = ChatGPTClient._model_result_from_response(payload)
+
+    assert result.provider_response_id == "resp-tools"
+    assert result.function_calls[0].parsed_arguments == {"messages": ["natural reply"]}
+    assert result.hosted_tool_calls[0].kind == "web_search_call"
+    assert result.hosted_tool_calls[0].metadata == {"action": {"query": "latest news"}}

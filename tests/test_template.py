@@ -23,6 +23,8 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
         chat_email=None,
         chat_error=None,
         model_connected=True,
+        automation_ready=True,
+        automation_error=None,
         active_provider="custom",
         provider_label="Local model",
         custom_provider={
@@ -30,6 +32,13 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
             "base_url": "http://localhost:8000/v1",
             "has_api_key": True,
             "protocol": "chat_completions",
+            "capabilities": {
+                "native_function_calls": True,
+                "strict_function_schemas": True,
+                "parallel_tool_control": True,
+                "prompt_cache_key": True,
+                "hosted_web_search": False,
+            },
             "probe_model": "local-model",
             "draft_token": "",
         },
@@ -165,6 +174,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'name="max_human_quiet_minutes"' in rendered
     assert 'name="admin_locale"' in rendered
     assert 'name="prompt_locale"' in rendered
+    assert 'name="owner_timezone"' in rendered
     assert 'value="uk"' in rendered
     assert 'name="history_limit"' in rendered
     assert 'name="max_reply_tokens"' in rendered
@@ -191,6 +201,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'action="/provider/custom"' in rendered
     assert 'formaction="/provider/custom/detect"' in rendered
     assert 'name="protocol"' in rendered
+    assert 'name="native_function_calls"' in rendered
     assert "Detect API support" in rendered
     assert 'name="provider"' in rendered
     assert "http://localhost:8000/v1/chat/completions" in rendered

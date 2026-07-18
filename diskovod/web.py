@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import FileResponse, RedirectResponse
@@ -39,6 +40,7 @@ class ProviderDraft:
     base_url: str
     api_key: str
     protocol: str
+    capabilities: dict[str, bool]
     probe_model: str
     expires_at: float
 
@@ -141,6 +143,7 @@ class WebApp:
                     "name": draft.name,
                     "base_url": draft.base_url,
                     "protocol": draft.protocol,
+                    "capabilities": draft.capabilities,
                     "probe_model": draft.probe_model,
                     "has_api_key": bool(draft.api_key),
                     "draft_token": provider_draft,
@@ -151,6 +154,7 @@ class WebApp:
                         "name": custom_provider.name,
                         "base_url": custom_provider.base_url,
                         "protocol": custom_provider.protocol,
+                        "capabilities": custom_provider.capabilities,
                         "probe_model": app_settings.model,
                         "has_api_key": bool(custom_provider.api_key),
                         "draft_token": "",
@@ -172,6 +176,8 @@ class WebApp:
                     "chat_email": self.chatgpt.email,
                     "chat_error": self.chatgpt.last_error,
                     "model_connected": self.chatgpt.connected,
+                    "automation_ready": self.chatgpt.automation_ready,
+                    "automation_error": self.chatgpt.automation_error,
                     "active_provider": self.chatgpt.active_provider,
                     "provider_label": self.chatgpt.provider_label,
                     "custom_provider": provider_view,
@@ -226,6 +232,11 @@ class WebApp:
             api_key: str = Form(""),
             protocol: str = Form("responses"),
             draft_token: str = Form(""),
+            native_function_calls: str | None = Form(None),
+            strict_function_schemas: str | None = Form(None),
+            parallel_tool_control: str | None = Form(None),
+            prompt_cache_key: str | None = Form(None),
+            hosted_web_search: str | None = Form(None),
             clear_api_key: str | None = Form(None),
             _: str = Depends(auth),
         ):
@@ -247,7 +258,18 @@ class WebApp:
                 api_key = draft.api_key
             elif not api_key and existing:
                 api_key = existing.api_key
-            self.store.set_custom_provider(CustomProvider(name, base_url, api_key, protocol))
+            capabilities = {
+                "native_function_calls": native_function_calls is not None,
+                "strict_function_schemas": strict_function_schemas is not None,
+                "parallel_tool_control": parallel_tool_control is not None,
+                "prompt_cache_key": prompt_cache_key is not None,
+                "hosted_web_search": hosted_web_search is not None,
+            }
+            if self.store.app_settings().enabled and not capabilities["native_function_calls"]:
+                return self._back(
+                    error="Disable automation before selecting a provider without native function calls"
+                )
+            self.store.set_custom_provider(CustomProvider(name, base_url, api_key, protocol, capabilities))
             if draft_token:
                 self.provider_drafts.pop(draft_token, None)
             self._set_provider("custom")
@@ -262,6 +284,11 @@ class WebApp:
             protocol: str = Form("responses"),
             probe_model: str = Form(...),
             draft_token: str = Form(""),
+            native_function_calls: str | None = Form(None),
+            strict_function_schemas: str | None = Form(None),
+            parallel_tool_control: str | None = Form(None),
+            prompt_cache_key: str | None = Form(None),
+            hosted_web_search: str | None = Form(None),
             clear_api_key: str | None = Form(None),
             _: str = Depends(auth),
         ):
@@ -292,23 +319,42 @@ class WebApp:
                 base_url,
                 api_key,
                 protocol,
+                {
+                    "native_function_calls": native_function_calls is not None,
+                    "strict_function_schemas": strict_function_schemas is not None,
+                    "parallel_tool_control": parallel_tool_control is not None,
+                    "prompt_cache_key": prompt_cache_key is not None,
+                    "hosted_web_search": hosted_web_search is not None,
+                },
                 probe_model,
                 time.time() + 15 * 60,
             )
             self.provider_drafts[token] = draft
             try:
-                draft.protocol = await self.chatgpt.detect_custom_protocol(
+                detection = await self.chatgpt.detect_custom_protocol(
                     name=name,
                     base_url=base_url,
                     api_key=api_key,
                     model=probe_model,
                 )
+                draft.protocol = detection.protocol
+                draft.capabilities["native_function_calls"] = detection.native_function_calls
+                draft.capabilities["strict_function_schemas"] = detection.native_function_calls
+                draft.capabilities["parallel_tool_control"] = detection.native_function_calls
             except Exception as exc:
                 return self._provider_draft_back(token, error=str(exc))
             label = "Responses" if draft.protocol == "responses" else "Chat Completions"
+            native_label = (
+                "native function calls available"
+                if draft.capabilities["native_function_calls"]
+                else "native function calls unavailable"
+            )
             return self._provider_draft_back(
                 token,
-                message=f"Detected {label}. Review the preselected protocol, then save explicitly.",
+                message=(
+                    f"Detected {label}; {native_label}. Review the preselected settings, then save "
+                    "explicitly."
+                ),
             )
 
         @self.app.post("/provider/custom/remove")
@@ -327,6 +373,16 @@ class WebApp:
                 return self._back(error="Connect ChatGPT before selecting it")
             if provider == "custom" and not self.chatgpt.custom_connected:
                 return self._back(error="Configure a custom provider before selecting it")
+            custom = self.store.custom_provider()
+            if (
+                provider == "custom"
+                and self.store.app_settings().enabled
+                and custom
+                and not custom.supports("native_function_calls")
+            ):
+                return self._back(
+                    error="Disable automation or detect native function-call support before selecting it"
+                )
             self._set_provider(provider)
             self.chatgpt.last_error = None
             return self._back(message=f"{self.chatgpt.provider_label} selected")
@@ -367,6 +423,7 @@ class WebApp:
             robot_prefix: str | None = Form(None),
             admin_locale: str = Form("en"),
             prompt_locale: str = Form("en"),
+            owner_timezone: str = Form("UTC"),
             multi_message_replies: str | None = Form(None),
             multi_message_chance: float = Form(12.0),
             max_reply_messages: int = Form(3),
@@ -391,12 +448,25 @@ class WebApp:
         ):
             if admin_locale not in SUPPORTED_LOCALES or prompt_locale not in SUPPORTED_LOCALES:
                 return self._back(error=ui_text(admin_locale, "unknown_locale"))
+            try:
+                ZoneInfo(owner_timezone)
+            except (KeyError, ValueError):
+                return self._back(error="Owner timezone must be a valid IANA timezone name")
             if provider not in PROVIDERS:
                 return self._back(error="Unknown model provider")
             if conversation_default not in {"opt_in", "opt_out"}:
                 return self._back(error="Unknown new-conversation default")
             if provider == "custom" and not self.chatgpt.custom_connected:
                 return self._back(error="Configure a custom provider before selecting it")
+            custom = self.store.custom_provider()
+            if (
+                enabled is not None
+                and provider == "custom"
+                and (not custom or not custom.supports("native_function_calls"))
+            ):
+                return self._back(
+                    error="Detect and save native function-call support before enabling automation"
+                )
             model = model.strip()
             if not model:
                 return self._back(error="Model name cannot be empty")
@@ -423,6 +493,7 @@ class WebApp:
                 robot_prefix=robot_prefix is not None,
                 admin_locale=normalize_locale(admin_locale),
                 prompt_locale=normalized_prompt_locale,
+                owner_timezone=owner_timezone,
                 multi_message_replies=multi_message_replies is not None,
                 multi_message_chance=max(0.0, min(multi_message_chance, 100.0)),
                 max_reply_messages=max(2, min(max_reply_messages, 5)),
@@ -493,8 +564,11 @@ class WebApp:
 
         @self.app.post("/conversations/{channel_id}/force-reply")
         async def force_reply(channel_id: str, _: str = Depends(auth)):
-            if not self.chatgpt.connected:
-                return self._back(error="Connect the active model provider before forcing a reply")
+            if not self.chatgpt.automation_ready:
+                return self._back(
+                    error=self.chatgpt.automation_error
+                    or "Connect the active model provider before forcing a reply"
+                )
             try:
                 await self.discord.force_reply(channel_id)
             except Exception as exc:

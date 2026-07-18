@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -8,15 +9,112 @@ from typing import cast
 
 import pytest
 
-from diskovod.automation import (
-    Automation,
-    build_reply_instructions,
-    parse_message_sequence,
-    parse_reaction,
-)
+from diskovod.automation import Automation, build_reply_instructions
 from diskovod.chatgpt import ChatGPTClient
-from diskovod.models import AppSettings
+from diskovod.models import AppSettings, FunctionCall, ModelResult, TextOutput
 from diskovod.store import Store
+
+
+def function_result(name: str, arguments: dict, call_id: str = "call-1") -> ModelResult:
+    encoded = json.dumps(arguments)
+    return ModelResult([], [FunctionCall(call_id, name, encoded, arguments)], [])
+
+
+class ReplyingChatGPT:
+    active_provider = "chatgpt"
+
+    def __init__(self, results: list[ModelResult]):
+        self.results = iter(results)
+        self.calls: list[dict] = []
+
+    async def complete_result(self, messages, instructions, model, effort, **kwargs):
+        self.calls.append({"instructions": instructions, **kwargs})
+        return next(self.results)
+
+
+class TextChannel:
+    me = object()
+
+    def __init__(self, channel_id: str = "dm"):
+        self.id = channel_id
+        self.sent: list[tuple[str, str, bool]] = []
+
+    async def history(self, limit: int):
+        if False:
+            yield limit
+
+    @asynccontextmanager
+    async def typing(self):
+        yield
+
+    async def send(self, content: str, *, nonce: str, silent: bool):
+        self.sent.append((content, nonce, silent))
+        return SimpleNamespace(
+            id=f"sent-{len(self.sent)}",
+            author=SimpleNamespace(id="me"),
+            created_at=datetime.now(UTC),
+        )
+
+
+class TextTrigger:
+    id = "incoming"
+
+    def __init__(self, channel_id: str = "dm"):
+        self.channel = TextChannel(channel_id)
+
+    async def add_reaction(self, emoji: str):
+        raise AssertionError(f"unexpected reaction: {emoji}")
+
+
+class ReactionChannel:
+    id = "dm"
+    me = object()
+
+    async def history(self, limit: int):
+        if False:
+            yield limit
+
+    @asynccontextmanager
+    async def typing(self):
+        raise AssertionError("a reaction must not show the typing indicator")
+        yield
+
+
+class ReactionTrigger:
+    id = "incoming"
+
+    def __init__(self):
+        self.channel = ReactionChannel()
+        self.reactions: list[str] = []
+
+    async def add_reaction(self, emoji: str):
+        self.reactions.append(emoji)
+
+
+def reply_store(tmp_path: Path, **overrides) -> Store:
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    settings = AppSettings(
+        enabled=True,
+        debounce_seconds=0,
+        min_delay_seconds=0,
+        max_delay_seconds=0,
+        min_message_gap_seconds=0,
+        max_message_gap_seconds=0,
+        **overrides,
+    )
+    store.set_app_settings(settings)
+    store.upsert_conversation("dm", "peer", "Peer")
+    store.save_message(
+        id="incoming",
+        channel_id="dm",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="hello",
+        timestamp=time.time(),
+    )
+    return store
 
 
 @pytest.mark.asyncio
@@ -78,224 +176,38 @@ async def test_only_the_pending_trigger_is_rescheduled_after_an_edit(tmp_path: P
     store.close()
 
 
-def test_reply_instructions_use_only_manual_owner_messages_as_style_evidence():
+def test_reply_instructions_use_manual_style_evidence_and_native_actions():
     history = [
         {"direction": "out", "source": "human", "content": "yeah sounds good"},
-        {
-            "direction": "out",
-            "source": "assistant",
-            "content": "Here are several options:\n\n- First\n- Second",
-        },
+        {"direction": "out", "source": "assistant", "content": "Generated style"},
         {"direction": "in", "source": "remote", "content": "when?"},
     ]
 
     instructions = build_reply_instructions(
-        AppSettings(
-            base_instructions="base",
-            owner_details="My name is Alex. My dog is called Pixel.",
-        ),
+        AppSettings(base_instructions="base", owner_details="My name is Alex."),
         {"profile": "profile"},
         history,
     )
 
-    assert "My name is Alex. My dog is called Pixel." in instructions
-    assert "never volunteer unrelated personal" in instructions
+    assert "My name is Alex." in instructions
     assert '"yeah sounds good"' in instructions
-    assert "Here are several options" not in instructions
-    assert "Default to one short line" in instructions
-    assert "dense and compact" in instructions
-    assert "use emoji a little less often" in instructions
-    assert "does not restrict the separate reaction action" in instructions
-    assert "Identity boundary" not in instructions
-    assert "A reaction may replace the message" in instructions
-    assert "output exactly one Discord message" in instructions
-    assert instructions.index("My name is Alex") < instructions.index("profile")
-    assert instructions.index("profile") < instructions.index("Default to one short line")
-    assert instructions.index("A reaction may replace the message") < instructions.index('"yeah sounds good"')
-
-
-def test_reply_instructions_offer_model_composed_sequences_only_when_selected():
-    instructions = build_reply_instructions(
-        AppSettings(base_instructions="base", max_reply_messages=4),
-        None,
-        [],
-        allow_sequence=True,
-    )
-
-    assert "sequence of 2–4 Discord messages" in instructions
-    assert "mechanically split a sentence" in instructions
-    assert "<message>first message</message>" in instructions
-
-
-@pytest.mark.parametrize(
-    ("answer", "maximum", "expected"),
-    (
-        ("plain reply", 3, ["plain reply"]),
-        ("<message>one</message><message>two</message>", 3, ["one", "two"]),
-        (" <MESSAGE> one </MESSAGE>\n<message>two</message> ", 3, ["one", "two"]),
-        ("<message>one</message><message>two</message><message>three</message>", 2, None),
-        ("<message>one</message>", 3, None),
-        ("<message>one</message>trailing", 3, None),
-        ("<message></message><message>two</message>", 3, None),
-        ("<message>one</message><message>two</message>", 1, None),
-    ),
-)
-def test_message_sequence_parser(answer: str, maximum: int, expected: list[str] | None):
-    assert parse_message_sequence(answer, maximum) == expected
-
-
-class ReplyingChatGPT:
-    def __init__(self, answers: list[str]):
-        self.answers = iter(answers)
-        self.calls: list[dict] = []
-
-    async def complete(
-        self,
-        messages,
-        instructions,
-        model,
-        effort,
-        *,
-        purpose,
-        max_output_tokens=None,
-        cache_key=None,
-        locale="en",
-    ):
-        self.calls.append(
-            {
-                "instructions": instructions,
-                "purpose": purpose,
-                "max_output_tokens": max_output_tokens,
-                "cache_key": cache_key,
-                "locale": locale,
-            }
-        )
-        return next(self.answers)
+    assert "Generated style" not in instructions
+    assert "send_messages" in instructions
+    assert "react_to_message" in instructions
+    assert "<message>" not in instructions
+    assert "<react>" not in instructions
 
 
 @pytest.mark.asyncio
-async def test_identity_disclosure_is_released_without_rewrite():
-    chatgpt = ReplyingChatGPT(["I'm an AI assistant."])
-    automation = Automation(cast(Store, None), cast(ChatGPTClient, chatgpt))
-
-    answer = await automation._generate_reply([], "instructions", AppSettings())
-
-    assert answer == "I'm an AI assistant."
-    assert [call["purpose"] for call in chatgpt.calls] == ["dm_reply"]
-    assert all(call["max_output_tokens"] == 256 for call in chatgpt.calls)
-    assert all(call["cache_key"] is None for call in chatgpt.calls)
-
-
-@pytest.mark.asyncio
-async def test_reaction_fallback_requires_plain_text():
-    chatgpt = ReplyingChatGPT(["got it", "<react>👍</react>"])
-    automation = Automation(cast(Store, None), cast(ChatGPTClient, chatgpt))
-
-    reply = await automation._reaction_fallback([], "instructions", AppSettings())
-    rejected = await automation._reaction_fallback([], "instructions", AppSettings())
-
-    assert reply == "got it"
-    assert rejected is None
-    assert all(call["purpose"] == "dm_reply_reaction_fallback" for call in chatgpt.calls)
-
-
-@pytest.mark.parametrize("output", ("<react>👍</react>", "👍"))
-def test_reaction_parser_accepts_only_an_allowed_single_emoji(output: str):
-    assert parse_reaction(output) == "👍"
-    assert parse_reaction("<react>🧨</react>") is None
-    assert parse_reaction("<react>👍</react> sounds good") is None
-
-
-class ReactionChannel:
-    id = "dm"
-    me = object()
-
-    async def history(self, limit: int):
-        if False:
-            yield limit
-
-    @asynccontextmanager
-    async def typing(self):
-        raise AssertionError("a reaction must not show the typing indicator")
-        yield
-
-
-class ReactionTrigger:
-    id = "incoming"
-
-    def __init__(self):
-        self.channel = ReactionChannel()
-        self.reactions: list[str] = []
-
-    async def add_reaction(self, emoji: str):
-        self.reactions.append(emoji)
-
-
-class TextChannel:
-    id = "dm"
-    me = object()
-
-    def __init__(self):
-        self.sent: list[tuple[str, str, bool]] = []
-
-    async def history(self, limit: int):
-        if False:
-            yield limit
-
-    @asynccontextmanager
-    async def typing(self):
-        yield
-
-    async def send(self, content: str, *, nonce: str, silent: bool):
-        self.sent.append((content, nonce, silent))
-        return SimpleNamespace(
-            id=f"sent-{len(self.sent)}",
-            author=SimpleNamespace(id="me"),
-            created_at=datetime.now(UTC),
-        )
-
-
-class TextTrigger:
-    id = "incoming"
-
-    def __init__(self):
-        self.channel = TextChannel()
-
-    async def add_reaction(self, emoji: str):
-        raise AssertionError(f"unexpected reaction: {emoji}")
-
-
-@pytest.mark.asyncio
-async def test_model_composed_sequence_uses_delivery_options_and_stores_clean_content(
-    tmp_path: Path,
-):
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    settings = AppSettings(
-        enabled=True,
+async def test_native_message_sequence_uses_delivery_options_and_stores_clean_content(tmp_path: Path):
+    store = reply_store(
+        tmp_path,
         silent_replies=True,
         robot_prefix=True,
         multi_message_replies=True,
-        multi_message_chance=100,
         max_reply_messages=3,
-        min_message_gap_seconds=0,
-        max_message_gap_seconds=0,
-        debounce_seconds=0,
-        min_delay_seconds=0,
-        max_delay_seconds=0,
     )
-    store.set_app_settings(settings)
-    store.upsert_conversation("dm", "peer", "Peer")
-    store.save_message(
-        id="incoming",
-        channel_id="dm",
-        author_id="peer",
-        author_name="Peer",
-        direction="in",
-        source="remote",
-        content="hello",
-        timestamp=time.time(),
-    )
-    chatgpt = ReplyingChatGPT(["<message>hey</message><message>what's up?</message>"])
+    chatgpt = ReplyingChatGPT([function_result("send_messages", {"messages": ["hey", "what's up?"]})])
     automation = Automation(store, cast(ChatGPTClient, chatgpt))
     automation.versions["dm"] = 0
     trigger = TextTrigger()
@@ -306,37 +218,20 @@ async def test_model_composed_sequence_uses_delivery_options_and_stores_clean_co
     assert all(item[2] is True for item in trigger.channel.sent)
     saved = store.history("dm", 10)[-2:]
     assert [item["content"] for item in saved] == ["hey", "what's up?"]
-    assert all(item["source"] == "assistant" for item in saved)
-    assert "sequence of 2–3 Discord messages" in chatgpt.calls[0]["instructions"]
-    assert chatgpt.calls[0]["cache_key"].startswith("diskovod:dm:")
-    assert "dm" not in chatgpt.calls[0]["cache_key"].removeprefix("diskovod:dm:")
+    assert chatgpt.calls[0]["tool_choice"] == "required"
+    assert chatgpt.calls[0]["cache_key"].startswith("diskovod:dm-profile:")
     store.close()
 
 
 @pytest.mark.asyncio
-async def test_unavailable_sequence_markup_is_replaced_with_one_plain_message(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    store.set_app_settings(
-        AppSettings(
-            enabled=True,
-            multi_message_replies=False,
-            debounce_seconds=0,
-            min_delay_seconds=0,
-            max_delay_seconds=0,
-        )
+async def test_plain_text_is_inert_and_gets_one_forced_native_repair(tmp_path: Path):
+    store = reply_store(tmp_path)
+    chatgpt = ReplyingChatGPT(
+        [
+            ModelResult([TextOutput("plain text", [])], [], []),
+            function_result("send_messages", {"messages": ["fixed reply"]}),
+        ]
     )
-    store.upsert_conversation("dm", "peer", "Peer")
-    store.save_message(
-        id="incoming",
-        channel_id="dm",
-        author_id="peer",
-        author_name="Peer",
-        direction="in",
-        source="remote",
-        content="hello",
-        timestamp=time.time(),
-    )
-    chatgpt = ReplyingChatGPT(["<message>invalid</message><message>sequence</message>", "fixed reply"])
     automation = Automation(store, cast(ChatGPTClient, chatgpt))
     automation.versions["dm"] = 0
     trigger = TextTrigger()
@@ -344,35 +239,14 @@ async def test_unavailable_sequence_markup_is_replaced_with_one_plain_message(tm
     await automation._reply(trigger, 0)
 
     assert [item[0] for item in trigger.channel.sent] == ["fixed reply"]
-    assert [call["purpose"] for call in chatgpt.calls] == [
-        "dm_reply",
-        "dm_reply_sequence_fallback",
-    ]
+    assert chatgpt.calls[1]["tool_choice"] == {"type": "function", "name": "send_messages"}
     store.close()
 
 
 @pytest.mark.asyncio
-async def test_reaction_replaces_reply_and_is_recorded(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    settings = AppSettings(
-        enabled=True,
-        debounce_seconds=0,
-        min_delay_seconds=0,
-        max_delay_seconds=0,
-    )
-    store.set_app_settings(settings)
-    store.upsert_conversation("dm", "peer", "Peer")
-    store.save_message(
-        id="incoming",
-        channel_id="dm",
-        author_id="peer",
-        author_name="Peer",
-        direction="in",
-        source="remote",
-        content="nice",
-        timestamp=time.time(),
-    )
-    chatgpt = ReplyingChatGPT(["<react>👍</react>"])
+async def test_native_reaction_replaces_reply_and_is_recorded(tmp_path: Path):
+    store = reply_store(tmp_path)
+    chatgpt = ReplyingChatGPT([function_result("react_to_message", {"emoji": "👍"})])
     automation = Automation(store, cast(ChatGPTClient, chatgpt))
     automation.versions["dm"] = 0
     trigger = ReactionTrigger()
@@ -386,29 +260,15 @@ async def test_reaction_replaces_reply_and_is_recorded(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_forced_reply_bypasses_pause_and_requires_written_output(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    store.set_app_settings(
-        AppSettings(
-            enabled=False,
-            debounce_seconds=60,
-            min_delay_seconds=60,
-            max_delay_seconds=60,
-        )
-    )
-    store.upsert_conversation("dm", "peer", "Peer")
+async def test_forced_reply_repairs_reaction_to_written_native_action(tmp_path: Path):
+    store = reply_store(tmp_path)
     store.set_permanent_pause("dm", True)
-    store.save_message(
-        id="incoming",
-        channel_id="dm",
-        author_id="peer",
-        author_name="Peer",
-        direction="in",
-        source="remote",
-        content="please answer",
-        timestamp=time.time(),
+    chatgpt = ReplyingChatGPT(
+        [
+            function_result("react_to_message", {"emoji": "👍"}),
+            function_result("send_messages", {"messages": ["written forced reply"]}),
+        ]
     )
-    chatgpt = ReplyingChatGPT(["<react>👍</react>", "written forced reply"])
     automation = Automation(store, cast(ChatGPTClient, chatgpt))
     automation.versions["dm"] = 0
     trigger = TextTrigger()
@@ -416,10 +276,44 @@ async def test_forced_reply_bypasses_pause_and_requires_written_output(tmp_path:
     await automation._reply(trigger, 0, force=True)
 
     assert [item[0] for item in trigger.channel.sent] == ["written forced reply"]
-    assert [call["purpose"] for call in chatgpt.calls] == [
-        "dm_reply",
-        "dm_reply_reaction_fallback",
-    ]
-    assert "written reply was explicitly requested" in chatgpt.calls[0]["instructions"]
+    assert chatgpt.calls[1]["tool_choice"] == {"type": "function", "name": "send_messages"}
     assert store.conversation("dm")["paused"] is True
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_time_tool_output_is_ephemeral_and_terminal_action_follows(tmp_path: Path):
+    store = reply_store(tmp_path, owner_timezone="Europe/Moscow")
+    chatgpt = ReplyingChatGPT(
+        [
+            function_result("get_current_datetime", {"timezone": None}, "time-call"),
+            function_result("send_messages", {"messages": ["Сегодня воскресенье."]}, "send-call"),
+        ]
+    )
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0)
+
+    continuation = chatgpt.calls[1]["continuation_items"]
+    assert [item["type"] for item in continuation] == ["function_call", "function_call_output"]
+    assert '"timezone":"Europe/Moscow"' in continuation[1]["output"]
+    assert all("Europe/Moscow" not in item["content"] for item in store.history("dm", 10))
+    store.close()
+
+
+def test_profile_cache_key_is_shared_without_sharing_conversation_state(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    chatgpt = ReplyingChatGPT([])
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    settings = AppSettings(model="model", base_instructions="stable")
+    personality = {"profile": "style", "source_hash": "profile-v1"}
+
+    first = automation._profile_cache_key(settings, personality)
+    second = automation._profile_cache_key(settings, personality)
+
+    assert first == second
+    assert first.startswith("diskovod:dm-profile:")
+    assert "profile-v1" not in first
     store.close()

@@ -50,8 +50,10 @@ def test_reply_instructions_use_the_selected_prompt_locale():
 
         assert prompts.base in instructions
         assert prompts.dm_style in instructions
-        assert prompts.reaction in instructions
-        assert prompts.single_message in instructions
+        assert "send_messages" in instructions
+        assert "react_to_message" in instructions
+        assert "<react>" not in instructions
+        assert "<message>" not in instructions
         assert prompts.owner_details.format(details="details") in instructions
         assert prompts.cached_personality.format(profile="profile") in instructions
 

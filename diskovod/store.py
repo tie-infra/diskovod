@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -7,8 +8,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .models import AppSettings, ChatCredentials, CustomProvider
+from .models import (
+    DEFAULT_BASE_INSTRUCTIONS,
+    AppSettings,
+    ChatCredentials,
+    CustomProvider,
+)
 from .security import SecretBox
+
+LEGACY_BASE_INSTRUCTIONS_SHA256 = "ce9bd3d8ffbef462362269db68c7996d9ca0e3e93761d197fcf82f5e0f25502c"
 
 
 class Store:
@@ -93,7 +101,14 @@ class Store:
             self._db.execute("DELETE FROM config WHERE key=?", (key,))
 
     def app_settings(self) -> AppSettings:
-        return AppSettings(**(AppSettings().to_dict() | self._get("app.settings", {})))
+        saved = self._get("app.settings", {})
+        base_instructions = saved.get("base_instructions")
+        if (
+            isinstance(base_instructions, str)
+            and hashlib.sha256(base_instructions.encode()).hexdigest() == LEGACY_BASE_INSTRUCTIONS_SHA256
+        ):
+            saved["base_instructions"] = DEFAULT_BASE_INSTRUCTIONS
+        return AppSettings(**(AppSettings().to_dict() | saved))
 
     def set_app_settings(self, value: AppSettings) -> None:
         self._set("app.settings", value.to_dict())

@@ -353,6 +353,19 @@
               modified; emoji reactions are unaffected.
             </p>
 
+            <label class="toggle">
+              <input
+                type="checkbox"
+                name="robot_prefix"
+                {% if app_settings.robot_prefix %}checked{% endif %}
+              >
+              Prefix generated replies with 🤖
+            </label>
+            <p class="field-help">
+              Adds a visible robot emoji to every generated message so recipients can distinguish
+              assistant replies from messages written by the account owner.
+            </p>
+
             <fieldset>
               <legend>New conversation default</legend>
               <label>

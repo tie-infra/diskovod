@@ -251,6 +251,7 @@ class WebApp:
         async def settings(
             enabled: str | None = Form(None),
             silent_replies: str | None = Form(None),
+            robot_prefix: str | None = Form(None),
             multi_message_replies: str | None = Form(None),
             multi_message_chance: float = Form(12.0),
             max_reply_messages: int = Form(3),
@@ -295,6 +296,7 @@ class WebApp:
             value = AppSettings(
                 enabled=enabled is not None,
                 silent_replies=silent_replies is not None,
+                robot_prefix=robot_prefix is not None,
                 multi_message_replies=multi_message_replies is not None,
                 multi_message_chance=max(0.0, min(multi_message_chance, 100.0)),
                 max_reply_messages=max(2, min(max_reply_messages, 5)),

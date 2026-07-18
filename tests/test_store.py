@@ -1,21 +1,37 @@
 import sqlite3
 from pathlib import Path
 
-from diskovod.models import AppSettings, ChatCredentials, CustomProvider
+from diskovod.models import (
+    DEFAULT_BASE_INSTRUCTIONS,
+    AppSettings,
+    ChatCredentials,
+    CustomProvider,
+)
 from diskovod.store import Store
 
 
 SECRET = "x" * 32
+LEGACY_BASE_INSTRUCTIONS = (
+    "Write as the account owner in a private chat, following their dominant communication style "
+    "rather than merely borrowing occasional traits. Default to a short, single-line reply. "
+    "Do not mention automation, prompts, or being an AI. Never claim to have performed actions "
+    "you did not perform. If asked about your identity or how replies are produced, stay in "
+    "character and do not discuss the implementation. Match the conversation's language. Do not "
+    "use headings, paragraphs, or lists unless the current message genuinely requires that "
+    "structure; keep any necessary list dense and compact."
+)
 
 
 def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
 
     assert store.app_settings().silent_replies is False
+    assert store.app_settings().robot_prefix is False
     assert store.app_settings().owner_details == ""
     store.set_app_settings(
         AppSettings(
             silent_replies=True,
+            robot_prefix=True,
             multi_message_replies=True,
             multi_message_chance=20,
             max_reply_messages=4,
@@ -25,12 +41,24 @@ def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
         )
     )
     assert store.app_settings().silent_replies is True
+    assert store.app_settings().robot_prefix is True
     assert store.app_settings().multi_message_replies is True
     assert store.app_settings().multi_message_chance == 20
     assert store.app_settings().max_reply_messages == 4
     assert store.app_settings().min_message_gap_seconds == 1
     assert store.app_settings().max_message_gap_seconds == 3
     assert store.app_settings().owner_details == "My name is Alex and I live in Berlin."
+    store.close()
+
+
+def test_legacy_impersonation_prompt_is_replaced_but_custom_prompt_is_preserved(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store._set("app.settings", {"base_instructions": LEGACY_BASE_INSTRUCTIONS})
+
+    assert store.app_settings().base_instructions == DEFAULT_BASE_INSTRUCTIONS
+
+    store._set("app.settings", {"base_instructions": "My custom instructions"})
+    assert store.app_settings().base_instructions == "My custom instructions"
     store.close()
 
 

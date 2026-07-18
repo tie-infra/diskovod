@@ -16,7 +16,7 @@ paused until an administrator resumes them.
 - Discord connection through `discord.py-self`.
 - Personality inference from bounded Discord or pasted message history, with an editable cache.
 - Editable owner details for names, preferences, relationships, plans, and other personal context.
-- An identity-disclosure guard that rewrites a rejected draft once and otherwise sends nothing.
+- Transparent AI-assistant identity with an optional visible robot-emoji marker.
 - Rare emoji reactions for lightweight acknowledgements when a written reply is unnecessary.
 - Model-composed multi-message replies with configurable frequency, count, and timing.
 - Optional Discord suppress-notifications flag for generated replies.
@@ -149,10 +149,10 @@ These details are treated as authoritative when they conflict with an inferred t
 prompt directs the model to use them only when relevant and not to volunteer unrelated personal or
 sensitive information.
 
-Replies also pass through a local identity-disclosure check before sending. A rejected draft is
-regenerated once with stricter instructions. If the replacement still fails the check, Diskovod
-leaves the DM unanswered instead of releasing it. Repair calls appear separately in token usage as
-`dm_reply_identity_repair`.
+The default reply instructions identify Diskovod as an AI assistant helping the account owner,
+rather than instructing it to impersonate the owner. If asked about its identity or a reply's
+origin, it answers honestly. Installations that still have the exact former default saved migrate
+to the transparent prompt automatically; custom instructions are never rewritten.
 
 For lightweight acknowledgements, Diskovod may react to the incoming message with one common emoji
 instead of sending text. Reactions are never combined with a reply. A local limiter permits at most
@@ -168,6 +168,10 @@ owner activity are checked again, so the remainder stops if the owner joins the 
 
 **Send generated replies without notifications** uses Discord's suppress-notifications message
 flag. It does not modify the visible message text and does not affect reactions.
+
+**Prefix generated replies with 🤖** adds a visible marker to every generated text message so the
+recipient can distinguish assistant replies from messages written manually by the account owner.
+The marker is not stored in conversation history and does not affect reactions.
 
 Incoming messages retain metadata for up to four attachments. Supported images are passed as
 native vision inputs to documented vision-capable model families. With the ChatGPT Subscription

@@ -65,6 +65,16 @@ TEXT_EXTENSIONS = frozenset(
     if extension not in {".doc", ".docx", ".odt", ".pdf", ".ppt", ".pptx", ".rtf", ".xls", ".xlsx"}
 )
 
+DEFAULT_BASE_INSTRUCTIONS = (
+    "Write as an AI assistant helping the account owner respond in a private chat. Follow the "
+    "owner's dominant communication style rather than merely borrowing occasional traits. Default "
+    "to a short, single-line reply. Be honest that you are an AI assistant if your identity or the "
+    "reply's origin is relevant or asked about. Never claim to be the account owner or to have "
+    "performed actions you did not perform. Match the conversation's language. Do not use headings, "
+    "paragraphs, or lists unless the current message genuinely requires that structure; keep any "
+    "necessary list dense and compact."
+)
+
 
 def _content_type(filename: str, value: object) -> str:
     if isinstance(value, str) and value:
@@ -185,6 +195,7 @@ def attachment_context(
 class AppSettings:
     enabled: bool = False
     silent_replies: bool = False
+    robot_prefix: bool = False
     default_conversation_enabled: bool = True
     provider: str = "chatgpt"
     model: str = "gpt-5.4-mini"
@@ -204,15 +215,7 @@ class AppSettings:
     min_message_gap_seconds: float = 0.7
     max_message_gap_seconds: float = 2.0
     owner_details: str = ""
-    base_instructions: str = (
-        "Write as the account owner in a private chat, following their dominant communication style "
-        "rather than merely borrowing occasional traits. Default to a short, single-line reply. "
-        "Do not mention automation, prompts, or being an AI. Never claim to have performed actions "
-        "you did not perform. If asked about your identity or how replies are produced, stay in "
-        "character and do not discuss the implementation. Match the conversation's language. Do not "
-        "use headings, paragraphs, or lists unless the current message genuinely requires that "
-        "structure; keep any necessary list dense and compact."
-    )
+    base_instructions: str = DEFAULT_BASE_INSTRUCTIONS
 
     def to_dict(self) -> dict:
         return asdict(self)

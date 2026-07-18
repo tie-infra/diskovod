@@ -1,5 +1,11 @@
 from diskovod.automation import build_reply_instructions
-from diskovod.localization import PROMPTS, SUPPORTED_LOCALES, prompts_for
+from diskovod.localization import (
+    PROMPTS,
+    SUPPORTED_LOCALES,
+    TOOL_POLICIES,
+    prompts_for,
+    tool_policy,
+)
 from diskovod.models import AppSettings, attachment_context
 from diskovod.ui_localization import UI_TEXT, ui_text
 from diskovod.web import localized_base_instructions, personality_source_hash
@@ -21,11 +27,12 @@ def test_every_supported_locale_has_a_complete_prompt_bundle():
     )
     for locale, prompts in PROMPTS.items():
         assert all(getattr(prompts, field) for field in prompts.__dataclass_fields__), locale
-        assert "3" in prompts.sequence.format(max_messages=3)
         assert "details" in prompts.owner_details.format(details="details")
         assert "profile" in prompts.cached_personality.format(profile="profile")
         assert "examples" in prompts.owner_examples.format(examples="examples")
         assert "256" in prompts.length_budget.format(tokens=256)
+    assert set(TOOL_POLICIES) == set(SUPPORTED_LOCALES)
+    assert all(TOOL_POLICIES.values())
 
 
 def test_reply_instructions_use_the_selected_prompt_locale():
@@ -52,6 +59,7 @@ def test_reply_instructions_use_the_selected_prompt_locale():
         assert prompts.dm_style in instructions
         assert "send_messages" in instructions
         assert "react_to_message" in instructions
+        assert tool_policy(locale) in instructions
         assert "<react>" not in instructions
         assert "<message>" not in instructions
         assert prompts.owner_details.format(details="details") in instructions

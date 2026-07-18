@@ -23,6 +23,16 @@ ESCALATION_FALLBACKS = {
     "fr": "J’ai signalé cette conversation au propriétaire du compte.",
 }
 
+TOOL_POLICIES = {
+    "en": """Use the available native tools for every action. Finish with exactly one terminal action: send_messages for written replies, escalate_to_owner when the peer explicitly asks for the owner, or, only when genuinely appropriate, react_to_message. Do not return final reply text outside a terminal action. Use get_current_datetime whenever the answer depends on the current date or time, and calculate for non-trivial arithmetic. Use web_search only when the peer asks to search or verify, or when current public information materially affects the answer. If web_search is unavailable, say so when relevant and never invent results.""",
+    "ru": """Для каждого действия используй доступные встроенные инструменты. Заверши ровно одним конечным действием: send_messages для письменного ответа, escalate_to_owner, если собеседник явно просит владельца, либо react_to_message, только когда реакция действительно уместна. Не выдавай итоговый текст ответа вне конечного действия. Вызывай get_current_datetime, если ответ зависит от текущей даты или времени, и calculate для нетривиальных вычислений. Используй web_search только по просьбе найти или проверить сведения либо когда ответ существенно зависит от актуальной публичной информации. Если web_search недоступен, при необходимости честно скажи об этом и не выдумывай результаты.""",
+    "uk": """Для кожної дії використовуй доступні вбудовані інструменти. Заверши рівно однією кінцевою дією: send_messages для письмової відповіді, escalate_to_owner, якщо співрозмовник прямо просить власника, або react_to_message, лише коли реакція справді доречна. Не виводь підсумковий текст відповіді поза кінцевою дією. Викликай get_current_datetime, якщо відповідь залежить від поточної дати чи часу, і calculate для нетривіальних обчислень. Використовуй web_search лише на прохання знайти або перевірити відомості чи коли відповідь істотно залежить від актуальної публічної інформації. Якщо web_search недоступний, за потреби чесно скажи про це й не вигадуй результатів.""",
+    "ja": """すべての操作には利用可能なネイティブツールを使ってください。最後は必ず一つの終端操作にします。文章で返信する場合は send_messages、相手が所有者への取り次ぎを明示的に求めた場合は escalate_to_owner、リアクションが本当に自然な場合のみ react_to_message を使います。終端操作の外に最終返信文を出力しないでください。現在の日付や時刻に依存する回答では get_current_datetime を、単純でない計算では calculate を使います。相手が検索や確認を求めた場合、または最新の公開情報が回答を大きく左右する場合に限り web_search を使います。web_search が利用できない場合は必要に応じてその旨を伝え、結果を捏造しないでください。""",
+    "zh": """每项操作都必须使用可用的原生工具，并且只以一个终结操作结束：文字回复使用 send_messages；对方明确要求联系所有者时使用 escalate_to_owner；只有确实自然合适时才使用 react_to_message。不要在终结操作之外输出最终回复文本。回答依赖当前日期或时间时使用 get_current_datetime，非简单算术使用 calculate。只有对方要求搜索或核实时，或正确答案实质依赖最新公开信息时，才使用 web_search。如果 web_search 不可用，应在相关情况下如实说明，绝不编造搜索结果。""",
+    "de": """Verwende für jede Aktion die verfügbaren nativen Werkzeuge. Beende den Vorgang mit genau einer abschließenden Aktion: send_messages für schriftliche Antworten, escalate_to_owner, wenn ausdrücklich nach dem Inhaber gefragt wird, oder react_to_message nur dann, wenn eine Reaktion wirklich passend ist. Gib keinen endgültigen Antworttext außerhalb einer abschließenden Aktion aus. Nutze get_current_datetime, wenn die Antwort vom aktuellen Datum oder der Uhrzeit abhängt, und calculate für nicht triviale Berechnungen. Nutze web_search nur, wenn die andere Person um eine Suche oder Prüfung bittet oder wenn aktuelle öffentliche Informationen die Antwort wesentlich beeinflussen. Falls web_search nicht verfügbar ist, sage das bei Bedarf offen und erfinde keine Ergebnisse.""",
+    "fr": """Utilise les outils natifs disponibles pour chaque action. Termine par une seule action finale : send_messages pour une réponse écrite, escalate_to_owner lorsque l’interlocuteur demande explicitement le propriétaire, ou react_to_message uniquement lorsqu’une réaction est réellement appropriée. Ne produis aucun texte de réponse final en dehors d’une action finale. Utilise get_current_datetime lorsque la réponse dépend de la date ou de l’heure actuelles, et calculate pour les calculs non triviaux. Utilise web_search uniquement si l’interlocuteur demande une recherche ou une vérification, ou si des informations publiques actuelles influencent sensiblement la réponse. Si web_search n’est pas disponible, indique-le lorsque c’est pertinent et n’invente jamais de résultats.""",
+}
+
 
 def normalize_locale(locale: str) -> str:
     return locale if locale in SUPPORTED_LOCALES else DEFAULT_LOCALE
@@ -32,15 +42,14 @@ def escalation_fallback(locale: str) -> str:
     return ESCALATION_FALLBACKS[normalize_locale(locale)]
 
 
+def tool_policy(locale: str) -> str:
+    return TOOL_POLICIES[normalize_locale(locale)]
+
+
 @dataclass(frozen=True, slots=True)
 class PromptBundle:
     base: str
     dm_style: str
-    single_message: str
-    sequence: str
-    sequence_fallback: str
-    reaction: str
-    reaction_fallback: str
     forced_reply: str
     owner_details: str
     cached_personality: str
@@ -57,16 +66,7 @@ PROMPTS = {
         dm_style="""Default to one short line per Discord message. Match the dominant length, line count, sentence shape, capitalization, and punctuation of the account owner's recent manual messages. Rare behavior in the profile or examples must remain rare; observing a format once is not a reason to repeat it.
 
 Do not add line breaks, separate paragraphs, bullets, numbering, headings, recaps, assistant-style framing, or unsolicited alternatives unless the latest incoming message explicitly calls for structured content or a closely analogous manual-owner example clearly supports it. If a list is genuinely needed, make it dense and compact, with no blank lines and only as many items as necessary. In written replies, use emoji a little less often than the owner's style evidence would otherwise suggest: omit decorative emoji, usually use at most one, and include one only when it adds a natural emotional cue. This does not restrict the separate reaction action. Answer only what the current conversation needs. Before returning, silently check that the reply's line count and structure match these rules.""",
-        single_message="""Unless choosing the reaction action described below, output exactly one Discord message as plain conversational text. Do not output <message> tags.""",
-        sequence="""For this turn, a brief sequence of 2–{max_messages} Discord messages is available when it would naturally match the owner's habits and the conversational moment. Prefer a sequence only when the thoughts have believable message boundaries; do not mechanically split a sentence, turn a compact reply into a sparse list, repeat yourself, or pad the response.
-
-To send a sequence, output exactly 2–{max_messages} adjacent blocks in this form and no text outside them: <message>first message</message><message>second message</message>. Each block is sent separately and should contain only its visible Discord text. If one message is more natural, output ordinary plain text without tags.""",
-        sequence_fallback="""The previous output used invalid multi-message formatting. Return exactly one ordinary plain-text Discord message. Do not use <message> tags, reaction markup, or an emoji-only response.""",
-        reaction="""A reaction may replace the message only on a rare occasion when the latest incoming message needs no written answer and a real person would naturally acknowledge it with one emoji. Suitable cases include a casual acknowledgement, a joke, a small win, or a reaction-worthy statement. Never react instead of replying to a question, request, plan needing confirmation, sensitive or emotional disclosure, conflict, or unclear context. When uncertain, write a normal reply.
-
-To choose a reaction, output exactly <react>EMOJI</react> and nothing else, using one of: 👍 ❤️ 😂 🔥 🎉 😮 😢 🙏 👀 ✅ 💯 🤝 👌 😊 😅 🤔 🙌. Do not combine a reaction with text. Treat reactions as substantially rarer than messages—roughly fewer than one in twelve suitable responses.""",
-        reaction_fallback="""A reaction is unavailable for this turn because reactions are being rate-limited. Return a normal plain-text reply instead. Do not output reaction markup or an emoji-only message.""",
-        forced_reply="""A written reply was explicitly requested for this turn. Return a normal text message, not a reaction or reaction markup.""",
+        forced_reply="""A written reply was explicitly requested for this turn. Use send_messages, not react_to_message.""",
         owner_details="""Owner-provided personal details and facts:
 {details}
 Treat these as authoritative when they conflict with inferred traits or conversation assumptions. Use them naturally when relevant, but never volunteer unrelated personal or sensitive details merely because they are available.""",
@@ -95,16 +95,7 @@ Give highest priority to the default reply shape and useful negative constraints
         dm_style="""По умолчанию одно сообщение Discord должно состоять из одной короткой строки. Повторяй типичную длину, число строк, форму предложений, регистр и пунктуацию недавних сообщений, написанных владельцем вручную. Редкие особенности профиля и примеров должны оставаться редкими.
 
 Не добавляй переносы строк, отдельные абзацы, маркеры, нумерацию, заголовки, резюме, ассистентскую рамку или непрошеные альтернативы, если входящее сообщение явно этого не требует. Если список необходим, сделай его плотным, без пустых строк и только с нужным числом пунктов. Используй эмодзи немного реже, чем подсказывают примеры владельца: без декоративных эмодзи, обычно не больше одного и только для естественной эмоциональной окраски. Это не ограничивает отдельное действие-реакцию. Отвечай только на то, что нужно текущей беседе, и перед выдачей молча проверь форму ответа.""",
-        single_message="Если не выбрана описанная ниже реакция, выдай ровно одно сообщение Discord обычным разговорным текстом. Не используй теги <message>.",
-        sequence="""В этом ответе допустима короткая последовательность из 2–{max_messages} сообщений Discord, если она естественно соответствует привычкам владельца и моменту беседы. Используй её только при правдоподобных границах мыслей; не разрезай предложение механически, не превращай краткий ответ в разреженный список, не повторяйся и не добавляй наполнитель.
-
-Для последовательности выдай ровно 2–{max_messages} соседних блока без текста снаружи: <message>первое сообщение</message><message>второе сообщение</message>. Каждый блок отправляется отдельно и содержит только видимый текст Discord. Если естественнее одно сообщение, выдай обычный текст без тегов.""",
-        sequence_fallback="Предыдущий ответ неверно оформил несколько сообщений. Верни ровно одно обычное текстовое сообщение Discord без тегов <message>, разметки реакций и ответа только из эмодзи.",
-        reaction="""Реакция может заменить сообщение лишь изредка, когда последнее входящее сообщение не требует письменного ответа и человек естественно подтвердил бы его одним эмодзи: например, непринуждённое подтверждение, шутка или небольшая победа. Никогда не заменяй реакцией ответ на вопрос, просьбу, план, требующий подтверждения, чувствительное признание, конфликт или неясный контекст. При сомнении напиши обычный ответ.
-
-Для реакции выдай только <react>ЭМОДЗИ</react>, используя один из: 👍 ❤️ 😂 🔥 🎉 😮 😢 🙏 👀 ✅ 💯 🤝 👌 😊 😅 🤔 🙌. Не совмещай реакцию с текстом. Реакции должны быть существенно реже сообщений — примерно реже одного раза на двенадцать подходящих ответов.""",
-        reaction_fallback="Реакция недоступна в этом ответе из-за ограничения частоты. Вместо неё верни обычный текстовый ответ без разметки реакций и без ответа только из эмодзи.",
-        forced_reply="Для этого ответа явно запрошено письменное сообщение. Верни обычный текст, а не реакцию или её разметку.",
+        forced_reply="Для этого ответа явно запрошено письменное сообщение. Используй send_messages, а не react_to_message.",
         owner_details="""Личные сведения и факты, предоставленные владельцем:
 {details}
 Считай их авторитетными при конфликте с предполагаемыми чертами или допущениями беседы. Используй их естественно и только по делу; не сообщай посторонние личные или чувствительные сведения лишь потому, что они доступны.""",
@@ -123,16 +114,7 @@ Give highest priority to the default reply shape and useful negative constraints
         dm_style="""Типово одне повідомлення Discord має бути одним коротким рядком. Відтворюй звичну довжину, кількість рядків, форму речень, регістр і пунктуацію недавніх повідомлень, написаних власником вручну. Рідкісні особливості профілю та прикладів мають залишатися рідкісними.
 
 Не додавай переноси, окремі абзаци, маркери, нумерацію, заголовки, підсумки, асистентське оформлення чи непрохані альтернативи, якщо вхідне повідомлення явно цього не вимагає. Якщо список справді потрібен, зроби його щільним, без порожніх рядків і лише з необхідними пунктами. Використовуй емодзі трохи рідше, ніж підказують приклади власника: без декоративних емодзі, зазвичай не більше одного й лише для природного емоційного відтінку. Це не обмежує окрему дію-реакцію. Відповідай лише на те, що потрібно поточній розмові, і перед видачею мовчки перевір форму відповіді.""",
-        single_message="Якщо не обрано описану нижче реакцію, виведи рівно одне повідомлення Discord звичайним розмовним текстом. Не використовуй теги <message>.",
-        sequence="""У цій відповіді доступна коротка послідовність із 2–{max_messages} повідомлень Discord, якщо вона природно відповідає звичкам власника й моменту розмови. Використовуй її лише за правдоподібних меж думок; не розрізай речення механічно, не перетворюй стислу відповідь на розріджений список, не повторюйся й не додавай наповнювач.
-
-Для послідовності виведи рівно 2–{max_messages} сусідніх блоки без тексту зовні: <message>перше повідомлення</message><message>друге повідомлення</message>. Кожен блок надсилається окремо й містить лише видимий текст Discord. Якщо природніше одне повідомлення, виведи звичайний текст без тегів.""",
-        sequence_fallback="Попередня відповідь мала неправильне оформлення кількох повідомлень. Поверни рівно одне звичайне текстове повідомлення Discord без тегів <message>, розмітки реакцій і відповіді лише з емодзі.",
-        reaction="""Реакція може замінити повідомлення лише зрідка, коли останнє вхідне повідомлення не потребує письмової відповіді й людина природно відреагувала б одним емодзі: наприклад, невимушене підтвердження, жарт або невелика перемога. Ніколи не замінюй реакцією відповідь на запитання, прохання, план, що потребує підтвердження, чутливе зізнання, конфлікт чи неясний контекст. Якщо сумніваєшся, напиши звичайну відповідь.
-
-Для реакції виведи лише <react>ЕМОДЗІ</react>, використовуючи один із: 👍 ❤️ 😂 🔥 🎉 😮 😢 🙏 👀 ✅ 💯 🤝 👌 😊 😅 🤔 🙌. Не поєднуй реакцію з текстом. Реакції мають бути значно рідшими за повідомлення — приблизно рідше одного разу на дванадцять доречних відповідей.""",
-        reaction_fallback="Реакція недоступна в цій відповіді через обмеження частоти. Натомість поверни звичайну текстову відповідь без розмітки реакцій і без відповіді лише з емодзі.",
-        forced_reply="Для цього ходу явно запитано письмову відповідь. Поверни звичайне текстове повідомлення, а не реакцію чи її розмітку.",
+        forced_reply="Для цього ходу явно запитано письмову відповідь. Використовуй send_messages, а не react_to_message.",
         owner_details="""Особисті відомості та факти, надані власником:
 {details}
 Вважай їх авторитетними в разі конфлікту з виведеними рисами чи припущеннями розмови. Використовуй їх природно й лише доречно; не повідомляй сторонні особисті або чутливі подробиці лише через їхню доступність.""",
@@ -151,16 +133,7 @@ Give highest priority to the default reply shape and useful negative constraints
         dm_style="""Discordの各メッセージは、既定で短い一行にしてください。所有者が最近手動で書いたメッセージの典型的な長さ、行数、文の形、大文字小文字、句読点に合わせてください。プロフィールや例にある珍しい振る舞いは珍しいままにし、一度見ただけの形式を繰り返さないでください。
 
 最新の受信メッセージが明確に構造化を求める場合を除き、改行、別段落、箇条書き、番号、見出し、要約、アシスタント風の前置き、求められていない代案を追加しないでください。リストが本当に必要なら、空行を入れず必要最小限の項目だけにしてください。文章中の絵文字は所有者の例から想定されるより少し控えめにし、装飾目的を避け、通常は最大一つ、自然な感情表現になる場合だけ使ってください。これは別のリアクション操作を制限しません。現在の会話に必要なことだけ答え、出力前に行数と構造を黙って確認してください。""",
-        single_message="下記のリアクション操作を選ぶ場合を除き、通常の会話文としてDiscordメッセージを正確に一つだけ出力してください。<message>タグは使わないでください。",
-        sequence="""このターンでは、所有者の習慣と会話の流れに自然に合う場合、2～{max_messages}件の短いDiscordメッセージ列を使えます。考えの境界が自然な場合だけ使い、文を機械的に分割したり、簡潔な返信を疎なリストにしたり、反復や水増しをしたりしないでください。
-
-メッセージ列を送る場合は、外側に文章を置かず、2～{max_messages}個の連続したブロックを正確に出力します：<message>最初のメッセージ</message><message>次のメッセージ</message>。各ブロックは個別に送信され、表示されるDiscord本文だけを含みます。一つの方が自然ならタグなしの通常文を出力してください。""",
-        sequence_fallback="前の出力は複数メッセージの形式が無効でした。通常のDiscordテキストメッセージを一つだけ返してください。<message>タグ、リアクション記法、絵文字だけの返答は使わないでください。",
-        reaction="""最新の受信メッセージに文章での回答が不要で、人なら自然に一つの絵文字で受け止める場合に限り、まれにメッセージをリアクションで置き換えられます。軽い了承、冗談、小さな成功などが対象です。質問、依頼、確認が必要な計画、繊細な告白、対立、不明確な文脈への返答をリアクションで置き換えないでください。迷う場合は通常の返信を書いてください。
-
-リアクションを選ぶには、次のいずれかを使い、<react>絵文字</react>だけを出力してください：👍 ❤️ 😂 🔥 🎉 😮 😢 🙏 👀 ✅ 💯 🤝 👌 😊 😅 🤔 🙌。文章と組み合わせないでください。リアクションはメッセージより大幅に少なくし、適切な応答12回につき1回未満を目安にします。""",
-        reaction_fallback="頻度制限のため、このターンではリアクションを使えません。通常の文章で返信し、リアクション記法や絵文字だけの返答を出力しないでください。",
-        forced_reply="このターンでは文章での返信が明示的に要求されています。リアクションやその記法ではなく、通常のテキストメッセージを返してください。",
+        forced_reply="このターンでは文章での返信が明示的に要求されています。react_to_message ではなく send_messages を使ってください。",
         owner_details="""所有者が提供した個人情報と事実：
 {details}
 推測した特徴や会話上の仮定と矛盾する場合は、これらを正しいものとして扱ってください。関係する時だけ自然に使い、利用可能というだけで無関係な個人情報や機密情報を自発的に明かさないでください。""",
@@ -179,16 +152,7 @@ Give highest priority to the default reply shape and useful negative constraints
         dm_style="""默认每条 Discord 消息只写一行简短文字。模仿账号所有者近期手动消息中最常见的长度、行数、句式、大小写和标点。资料或示例中的罕见行为必须保持罕见；某种格式只出现一次，不代表应该重复使用。
 
 除非最新消息明确要求结构化内容，或有高度相似的所有者手写示例支持，否则不要添加换行、独立段落、项目符号、编号、标题、总结、助手式开场或未经请求的备选方案。如果确实需要列表，应保持紧凑、不要空行，并只列必要项目。书面回复中使用表情符号的频率应比风格证据略低：不要使用装饰性表情，通常最多一个，并且只在能自然表达情绪时使用。这不限制单独的回应表情操作。只回答当前对话所需的内容。输出前默默检查回复的行数和结构是否符合这些规则。""",
-        single_message="除非选择下述回应表情操作，否则只输出一条普通对话文本形式的 Discord 消息。不要输出 <message> 标签。",
-        sequence="""本轮可以在符合所有者习惯和对话情境时，发送由 2–{max_messages} 条 Discord 消息组成的简短序列。只有在想法之间存在自然边界时才使用序列；不要机械拆句、把简短回复变成稀疏列表、重复内容或凑字数。
-
-若发送序列，只输出 2–{max_messages} 个连续区块，区块外不得有文字：<message>第一条消息</message><message>第二条消息</message>。每个区块会单独发送，且只应包含用户可见的 Discord 文本。如果一条消息更自然，则直接输出不带标签的普通文本。""",
-        sequence_fallback="上一次输出使用了无效的多消息格式。只返回一条普通的纯文本 Discord 消息。不要使用 <message> 标签、回应表情标记或仅含表情符号的回复。",
-        reaction="""只有在极少数情况下，最新收到的消息无需文字回复，真人会自然地用一个表情符号表示已看到时，才可用回应表情代替消息，例如随意确认、笑话、小成果或值得回应的陈述。绝不要用回应表情代替对问题、请求、需要确认的计划、敏感或情绪化倾诉、冲突或不明确语境的文字回复。不确定时，写普通回复。
-
-若选择回应表情，只输出 <react>表情</react>，且表情必须是以下之一：👍 ❤️ 😂 🔥 🎉 😮 😢 🙏 👀 ✅ 💯 🤝 👌 😊 😅 🤔 🙌。不要同时输出文字。回应表情应远少于消息——大约每十二次适合的回复中少于一次。""",
-        reaction_fallback="由于频率限制，本轮无法使用回应表情。请改为返回普通的纯文本回复，不要输出回应表情标记或仅含表情符号的消息。",
-        forced_reply="本轮已明确要求文字回复。请返回普通文本消息，不要使用回应表情或其标记。",
+        forced_reply="本轮已明确要求文字回复。请使用 send_messages，不要使用 react_to_message。",
         owner_details="""账号所有者提供的个人信息和事实：
 {details}
 当这些信息与推断特征或对话假设冲突时，应以这些信息为准。在相关时自然使用，但不要仅仅因为信息可用就主动透露无关的个人或敏感内容。""",
@@ -207,16 +171,7 @@ Give highest priority to the default reply shape and useful negative constraints
         dm_style="""Verwende standardmäßig eine kurze Zeile pro Discord-Nachricht. Übernimm die typische Länge, Zeilenzahl, Satzform, Großschreibung und Zeichensetzung der letzten manuell geschriebenen Nachrichten des Kontoinhabers. Seltene Verhaltensweisen im Profil oder in Beispielen müssen selten bleiben; ein einmal beobachtetes Format ist kein Grund, es zu wiederholen.
 
 Füge keine Zeilenumbrüche, getrennten Absätze, Aufzählungen, Nummerierungen, Überschriften, Zusammenfassungen, Assistenten-Rahmung oder ungefragten Alternativen hinzu, sofern die letzte Nachricht keine strukturierte Antwort verlangt. Wenn eine Liste wirklich nötig ist, halte sie kompakt, ohne Leerzeilen und mit nur so vielen Punkten wie nötig. Nutze Emojis etwas seltener, als die Stilbelege nahelegen: keine dekorativen Emojis, normalerweise höchstens eines und nur als natürliche emotionale Nuance. Die separate Reaktionsaktion bleibt davon unberührt. Beantworte nur, was das aktuelle Gespräch braucht, und prüfe vor der Ausgabe still Zeilenzahl und Struktur.""",
-        single_message="Sofern du nicht die unten beschriebene Reaktion wählst, gib genau eine Discord-Nachricht als normalen Gesprächstext aus. Verwende keine <message>-Tags.",
-        sequence="""In diesem Zug ist eine kurze Folge von 2–{max_messages} Discord-Nachrichten möglich, wenn sie natürlich zu den Gewohnheiten des Inhabers und zum Gesprächsmoment passt. Nutze sie nur bei glaubwürdigen Gedankengrenzen; teile keinen Satz mechanisch, verwandle keine knappe Antwort in eine luftige Liste, wiederhole dich nicht und fülle nichts auf.
-
-Für eine Folge gib genau 2–{max_messages} direkt benachbarte Blöcke ohne Text außerhalb aus: <message>erste Nachricht</message><message>zweite Nachricht</message>. Jeder Block wird separat gesendet und enthält nur den sichtbaren Discord-Text. Wenn eine Nachricht natürlicher ist, gib normalen Text ohne Tags aus.""",
-        sequence_fallback="Die vorherige Ausgabe hatte ein ungültiges Mehrnachrichtenformat. Gib genau eine gewöhnliche Discord-Textnachricht zurück. Verwende keine <message>-Tags, Reaktionsmarkierung oder reine Emoji-Antwort.",
-        reaction="""Eine Reaktion darf die Nachricht nur selten ersetzen, wenn die letzte eingehende Nachricht keine schriftliche Antwort braucht und ein Mensch sie natürlich mit einem Emoji bestätigen würde, etwa bei einer lockeren Bestätigung, einem Witz oder einem kleinen Erfolg. Reagiere nie statt auf eine Frage, Bitte, einen bestätigungsbedürftigen Plan, eine sensible Mitteilung, einen Konflikt oder unklaren Kontext zu antworten. Schreibe im Zweifel eine normale Antwort.
-
-Für eine Reaktion gib ausschließlich <react>EMOJI</react> mit einem dieser Zeichen aus: 👍 ❤️ 😂 🔥 🎉 😮 😢 🙏 👀 ✅ 💯 🤝 👌 😊 😅 🤔 🙌. Kombiniere sie nicht mit Text. Reaktionen müssen deutlich seltener als Nachrichten sein — ungefähr weniger als eine von zwölf geeigneten Antworten.""",
-        reaction_fallback="Wegen der Ratenbegrenzung ist in diesem Zug keine Reaktion verfügbar. Gib stattdessen eine normale Textantwort ohne Reaktionsmarkierung oder reine Emoji-Antwort zurück.",
-        forced_reply="Für diesen Zug wurde ausdrücklich eine schriftliche Antwort angefordert. Gib eine normale Textnachricht zurück, keine Reaktion oder Reaktionsmarkierung.",
+        forced_reply="Für diesen Zug wurde ausdrücklich eine schriftliche Antwort angefordert. Verwende send_messages statt react_to_message.",
         owner_details="""Vom Kontoinhaber bereitgestellte persönliche Angaben und Fakten:
 {details}
 Behandle sie bei Widersprüchen mit abgeleiteten Merkmalen oder Gesprächsannahmen als maßgeblich. Nutze sie natürlich, wenn sie relevant sind, aber erwähne keine unbeteiligten persönlichen oder sensiblen Details nur, weil sie verfügbar sind.""",
@@ -235,16 +190,7 @@ Mache das Profil für ein anderes Modell praktisch nutzbar. Beschreibe die übli
         dm_style="""Par défaut, chaque message Discord doit tenir sur une courte ligne. Reproduis la longueur, le nombre de lignes, la forme des phrases, la casse et la ponctuation dominantes des messages récents écrits manuellement par le propriétaire. Les comportements rares du profil ou des exemples doivent rester rares ; observer un format une fois ne justifie pas de le répéter.
 
 N'ajoute pas de retours à la ligne, paragraphes séparés, puces, numérotation, titres, récapitulatifs, cadrage d'assistant ou alternatives non sollicitées, sauf si le dernier message demande clairement une réponse structurée. Si une liste est vraiment nécessaire, rends-la dense, sans lignes vides et avec le strict nécessaire. Utilise les émojis un peu moins souvent que ne le suggèrent les exemples : pas d'émojis décoratifs, généralement un au maximum, seulement pour une nuance émotionnelle naturelle. Cela ne limite pas l'action de réaction séparée. Réponds uniquement à ce dont la conversation a besoin et vérifie silencieusement la forme et le nombre de lignes avant de rendre la réponse.""",
-        single_message="Sauf si tu choisis la réaction décrite ci-dessous, produis exactement un message Discord en texte conversationnel ordinaire. N'utilise pas de balises <message>.",
-        sequence="""Pour ce tour, une courte séquence de 2 à {max_messages} messages Discord est possible si elle correspond naturellement aux habitudes du propriétaire et au moment de la conversation. Ne l'utilise que lorsque les limites entre idées sont crédibles ; ne coupe pas mécaniquement une phrase, ne transforme pas une réponse concise en liste aérée, ne te répète pas et ne meuble pas.
-
-Pour envoyer une séquence, produis exactement 2 à {max_messages} blocs adjacents, sans texte à l'extérieur : <message>premier message</message><message>deuxième message</message>. Chaque bloc est envoyé séparément et ne contient que le texte Discord visible. Si un seul message est plus naturel, produis du texte ordinaire sans balises.""",
-        sequence_fallback="La sortie précédente utilisait un format multi-message invalide. Renvoie exactement un message Discord ordinaire en texte brut. N'utilise ni balises <message>, ni balisage de réaction, ni réponse composée uniquement d'un émoji.",
-        reaction="""Une réaction ne peut remplacer le message qu'en de rares occasions où le dernier message reçu ne nécessite aucune réponse écrite et où une personne l'accuserait naturellement réception avec un émoji, par exemple pour un accord informel, une blague ou une petite réussite. Ne réagis jamais à la place de répondre à une question, une demande, un plan nécessitant confirmation, une confidence sensible, un conflit ou un contexte ambigu. En cas de doute, écris une réponse normale.
-
-Pour choisir une réaction, produis uniquement <react>ÉMOJI</react> avec l'un des suivants : 👍 ❤️ 😂 🔥 🎉 😮 😢 🙏 👀 ✅ 💯 🤝 👌 😊 😅 🤔 🙌. Ne la combine pas avec du texte. Les réactions doivent être nettement plus rares que les messages — environ moins d'une réponse appropriée sur douze.""",
-        reaction_fallback="Une réaction n'est pas disponible pour ce tour à cause de la limitation de fréquence. Renvoie plutôt une réponse normale en texte brut, sans balisage de réaction ni réponse uniquement en émoji.",
-        forced_reply="Une réponse écrite a été explicitement demandée pour ce tour. Renvoie un message texte normal, pas une réaction ni son balisage.",
+        forced_reply="Une réponse écrite a été explicitement demandée pour ce tour. Utilise send_messages plutôt que react_to_message.",
         owner_details="""Informations personnelles et faits fournis par le propriétaire :
 {details}
 Considère-les comme faisant autorité s'ils contredisent des traits déduits ou des hypothèses de conversation. Utilise-les naturellement lorsqu'ils sont pertinents, mais ne divulgue jamais de détails personnels ou sensibles sans rapport simplement parce qu'ils sont disponibles.""",

@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from .chatgpt import ChatGPTClient, make_prompt_cache_key
-from .localization import escalation_fallback, prompts_for
+from .localization import escalation_fallback, prompts_for, tool_policy
 from .models import AppSettings
 from .store import Store
 from .tooling import (
@@ -42,15 +42,7 @@ def build_reply_instructions(
         sections.append(prompts.cached_personality.format(profile=personality["profile"]))
 
     sections.append(prompts.dm_style)
-    sections.append(
-        "Use the available native tools for every action. Finish with exactly one terminal action: "
-        "send_messages for written replies, escalate_to_owner when the peer explicitly asks for the "
-        "owner, or, only when genuinely appropriate, react_to_message. Do not return final reply text "
-        "outside a terminal action. Use get_current_datetime whenever the answer depends on the "
-        "current date or time, and calculate for non-trivial arithmetic. Use web_search only when "
-        "the peer asks to search or verify, or when current public information materially affects "
-        "the answer. If web_search is unavailable, say so when relevant and never invent results."
-    )
+    sections.append(tool_policy(settings.prompt_locale))
 
     owner_examples = [
         item["content"]

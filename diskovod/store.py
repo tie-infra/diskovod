@@ -164,7 +164,9 @@ class Store:
             saved["base_instructions"] = DEFAULT_BASE_INSTRUCTIONS
         saved["admin_locale"] = normalize_locale(str(saved.get("admin_locale", "en")))
         saved["prompt_locale"] = normalize_locale(str(saved.get("prompt_locale", "en")))
-        return AppSettings(**(AppSettings().to_dict() | saved))
+        defaults = AppSettings().to_dict()
+        known = {key: value for key, value in saved.items() if key in defaults}
+        return AppSettings(**(defaults | known))
 
     def set_app_settings(self, value: AppSettings) -> None:
         self._set("app.settings", value.to_dict())

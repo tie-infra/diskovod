@@ -209,7 +209,6 @@ class AppSettings:
     max_human_quiet_minutes: float = 30.0
     history_limit: int = 30
     multi_message_replies: bool = False
-    multi_message_chance: float = 12.0
     max_reply_messages: int = 3
     min_message_gap_seconds: float = 0.7
     max_message_gap_seconds: float = 2.0

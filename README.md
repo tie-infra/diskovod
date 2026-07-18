@@ -12,7 +12,7 @@ paused until an administrator resumes them.
 ## Features
 
 - ChatGPT OAuth with PKCE, refresh-token rotation, and subscription-backed streaming responses.
-- Custom OpenAI-compatible Chat Completions providers, including keyless local endpoints.
+- Custom OpenAI-compatible Responses or Chat Completions providers, including keyless local endpoints.
 - Discord connection through `discord.py-self`.
 - Responsive Bootstrap admin navigation with a script-free interface.
 - A guarded SQLite explorer with secret redaction, search, pagination, and confirmed row deletion.
@@ -20,12 +20,15 @@ paused until an administrator resumes them.
 - Editable owner details for names, preferences, relationships, plans, and other personal context.
 - Transparent AI-assistant identity with an optional visible robot-emoji marker.
 - Rare emoji reactions for lightweight acknowledgements when a written reply is unnecessary.
-- Model-composed multi-message replies with configurable frequency, count, and timing.
+- Model-composed multi-message replies with configurable count and timing.
 - Optional Discord suppress-notifications flag for generated replies.
 - Capability-aware attachment context with native image/file inputs and bounded text retrieval.
 - Configurable generation caps for concise DM replies.
 - Edit-aware message history that refreshes a pending reply when its trigger changes.
 - One-shot forced written replies that can bypass automation enrollment and quiet windows.
+- Dashboard owner escalation that acknowledges explicit requests and pauses the conversation.
+- On-demand current date/time and bounded arithmetic tools.
+- Capability-gated hosted web search with natural source links in replies.
 - Configurable opt-in or opt-out default with per-conversation enrollment controls.
 - Detailed model token accounting by time window, model, and operation.
 - SQLite storage with encrypted Discord, ChatGPT, and custom-provider credentials.
@@ -91,17 +94,26 @@ Diskovod is remote, that page normally fails to load. In the browser address bar
 entire `?code=...&state=...` query string. Diskovod then exchanges the code using the original,
 registered localhost callback and redirects to the admin UI.
 
+Hosted web search is not assumed to work merely because the subscription transport is
+Responses-shaped. Use **Test hosted web search** for the selected model; the result is scoped to that
+model and account and enables search only after the model completes both a real hosted search and a
+terminal function call in the same probe.
+
 ### OpenAI-compatible provider
 
 In **OpenAI-compatible API**, enter a display name, an API base URL that normally ends in `/v1`,
-and an optional API key. Saving the provider also selects it. Diskovod makes non-streaming requests
-to `<base_url>/chat/completions` with a system message followed by the DM history. The model name is
-configured separately in **Reply behavior**.
+and an optional API key. New providers default to the Responses API; existing configurations retain
+Chat Completions until explicitly changed. **Detect API support** probes Responses first during
+setup, preselects the detected protocol and capabilities, and never saves them until the
+administrator explicitly submits the form. Production requests always use the saved protocol and
+never retry through the other endpoint after an error. The model name is configured separately in
+**Reply behavior**.
 
 API keys use the standard `Authorization: Bearer` header. Leaving the key empty supports local or
-otherwise keyless endpoints; the example URL is `http://localhost:8000/v1`. The custom transport
-intentionally uses the broadly compatible Chat Completions request shape. Reasoning effort remains
-specific to the ChatGPT Subscription transport.
+otherwise keyless endpoints; the example URL is `http://localhost:8000/v1`. Automated replies
+require standard native function calls. Optional capabilities such as strict schemas, cache routing,
+parallel-tool control, and Responses hosted web search are configured or detected independently
+from the HTTP protocol. Reasoning effort remains specific to the ChatGPT Subscription transport.
 
 ### Discord sign-in
 
@@ -160,11 +172,11 @@ to the transparent prompt automatically; custom instructions are never rewritten
 For lightweight acknowledgements, Diskovod may react to the incoming message with one common emoji
 instead of sending text. Reactions are never combined with a reply. A local limiter permits at most
 one reaction among the latest twelve automated actions and applies a six-hour per-conversation
-cooldown; if the model proposes one sooner, it is asked for a normal text reply instead.
+cooldown; if the model proposes one sooner, one bounded native repair requests a written reply.
 
-**Multi-message replies** lets the model occasionally compose a sequence of two to five distinct
-Discord messages. The admin UI controls whether sequences are available, the percentage of turns
-on which they are offered, the maximum message count, and the randomized delay between messages.
+**Multi-message replies** lets the model compose a sequence of two to five distinct Discord
+messages when the conversation naturally calls for one. The admin UI controls whether sequences are
+available, the maximum message count, and the randomized delay between messages.
 Diskovod does not split completed prose mechanically: the model chooses the boundaries and may keep
 a single message when a sequence would feel forced. Before every part, automation and recent manual
 owner activity are checked again, so the remainder stops if the owner joins the conversation.
@@ -179,33 +191,55 @@ The marker is not stored in conversation history and does not affect reactions.
 Incoming messages retain metadata for up to four attachments. Supported images are passed as
 native vision inputs to documented vision-capable model families. With the ChatGPT Subscription
 transport, supported documents up to 20 MiB are passed as Responses `input_file` URLs. Custom
-Chat Completions providers receive the broadly compatible image-URL format, but not native document
-parts. For either transport, Diskovod downloads up to 64 KiB total from small text/code attachments
+Responses providers receive native image inputs, while custom Chat Completions providers receive
+the broadly compatible image-URL format; neither custom transport receives native document parts.
+For every transport, Diskovod downloads up to 64 KiB total from small text/code attachments
 when each message arrives and adds up to 24,000 characters per file to the prompt as bounded
 retrieval context. Unsupported and oversized files still contribute filename, media type, size,
 and description metadata, without downloading their bodies.
 Native image and document URLs are sent only for the message that triggered the current reply;
 later turns retain their metadata and captured text without replaying expiring Discord CDN URLs.
 
-**Reply token budget** applies to each DM generation and any repair or reaction-fallback generation.
+**Reply token budget** applies to each DM generation and any native repair or tool continuation.
 The ChatGPT Subscription transport rejects `max_output_tokens`, so Diskovod expresses its value as
 a best-effort length instruction instead. Custom providers receive a hard `max_completion_tokens`
 limit. Personality inference uses a separate 2,000-token budget so its profile and examples are not
 truncated by the concise reply setting.
 
+## Native tools and owner escalation
+
+Automated replies use native structured calls for sending one or more messages, reacting, or
+escalating to the owner. Plain provider text is not sent directly. Diskovod validates message
+counts, lengths, reactions, escalation state, and generation freshness before executing an action;
+malformed output gets at most one bounded repair and otherwise fails closed.
+
+The assistant can request the current date and time in the owner-configured IANA timezone and can
+evaluate bounded arithmetic. These changing results exist only in the current model turn and are
+never written to Discord history. A provider with verified Responses hosted-search support can also
+search current public information using low search context. The final reply still goes through the
+ordinary message action, may include a useful URL naturally, and is the only search-derived content
+persisted locally. Raw search results and tool traces are not retained.
+
+When a peer explicitly asks for the account owner, the model can write a context-aware
+acknowledgement and create a dashboard escalation. Diskovod commits that record and permanently
+pauses the conversation before sending the acknowledgement. Invalid escalation arguments use a
+localized fixed acknowledgement without another model request. Claiming, resolving, dismissing, and
+explicitly resuming are available in the dashboard. A manual owner reply resolves the active item
+but leaves automation paused until the owner resumes it.
+
 ## Token usage
 
 Diskovod orders reusable base instructions, owner details, the cached personality, and reply-safety
 rules before changing manual-message examples and conversation history. This preserves the longest
-possible exact prompt prefix for automatic provider caching. ChatGPT Subscription requests also use
-a stable, hashed `prompt_cache_key` per model and DM so growing conversation prefixes are routed
-consistently without exposing Discord channel IDs. Personality inference uses a separate stable key.
-Custom providers receive the cache-friendly prompt order but no cache-specific request fields, since
-not every OpenAI-compatible server accepts them.
+possible exact prompt prefix for automatic provider caching. Chats with the same provider, model,
+localized prompt, tool schema, owner details, and personality share a stable hashed
+`prompt_cache_key`; their conversation histories remain separate request suffixes and are never
+merged. Personality inference uses a separate stable key. Custom providers receive cache routing
+only when that capability is enabled.
 
 Diskovod records the usage metadata reported with each completed response: input tokens, cached
 input tokens, output tokens, reasoning tokens, and total tokens. Both ChatGPT Subscription and
-custom Chat Completions usage formats are normalized into the same counters. The admin UI shows
+custom Responses and Chat Completions usage formats are normalized into the same counters. The admin UI shows
 rolling 24-hour, 7-day, 30-day, and all-time totals; breakdowns by model and operation; cache
 utilization; and the 50 most recent calls.
 

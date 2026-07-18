@@ -17,7 +17,7 @@ ALLOWED_REACTIONS = frozenset(
 MAX_DISCORD_MESSAGE_LENGTH = 2000
 MAX_ACTION_MESSAGES = 5
 
-TOOL_SCHEMA_VERSION = "native-actions-hosted-search-v3"
+TOOL_SCHEMA_VERSION = "native-actions-localized-policy-v4"
 MAX_HOSTED_WEB_SEARCH_CALLS = 2
 ESCALATION_REASONS = frozenset({"peer_requested_owner", "owner_only_information", "other_explicit_request"})
 

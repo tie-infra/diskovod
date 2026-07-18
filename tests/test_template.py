@@ -197,7 +197,6 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'name="silent_replies"' in rendered
     assert 'name="robot_prefix"' in rendered
     assert 'name="multi_message_replies"' in rendered
-    assert 'name="multi_message_chance"' in rendered
     assert 'name="max_reply_messages"' in rendered
     assert 'name="min_message_gap_seconds"' in rendered
     assert 'name="max_message_gap_seconds"' in rendered

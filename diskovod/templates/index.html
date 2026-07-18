@@ -602,33 +602,19 @@
                 Allow occasional message sequences
               </label>
               <p class="field-help">
-                On selected turns, the model may compose a natural sequence instead of Diskovod
-                mechanically splitting one response. One message remains valid when a split would
-                feel forced.
+                The model may compose a natural sequence instead of Diskovod mechanically splitting
+                one response. One message remains valid when a split would feel forced.
               </p>
-              <div class="field-grid field-grid-two">
-                <label>
-                  Sequence chance (%)
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    max="100"
-                    name="multi_message_chance"
-                    value="{{ app_settings.multi_message_chance }}"
-                  >
-                </label>
-                <label>
-                  Maximum messages
-                  <input
-                    type="number"
-                    min="2"
-                    max="5"
-                    name="max_reply_messages"
-                    value="{{ app_settings.max_reply_messages }}"
-                  >
-                </label>
-              </div>
+              <label>
+                Maximum messages
+                <input
+                  type="number"
+                  min="2"
+                  max="5"
+                  name="max_reply_messages"
+                  value="{{ app_settings.max_reply_messages }}"
+                >
+              </label>
               <div class="field-grid field-grid-two">
                 <label>
                   Minimum gap (seconds)

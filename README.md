@@ -25,6 +25,7 @@ paused until an administrator resumes them.
 - Capability-aware attachment context with native image/file inputs and bounded text retrieval.
 - Configurable generation caps for concise DM replies.
 - Edit-aware message history that refreshes a pending reply when its trigger changes.
+- One-shot forced written replies that can bypass automation enrollment and quiet windows.
 - Configurable opt-in or opt-out default with per-conversation enrollment controls.
 - Detailed model token accounting by time window, model, and operation.
 - SQLite storage with encrypted Discord, ChatGPT, and custom-provider credentials.

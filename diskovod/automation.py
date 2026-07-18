@@ -38,6 +38,7 @@ REACTION_INSTRUCTIONS = """A reaction may replace the message only on a rare occ
 To choose a reaction, output exactly <react>EMOJI</react> and nothing else, using one of: 👍 ❤️ 😂 🔥 🎉 😮 😢 🙏 👀 ✅ 💯 🤝 👌 😊 😅 🤔 🙌. Do not combine a reaction with text. Treat reactions as substantially rarer than messages—roughly fewer than one in twelve suitable responses."""
 
 REACTION_FALLBACK_INSTRUCTIONS = """A reaction is unavailable for this turn because reactions are being rate-limited. Return a normal plain-text reply instead. Do not output reaction markup or an emoji-only message."""
+FORCED_REPLY_INSTRUCTIONS = """A written reply was explicitly requested for this turn. Return a normal text message, not a reaction or reaction markup."""
 
 
 def parse_reaction(answer: str) -> str | None:
@@ -160,6 +161,19 @@ class Automation:
         self.trigger_ids[channel_id] = str(message.id)
         task.add_done_callback(lambda done: self._finished(channel_id, done))
 
+    def force_reply(self, message: Any) -> None:
+        """Schedule one reply that bypasses automation enrollment and quiet-window checks."""
+        channel_id = str(message.channel.id)
+        self.cancel(channel_id)
+        version = self.versions[channel_id]
+        task = asyncio.create_task(
+            self._reply(message, version, force=True),
+            name=f"forced-reply-{channel_id}",
+        )
+        self.tasks[channel_id] = task
+        self.trigger_ids[channel_id] = str(message.id)
+        task.add_done_callback(lambda done: self._finished(channel_id, done))
+
     def reschedule_if_pending(self, message: Any) -> bool:
         channel_id = str(message.channel.id)
         if channel_id not in self.tasks or self.trigger_ids.get(channel_id) != str(message.id):
@@ -177,15 +191,15 @@ class Automation:
         if not task.cancelled() and (error := task.exception()):
             log.error("Reply failed for %s: %s", channel_id, error)
 
-    def _still_allowed(self, channel_id: str, version: int) -> bool:
-        return self.store.can_automate(channel_id) and self.versions.get(channel_id) == version
+    def _still_allowed(self, channel_id: str, version: int, *, force: bool = False) -> bool:
+        return self.versions.get(channel_id) == version and (force or self.store.can_automate(channel_id))
 
-    async def _reply(self, trigger: Any, version: int) -> None:
+    async def _reply(self, trigger: Any, version: int, *, force: bool = False) -> None:
         settings = self.store.app_settings()
         channel_id = str(trigger.channel.id)
         started_at = time.time()
-        await asyncio.sleep(settings.debounce_seconds)
-        if not self._still_allowed(channel_id, version):
+        await asyncio.sleep(0 if force else settings.debounce_seconds)
+        if not self._still_allowed(channel_id, version, force=force):
             return
 
         history = self.store.history(channel_id, settings.history_limit)
@@ -216,7 +230,7 @@ class Automation:
         cache_key = make_prompt_cache_key("dm", f"{settings.model}\0{channel_id}")
         answer = await self._generate_reply(
             messages,
-            instructions,
+            instructions + ("\n\n" + FORCED_REPLY_INSTRUCTIONS if force else ""),
             settings,
             cache_key=cache_key,
         )
@@ -224,7 +238,7 @@ class Automation:
             return
 
         emoji = parse_reaction(answer)
-        if (emoji and not self.store.reaction_allowed(channel_id)) or (
+        if (emoji and (force or not self.store.reaction_allowed(channel_id))) or (
             contains_reaction_markup(answer) and emoji is None
         ):
             answer = await self._reaction_fallback(
@@ -237,11 +251,13 @@ class Automation:
                 return
             emoji = parse_reaction(answer)
 
-        if not self._still_allowed(channel_id, version):
+        if not self._still_allowed(channel_id, version, force=force):
             return
 
-        await asyncio.sleep(random.uniform(settings.min_delay_seconds, settings.max_delay_seconds))
-        if not self._still_allowed(channel_id, version):
+        await asyncio.sleep(
+            0 if force else random.uniform(settings.min_delay_seconds, settings.max_delay_seconds)
+        )
+        if not self._still_allowed(channel_id, version, force=force):
             return
         if await self._manual_message_exists(trigger.channel, started_at):
             self.human_activity(channel_id)
@@ -263,7 +279,7 @@ class Automation:
                 settings,
                 cache_key=cache_key,
             )
-            if answer is None or not self._still_allowed(channel_id, version):
+            if answer is None or not self._still_allowed(channel_id, version, force=force):
                 return
             if await self._manual_message_exists(trigger.channel, started_at):
                 self.human_activity(channel_id)
@@ -299,7 +315,7 @@ class Automation:
                         settings.max_message_gap_seconds,
                     )
                 )
-                if not self._still_allowed(channel_id, version):
+                if not self._still_allowed(channel_id, version, force=force):
                     return
                 if await self._manual_message_exists(trigger.channel, started_at):
                     self.human_activity(channel_id)
@@ -308,7 +324,7 @@ class Automation:
             cps = random.uniform(settings.min_typing_cps, settings.max_typing_cps)
             async with trigger.channel.typing():
                 await asyncio.sleep(min(12.0, max(0.8, len(part) / cps)))
-            if not self._still_allowed(channel_id, version):
+            if not self._still_allowed(channel_id, version, force=force):
                 return
             if await self._manual_message_exists(trigger.channel, started_at):
                 self.human_activity(channel_id)

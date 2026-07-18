@@ -413,6 +413,24 @@ class Store:
             result.append(item)
         return result
 
+    def latest_incoming_message(self, channel_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                """SELECT * FROM messages
+                   WHERE channel_id=? AND direction='in'
+                   ORDER BY timestamp DESC LIMIT 1""",
+                (channel_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            attachments = json.loads(item.get("attachments") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            attachments = []
+        item["attachments"] = attachments if isinstance(attachments, list) else []
+        return item
+
     def update_message_content(
         self, message_id: str, content: str, *, source: str | None = None
     ) -> dict[str, Any] | None:

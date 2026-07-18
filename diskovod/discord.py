@@ -188,6 +188,32 @@ class DiscordService:
     def solve_captcha(self, request_id: str, solution: str) -> bool:
         return self.captcha.solve(request_id, solution)
 
+    async def force_reply(self, channel_id: str) -> None:
+        client = self.client
+        if not client or not client.user or not client.is_ready():
+            raise RuntimeError("Discord must be connected before forcing a reply")
+        try:
+            numeric_channel_id = int(channel_id)
+        except ValueError as exc:
+            raise RuntimeError("Invalid Discord channel ID") from exc
+        channel = client.get_channel(numeric_channel_id)
+        if channel is None:
+            channel = next(
+                (item for item in client.private_channels if str(getattr(item, "id", "")) == channel_id),
+                None,
+            )
+        if channel is None or not hasattr(channel, "fetch_message"):
+            raise RuntimeError("Discord conversation is not available")
+        stored = self.store.latest_incoming_message(channel_id)
+        if stored is None:
+            raise RuntimeError("This conversation has no incoming message to answer")
+        try:
+            message_id = int(stored["id"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("The latest incoming Discord message ID is invalid") from exc
+        message = await channel.fetch_message(message_id)
+        self.automation.force_reply(message)
+
     async def personality_history(self, limit: int) -> list[str]:
         client = self.client
         if not client or not client.user or not client.is_ready():

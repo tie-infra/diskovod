@@ -373,6 +373,16 @@ class WebApp:
             self.store.clear_snooze(channel_id)
             return self._back(message="Automation enabled; the next incoming DM may receive a reply")
 
+        @self.app.post("/conversations/{channel_id}/force-reply")
+        async def force_reply(channel_id: str, _: str = Depends(auth)):
+            if not self.chatgpt.connected:
+                return self._back(error="Connect the active model provider before forcing a reply")
+            try:
+                await self.discord.force_reply(channel_id)
+            except Exception as exc:
+                return self._back(error=str(exc))
+            return self._back(message="Forced reply scheduled")
+
         @self.app.post("/database/delete")
         async def database_delete(
             table: str = Form(...),

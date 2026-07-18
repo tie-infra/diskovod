@@ -107,6 +107,14 @@ class EditAutomation:
         return True
 
 
+class ForceAutomation:
+    def __init__(self):
+        self.messages: list[object] = []
+
+    def force_reply(self, message: object):
+        self.messages.append(message)
+
+
 class FakeEditDMChannel:
     id = 42
 
@@ -165,6 +173,48 @@ async def test_discord_connection_failure_retries_without_stopping_service(
 
     await service.stop()
     assert service.task is None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_force_reply_fetches_latest_incoming_discord_message(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.upsert_conversation("42", "peer", "Peer")
+    store.save_message(
+        id="123",
+        channel_id="42",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="latest incoming",
+        timestamp=time.time(),
+    )
+    message = SimpleNamespace(id=123)
+
+    class ForceChannel:
+        id = 42
+
+        async def fetch_message(self, message_id: int):
+            assert message_id == 123
+            return message
+
+    channel = ForceChannel()
+    automation = ForceAutomation()
+    service = DiscordService(store, cast(Automation, automation))
+    service.client = cast(
+        PrivateDiscordClient,
+        SimpleNamespace(
+            user=object(),
+            is_ready=lambda: True,
+            get_channel=lambda channel_id: channel if channel_id == 42 else None,
+            private_channels=[channel],
+        ),
+    )
+
+    await service.force_reply("42")
+
+    assert automation.messages == [message]
     store.close()
 
 

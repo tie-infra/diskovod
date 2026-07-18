@@ -381,3 +381,43 @@ async def test_reaction_replaces_reply_and_is_recorded(tmp_path: Path):
     assert not store.reaction_allowed("dm")
     assert store.history("dm", 10)[-1]["id"] == "incoming"
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_forced_reply_bypasses_pause_and_requires_written_output(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_app_settings(
+        AppSettings(
+            enabled=False,
+            debounce_seconds=60,
+            min_delay_seconds=60,
+            max_delay_seconds=60,
+        )
+    )
+    store.upsert_conversation("dm", "peer", "Peer")
+    store.set_permanent_pause("dm", True)
+    store.save_message(
+        id="incoming",
+        channel_id="dm",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="please answer",
+        timestamp=time.time(),
+    )
+    chatgpt = ReplyingChatGPT(["<react>👍</react>", "written forced reply"])
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0, force=True)
+
+    assert [item[0] for item in trigger.channel.sent] == ["written forced reply"]
+    assert [call["purpose"] for call in chatgpt.calls] == [
+        "dm_reply",
+        "dm_reply_reaction_fallback",
+    ]
+    assert "written reply was explicitly requested" in chatgpt.calls[0]["instructions"]
+    assert store.conversation("dm")["paused"] is True
+    store.close()

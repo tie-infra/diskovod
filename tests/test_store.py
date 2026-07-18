@@ -138,6 +138,7 @@ def test_database_explorer_redacts_secrets_searches_and_deletes_mutable_rows(tmp
     messages = store.database_rows("messages", query="find this")
     assert messages["total"] == 1
     assert messages["rows"][0]["id"] == "message-1"
+    assert store.latest_incoming_message("dm")["id"] == "message-2"
     assert store.delete_database_row("messages", "message-1") is True
     assert store.delete_database_row("messages", "missing") is False
     assert store.database_rows("messages")["total"] == 1

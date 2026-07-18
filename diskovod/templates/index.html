@@ -848,7 +848,9 @@
 
           <p>
             Each conversation can be enrolled in automation independently. Manual activity starts
-            a temporary quiet window without changing that enrollment.
+            a temporary quiet window without changing that enrollment. A forced reply bypasses the
+            global automation switch, enrollment, and quiet window once, but still stops if you
+            send a manual Discord message before it is released.
           </p>
 
           <div class="conversation-list">
@@ -870,6 +872,17 @@
                 {% endif %}
 
                 <div class="conversation-actions">
+                  <form
+                    method="post"
+                    action="/conversations/{{ conversation.channel_id }}/force-reply"
+                  >
+                    <button
+                      class="button-secondary"
+                      {% if not discord_connected or not model_connected %}disabled{% endif %}
+                    >
+                      Force reply
+                    </button>
+                  </form>
                   {% if conversation.paused %}
                     <form method="post" action="/conversations/{{ conversation.channel_id }}/resume">
                       <button class="button-secondary">Enable automation</button>

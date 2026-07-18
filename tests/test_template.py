@@ -197,3 +197,5 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "Database explorer" in rendered
     assert 'action="/database/delete"' in rendered
     assert 'name="row_key"' in rendered
+    assert 'action="/conversations/dm-1/force-reply"' in rendered
+    assert "Force reply" in rendered

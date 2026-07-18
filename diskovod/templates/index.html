@@ -90,6 +90,21 @@
             </button>
           </form>
 
+          {% if chat_connected %}
+            <form method="post" action="/chatgpt/web-search/detect">
+              <button class="button-secondary">{{ t("test_hosted_web_search") }}</button>
+              <small>
+                {% if subscription_web_search is sameas true %}
+                  {{ t("web_search_available", model=app_settings.model) }}
+                {% elif subscription_web_search is sameas false %}
+                  {{ t("web_search_unavailable", model=app_settings.model) }}
+                {% else %}
+                  {{ t("web_search_untested", model=app_settings.model) }}
+                {% endif %}
+              </small>
+            </form>
+          {% endif %}
+
           {% if chat_connected and active_provider != "chatgpt" %}
             <form method="post" action="/provider/select">
               <input type="hidden" name="provider" value="chatgpt">
@@ -229,6 +244,7 @@
                   {% if custom_provider and custom_provider.capabilities.hosted_web_search %}checked{% endif %}
                 >
                 Hosted web search
+                <small>Responses API only; detection verifies the complete search-to-reply flow.</small>
               </label>
             </fieldset>
             {% if custom_provider and custom_provider.has_api_key %}

@@ -1,11 +1,13 @@
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from diskovod.models import FunctionCall
 from diskovod.tooling import (
     execute_read_only_tool,
     validate_discord_action,
     validate_escalation_action,
+    validate_hosted_web_search_calls,
 )
 
 
@@ -113,3 +115,13 @@ def test_invalid_escalation_arguments_use_fixed_reply_without_repair():
     assert action.messages == ("fixed fallback",)
     assert action.reason == "invalid_tool_arguments"
     assert action.invalid_arguments is True
+
+
+def test_hosted_web_search_validation_enforces_capability_status_and_budget():
+    completed = SimpleNamespace(kind="web_search_call", status="completed")
+    failed = SimpleNamespace(kind="web_search_call", status="failed")
+
+    assert validate_hosted_web_search_calls([completed], enabled=True) is True
+    assert validate_hosted_web_search_calls([completed], enabled=False) is False
+    assert validate_hosted_web_search_calls([failed], enabled=True) is False
+    assert validate_hosted_web_search_calls([completed] * 3, enabled=True) is False

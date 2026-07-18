@@ -22,6 +22,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
         chat_connected=False,
         chat_email=None,
         chat_error=None,
+        subscription_web_search=None,
         model_connected=True,
         automation_ready=True,
         automation_error=None,

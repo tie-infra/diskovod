@@ -176,6 +176,9 @@ class WebApp:
                     "chat_connected": self.chatgpt.subscription_connected,
                     "chat_email": self.chatgpt.email,
                     "chat_error": self.chatgpt.last_error,
+                    "subscription_web_search": self.store.subscription_web_search_capability(
+                        app_settings.model
+                    ),
                     "model_connected": self.chatgpt.connected,
                     "automation_ready": self.chatgpt.automation_ready,
                     "automation_error": self.chatgpt.automation_error,
@@ -227,6 +230,24 @@ class WebApp:
             self.chatgpt.last_error = None
             return self._back(message="ChatGPT disconnected")
 
+        @self.app.post("/chatgpt/web-search/detect")
+        async def chat_web_search_detect(_: str = Depends(auth)):
+            settings = self.store.app_settings()
+            try:
+                supported = await self.chatgpt.detect_subscription_web_search(
+                    settings.model,
+                    settings.reasoning_effort,
+                )
+            except Exception as exc:
+                return self._back(error=f"Web search probe failed: {exc}")
+            return self._back(
+                message=(
+                    "Hosted web search is available for the selected subscription model"
+                    if supported
+                    else "The selected subscription model did not complete the hosted search test"
+                )
+            )
+
         @self.app.post("/provider/custom")
         async def custom_provider_save(
             name: str = Form(...),
@@ -265,7 +286,7 @@ class WebApp:
                 "strict_function_schemas": strict_function_schemas is not None,
                 "parallel_tool_control": parallel_tool_control is not None,
                 "prompt_cache_key": prompt_cache_key is not None,
-                "hosted_web_search": hosted_web_search is not None,
+                "hosted_web_search": hosted_web_search is not None and protocol == "responses",
             }
             if self.store.app_settings().enabled and not capabilities["native_function_calls"]:
                 return self._back(
@@ -326,7 +347,7 @@ class WebApp:
                     "strict_function_schemas": strict_function_schemas is not None,
                     "parallel_tool_control": parallel_tool_control is not None,
                     "prompt_cache_key": prompt_cache_key is not None,
-                    "hosted_web_search": hosted_web_search is not None,
+                    "hosted_web_search": hosted_web_search is not None and protocol == "responses",
                 },
                 probe_model,
                 time.time() + 15 * 60,
@@ -343,6 +364,7 @@ class WebApp:
                 draft.capabilities["native_function_calls"] = detection.native_function_calls
                 draft.capabilities["strict_function_schemas"] = detection.native_function_calls
                 draft.capabilities["parallel_tool_control"] = detection.native_function_calls
+                draft.capabilities["hosted_web_search"] = detection.hosted_web_search
             except Exception as exc:
                 return self._provider_draft_back(token, error=str(exc))
             label = "Responses" if draft.protocol == "responses" else "Chat Completions"
@@ -351,10 +373,15 @@ class WebApp:
                 if draft.capabilities["native_function_calls"]
                 else "native function calls unavailable"
             )
+            web_label = (
+                "hosted web search available"
+                if draft.capabilities["hosted_web_search"]
+                else "hosted web search unavailable"
+            )
             return self._provider_draft_back(
                 token,
                 message=(
-                    f"Detected {label}; {native_label}. Review the preselected settings, then save "
+                    f"Detected {label}; {native_label}; {web_label}. Review the preselected settings, then save "
                     "explicitly."
                 ),
             )

@@ -553,6 +553,38 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "de": "ungültige Werkzeugargumente",
         "fr": "arguments d’outil invalides",
     },
+    "test_hosted_web_search": {
+        "en": "Test hosted web search",
+        "ru": "Проверить встроенный веб-поиск",
+        "uk": "Перевірити вбудований вебпошук",
+        "ja": "ホスト型ウェブ検索をテスト",
+        "de": "Integrierte Websuche testen",
+        "fr": "Tester la recherche web hébergée",
+    },
+    "web_search_available": {
+        "en": "Available for {model}.",
+        "ru": "Доступно для {model}.",
+        "uk": "Доступно для {model}.",
+        "ja": "{model} で利用できます。",
+        "de": "Für {model} verfügbar.",
+        "fr": "Disponible pour {model}.",
+    },
+    "web_search_unavailable": {
+        "en": "Not verified for {model}.",
+        "ru": "Не подтверждено для {model}.",
+        "uk": "Не підтверджено для {model}.",
+        "ja": "{model} では確認できませんでした。",
+        "de": "Für {model} nicht bestätigt.",
+        "fr": "Non vérifié pour {model}.",
+    },
+    "web_search_untested": {
+        "en": "Not tested for {model}.",
+        "ru": "Не проверено для {model}.",
+        "uk": "Не перевірено для {model}.",
+        "ja": "{model} では未テストです。",
+        "de": "Für {model} nicht getestet.",
+        "fr": "Non testé pour {model}.",
+    },
 }
 
 _ZH_UI_TEXT = {
@@ -627,6 +659,10 @@ _ZH_UI_TEXT = {
     "reason_owner_only_information": "仅所有者可提供的信息",
     "reason_other_explicit_request": "其他明确请求",
     "reason_invalid_tool_arguments": "工具参数无效",
+    "test_hosted_web_search": "测试托管网页搜索",
+    "web_search_available": "{model} 可用。",
+    "web_search_unavailable": "尚未确认 {model} 可用。",
+    "web_search_untested": "尚未测试 {model}。",
 }
 
 for _key, _value in _ZH_UI_TEXT.items():

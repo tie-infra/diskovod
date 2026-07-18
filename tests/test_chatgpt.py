@@ -18,6 +18,7 @@ from diskovod.chatgpt import (
 )
 from diskovod.models import AppSettings, ChatCredentials, CustomProvider
 from diskovod.store import Store
+from diskovod.tooling import WEB_SEARCH_TOOL
 
 
 class FakeContent:
@@ -450,6 +451,178 @@ async def test_custom_responses_provider_is_pinned_and_normalized(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_custom_responses_preserves_hosted_search_and_function_tools(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_app_settings(AppSettings(provider="custom", model="responses-model"))
+    store.set_custom_provider(
+        CustomProvider(
+            "Responses",
+            "https://models.example/v1",
+            "provider-key",
+            "responses",
+            {
+                "native_function_calls": True,
+                "strict_function_schemas": True,
+                "hosted_web_search": True,
+            },
+        )
+    )
+    payload = {
+        "id": "resp-web",
+        "output": [
+            {"type": "web_search_call", "status": "completed", "action": {"query": "latest"}},
+            {
+                "type": "function_call",
+                "call_id": "send-call",
+                "name": "send_messages",
+                "arguments": '{"messages":["Latest: https://example.test"]}',
+            },
+        ],
+    }
+    client = ChatGPTClient(store)
+    session = FakeSession(FakeJSONResponse(payload))
+    client.session = cast(aiohttp.ClientSession, session)
+    send_tool = {
+        "type": "function",
+        "name": "send_messages",
+        "description": "Send",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        "strict": True,
+    }
+
+    result = await client.complete_result(
+        [{"role": "user", "content": "what is latest?"}],
+        "instructions",
+        "responses-model",
+        "low",
+        tools=[send_tool, WEB_SEARCH_TOOL],
+        tool_choice="required",
+    )
+
+    assert result.hosted_tool_calls[0].kind == "web_search_call"
+    assert result.function_calls[0].name == "send_messages"
+    assert session.last_kwargs["json"]["tools"] == [send_tool, WEB_SEARCH_TOOL]
+    assert client.hosted_web_search_available is True
+    store.close()
+
+
+def test_chat_completions_never_enables_responses_hosted_search(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_app_settings(AppSettings(provider="custom"))
+    store.set_custom_provider(
+        CustomProvider(
+            "Chat only",
+            "https://models.example/v1",
+            "key",
+            "chat_completions",
+            {"native_function_calls": True, "hosted_web_search": True},
+        )
+    )
+
+    assert ChatGPTClient(store).hosted_web_search_available is False
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_web_search_probe_is_model_scoped_and_requires_terminal_call(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_chat_credentials(ChatCredentials("access", "refresh", time.time() + 3600, "account", None))
+    completed = {
+        "type": "response.completed",
+        "response": {
+            "id": "resp-probe",
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": {"query": "OpenAI homepage"},
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "probe-call",
+                    "name": "connection_test",
+                    "arguments": '{"ok":true}',
+                },
+            ],
+        },
+    }
+    stream = f"data: {json.dumps(completed)}\n\n".encode()
+    client = ChatGPTClient(store)
+    session = FakeSession(FakeResponse(stream))
+    client.session = cast(aiohttp.ClientSession, session)
+
+    assert await client.detect_subscription_web_search("gpt-model", "low") is True
+    assert store.subscription_web_search_capability("gpt-model") is True
+    assert client.hosted_web_search_available is False
+    store.set_app_settings(AppSettings(model="gpt-model"))
+    assert client.hosted_web_search_available is True
+    assert session.last_kwargs["json"]["tools"][0] == WEB_SEARCH_TOOL
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_setup_detection_preselects_verified_responses_web_search(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    client = ChatGPTClient(store)
+    session = SequenceSession(
+        [
+            FakeJSONResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "OK"}],
+                        }
+                    ]
+                }
+            ),
+            FakeJSONResponse(
+                {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "native-call",
+                            "name": "connection_test",
+                            "arguments": '{"ok":true}',
+                        }
+                    ]
+                }
+            ),
+            FakeJSONResponse(
+                {
+                    "output": [
+                        {"type": "web_search_call", "status": "completed"},
+                        {
+                            "type": "function_call",
+                            "call_id": "web-call",
+                            "name": "connection_test",
+                            "arguments": '{"ok":true}',
+                        },
+                    ]
+                }
+            ),
+        ]
+    )
+    client.session = cast(aiohttp.ClientSession, session)
+
+    detection = await client.detect_custom_protocol(
+        name="Gateway",
+        base_url="https://models.example/v1",
+        api_key="key",
+        model="model",
+    )
+
+    assert detection.protocol == "responses"
+    assert detection.native_function_calls is True
+    assert detection.hosted_web_search is True
+    assert len(session.calls) == 3
+    assert store.custom_provider() is None
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_setup_detection_may_select_chat_completions_on_conclusive_404(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     client = ChatGPTClient(store)
@@ -491,6 +664,7 @@ async def test_setup_detection_may_select_chat_completions_on_conclusive_404(tmp
 
     assert detection.protocol == "chat_completions"
     assert detection.native_function_calls is True
+    assert detection.hosted_web_search is False
     assert [call[0][0] for call in session.calls] == [
         "https://models.example/v1/responses",
         "https://models.example/v1/chat/completions",

@@ -17,7 +17,8 @@ ALLOWED_REACTIONS = frozenset(
 MAX_DISCORD_MESSAGE_LENGTH = 2000
 MAX_ACTION_MESSAGES = 5
 
-TOOL_SCHEMA_VERSION = "native-actions-escalation-v2"
+TOOL_SCHEMA_VERSION = "native-actions-hosted-search-v3"
+MAX_HOSTED_WEB_SEARCH_CALLS = 2
 ESCALATION_REASONS = frozenset({"peer_requested_owner", "owner_only_information", "other_explicit_request"})
 
 FUNCTION_TOOLS: list[dict[str, Any]] = [
@@ -113,6 +114,12 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
         "strict": True,
     },
 ]
+
+WEB_SEARCH_TOOL: dict[str, Any] = {
+    "type": "web_search",
+    "search_context_size": "low",
+}
+FUNCTION_AND_WEB_TOOLS: list[dict[str, Any]] = [*FUNCTION_TOOLS, WEB_SEARCH_TOOL]
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +247,18 @@ def validate_escalation_action(call: FunctionCall, fallback: str) -> DiscordActi
         reason="invalid_tool_arguments",
         invalid_arguments=True,
     )
+
+
+def validate_hosted_web_search_calls(
+    calls: list[Any],
+    *,
+    enabled: bool,
+) -> bool:
+    if not calls:
+        return True
+    if not enabled or len(calls) > MAX_HOSTED_WEB_SEARCH_CALLS:
+        return False
+    return all(call.kind == "web_search_call" and call.status == "completed" for call in calls)
 
 
 _BINARY_OPERATORS = {

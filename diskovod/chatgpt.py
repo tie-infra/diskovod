@@ -26,6 +26,7 @@ from .models import (
     can_send_image,
 )
 from .store import Store
+from .tooling import WEB_SEARCH_TOOL
 
 log = logging.getLogger(__name__)
 AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
@@ -50,6 +51,7 @@ class ProviderHTTPError(RuntimeError):
 class ProtocolDetection:
     protocol: str
     native_function_calls: bool
+    hosted_web_search: bool
 
 
 def make_prompt_cache_key(scope: str, identity: str) -> str:
@@ -131,6 +133,19 @@ class ChatGPTClient:
         if self.active_provider == "custom" and self.custom_connected and not self.automation_ready:
             return "The custom provider must pass native function-call detection before automation."
         return None
+
+    @property
+    def hosted_web_search_available(self) -> bool:
+        if self.active_provider == "custom":
+            provider = self.store.custom_provider()
+            return bool(
+                provider
+                and provider.protocol == "responses"
+                and provider.supports("native_function_calls")
+                and provider.supports("hosted_web_search")
+            )
+        settings = self.store.app_settings()
+        return self.store.subscription_web_search_capability(settings.model) is True
 
     @property
     def active_provider(self) -> str:
@@ -594,7 +609,8 @@ class ChatGPTClient:
             result = self._model_result_from_response(payload)
             if result.text or result.function_calls or result.hosted_tool_calls:
                 native = await self._probe_native_function_calls(provider, "responses", model)
-                return ProtocolDetection("responses", native)
+                web_search = await self._probe_custom_hosted_web_search(provider, model) if native else False
+                return ProtocolDetection("responses", native, web_search)
             raise RuntimeError(f"{name} returned an invalid Responses API probe result")
 
         chat_body = {
@@ -611,21 +627,37 @@ class ChatGPTClient:
         if not result.text and not result.function_calls:
             raise RuntimeError(f"{name} returned an invalid Chat Completions probe result")
         native = await self._probe_native_function_calls(provider, "chat_completions", model)
-        return ProtocolDetection("chat_completions", native)
+        return ProtocolDetection("chat_completions", native, False)
+
+    async def detect_subscription_web_search(self, model: str, effort: str) -> bool:
+        """Probe the private subscription transport without assuming public API parity."""
+        result = await self._complete_subscription(
+            [
+                {
+                    "role": "user",
+                    "content": "Find the official OpenAI homepage, then complete the test.",
+                }
+            ],
+            (
+                "This is a capability test. Use web search once, then call connection_test with "
+                "ok=true. Do not return ordinary text."
+            ),
+            model,
+            effort,
+            "web_search_capability_probe",
+            64,
+            None,
+            "en",
+            [WEB_SEARCH_TOOL, self._connection_test_tool()],
+            "required",
+            None,
+        )
+        supported = self._is_successful_web_search_probe(result)
+        self.store.set_subscription_web_search_capability(model, supported)
+        return supported
 
     async def _probe_native_function_calls(self, provider: CustomProvider, protocol: str, model: str) -> bool:
-        tool = {
-            "type": "function",
-            "name": "connection_test",
-            "description": "Complete the connection test.",
-            "parameters": {
-                "type": "object",
-                "properties": {"ok": {"type": "boolean"}},
-                "required": ["ok"],
-                "additionalProperties": False,
-            },
-            "strict": True,
-        }
+        tool = self._connection_test_tool()
         if protocol == "responses":
             body = {
                 "model": model,
@@ -660,6 +692,63 @@ class ChatGPTClient:
             len(result.function_calls) == 1
             and result.function_calls[0].name == "connection_test"
             and result.function_calls[0].parsed_arguments is not None
+        )
+
+    async def _probe_custom_hosted_web_search(
+        self,
+        provider: CustomProvider,
+        model: str,
+    ) -> bool:
+        body = {
+            "model": model,
+            "instructions": (
+                "Use web search once to find the official OpenAI homepage, then call "
+                "connection_test with ok=true. Do not return ordinary text."
+            ),
+            "input": [{"role": "user", "content": "Complete the web search capability test."}],
+            "tools": [WEB_SEARCH_TOOL, self._connection_test_tool()],
+            "tool_choice": "required",
+            "parallel_tool_calls": False,
+            "max_output_tokens": 64,
+            "stream": False,
+            "store": False,
+        }
+        try:
+            result = self._model_result_from_response(
+                await self._post_custom_json(provider, "/responses", body)
+            )
+        except Exception as exc:
+            log.info("Hosted web-search capability probe failed for %s: %s", provider.name, exc)
+            return False
+        return self._is_successful_web_search_probe(result)
+
+    @staticmethod
+    def _connection_test_tool() -> dict[str, Any]:
+        return {
+            "type": "function",
+            "name": "connection_test",
+            "description": "Complete the connection test.",
+            "parameters": {
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        }
+
+    @staticmethod
+    def _is_successful_web_search_probe(result: ModelResult) -> bool:
+        return (
+            not result.text
+            and len(result.function_calls) == 1
+            and result.function_calls[0].name == "connection_test"
+            and result.function_calls[0].parsed_arguments == {"ok": True}
+            and 1 <= len(result.hosted_tool_calls) <= 2
+            and all(
+                call.kind == "web_search_call" and call.status == "completed"
+                for call in result.hosted_tool_calls
+            )
         )
 
     @staticmethod
@@ -853,7 +942,7 @@ class ChatGPTClient:
                 action = item.get("action")
                 if isinstance(action, dict):
                     metadata["action"] = {
-                        str(key): value
+                        str(key): value[:500] if isinstance(value, str) else value
                         for key, value in list(action.items())[:10]
                         if isinstance(value, (str, int, float, bool)) or value is None
                     }

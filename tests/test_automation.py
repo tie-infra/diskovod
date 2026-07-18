@@ -11,7 +11,7 @@ import pytest
 
 from diskovod.automation import Automation, build_reply_instructions
 from diskovod.chatgpt import ChatGPTClient
-from diskovod.models import AppSettings, FunctionCall, ModelResult, TextOutput
+from diskovod.models import AppSettings, FunctionCall, HostedToolCall, ModelResult, TextOutput
 from diskovod.store import Store
 
 
@@ -22,6 +22,7 @@ def function_result(name: str, arguments: dict, call_id: str = "call-1") -> Mode
 
 class ReplyingChatGPT:
     active_provider = "chatgpt"
+    hosted_web_search_available = False
 
     def __init__(self, results: list[ModelResult]):
         self.results = iter(results)
@@ -360,6 +361,58 @@ async def test_invalid_escalation_arguments_use_localized_fallback_without_repai
     store.close()
 
 
+@pytest.mark.asyncio
+async def test_hosted_search_reaches_discord_only_through_terminal_message_action(tmp_path: Path):
+    store = reply_store(tmp_path)
+    result = function_result(
+        "send_messages",
+        {"messages": ["It launched today — https://example.test/announcement"]},
+    )
+    result.hosted_tool_calls.append(
+        HostedToolCall(
+            "web_search_call",
+            "completed",
+            {"action": {"query": "private raw search query"}},
+        )
+    )
+    chatgpt = ReplyingChatGPT([result])
+    chatgpt.hosted_web_search_available = True
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0)
+
+    assert [item[0] for item in trigger.channel.sent] == [
+        "It launched today — https://example.test/announcement"
+    ]
+    assert chatgpt.calls[0]["tools"][-1] == {
+        "type": "web_search",
+        "search_context_size": "low",
+    }
+    persisted = json.dumps(store.history("dm", 10), ensure_ascii=False)
+    assert "private raw search query" not in persisted
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_hosted_search_output_fails_closed_without_repair(tmp_path: Path):
+    store = reply_store(tmp_path)
+    result = function_result("send_messages", {"messages": ["untrusted reply"]})
+    result.hosted_tool_calls.append(HostedToolCall("web_search_call", "failed", {}))
+    chatgpt = ReplyingChatGPT([result])
+    chatgpt.hosted_web_search_available = True
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0)
+
+    assert trigger.channel.sent == []
+    assert len(chatgpt.calls) == 1
+    store.close()
+
+
 def test_profile_cache_key_is_shared_without_sharing_conversation_state(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     chatgpt = ReplyingChatGPT([])
@@ -373,4 +426,18 @@ def test_profile_cache_key_is_shared_without_sharing_conversation_state(tmp_path
     assert first == second
     assert first.startswith("diskovod:dm-profile:")
     assert "profile-v1" not in first
+    store.close()
+
+
+def test_profile_cache_key_changes_when_hosted_tool_schema_availability_changes(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    chatgpt = ReplyingChatGPT([])
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    settings = AppSettings(model="model", base_instructions="stable")
+
+    without_search = automation._profile_cache_key(settings, None)
+    chatgpt.hosted_web_search_available = True
+    with_search = automation._profile_cache_key(settings, None)
+
+    assert without_search != with_search
     store.close()

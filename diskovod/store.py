@@ -187,6 +187,32 @@ class Store:
 
     def clear_chat_credentials(self) -> None:
         self._delete("chatgpt.credentials")
+        self._delete("chatgpt.web_search_capability")
+
+    def set_subscription_web_search_capability(self, model: str, supported: bool) -> None:
+        credentials = self.chat_credentials()
+        self._set(
+            "chatgpt.web_search_capability",
+            {
+                "model": model,
+                "account_id": credentials.account_id if credentials else None,
+                "supported": supported,
+                "checked_at": time.time(),
+            },
+        )
+
+    def subscription_web_search_capability(self, model: str) -> bool | None:
+        value = self._get("chatgpt.web_search_capability", None)
+        credentials = self.chat_credentials()
+        if (
+            not value
+            or not credentials
+            or value.get("model") != model
+            or value.get("account_id") != credentials.account_id
+        ):
+            return None
+        supported = value.get("supported")
+        return supported if isinstance(supported, bool) else None
 
     def custom_provider(self) -> CustomProvider | None:
         value = self._get("openai_compatible.provider", None)

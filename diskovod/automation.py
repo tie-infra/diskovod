@@ -13,6 +13,7 @@ from .localization import escalation_fallback, prompts_for
 from .models import AppSettings
 from .store import Store
 from .tooling import (
+    FUNCTION_AND_WEB_TOOLS,
     FUNCTION_TOOLS,
     TOOL_SCHEMA_VERSION,
     DiscordAction,
@@ -21,6 +22,7 @@ from .tooling import (
     function_output_item,
     validate_discord_action,
     validate_escalation_action,
+    validate_hosted_web_search_calls,
 )
 
 log = logging.getLogger(__name__)
@@ -45,7 +47,9 @@ def build_reply_instructions(
         "send_messages for written replies, escalate_to_owner when the peer explicitly asks for the "
         "owner, or, only when genuinely appropriate, react_to_message. Do not return final reply text "
         "outside a terminal action. Use get_current_datetime whenever the answer depends on the "
-        "current date or time, and calculate for non-trivial arithmetic."
+        "current date or time, and calculate for non-trivial arithmetic. Use web_search only when "
+        "the peer asks to search or verify, or when current public information materially affects "
+        "the answer. If web_search is unavailable, say so when relevant and never invent results."
     )
 
     owner_examples = [
@@ -320,6 +324,7 @@ class Automation:
                 TOOL_SCHEMA_VERSION,
                 settings.base_instructions,
                 settings.owner_details,
+                str(bool(getattr(self.chatgpt, "hosted_web_search_available", False))),
                 str(profile_hash),
             )
         )
@@ -340,6 +345,8 @@ class Automation:
             log.error("Custom provider %s has not passed native function-call validation", provider.name)
             return None
         continuation: list[dict[str, Any]] = []
+        web_search_enabled = bool(getattr(self.chatgpt, "hosted_web_search_available", False))
+        tools = FUNCTION_AND_WEB_TOOLS if web_search_enabled else FUNCTION_TOOLS
         repair_used = False
         read_only_calls = 0
         tool_choice: str | dict[str, Any] = "required"
@@ -353,11 +360,17 @@ class Automation:
                 max_output_tokens=settings.max_reply_tokens,
                 cache_key=cache_key,
                 locale=settings.prompt_locale,
-                tools=FUNCTION_TOOLS,
+                tools=tools,
                 tool_choice=tool_choice,
                 continuation_items=continuation,
             )
             calls = result.function_calls
+            if not validate_hosted_web_search_calls(
+                result.hosted_tool_calls,
+                enabled=web_search_enabled,
+            ):
+                log.error("Rejected invalid or over-budget hosted tool output")
+                return None
             if len(calls) != 1 or result.text:
                 if repair_used:
                     log.error("Rejected non-terminal or ambiguous model output after native repair")

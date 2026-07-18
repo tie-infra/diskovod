@@ -151,6 +151,21 @@ def test_custom_provider_capabilities_round_trip(tmp_path: Path):
     store.close()
 
 
+def test_subscription_web_search_capability_is_scoped_to_account_and_model(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.set_chat_credentials(ChatCredentials("access", "refresh", 123, "account-1", None))
+    store.set_subscription_web_search_capability("gpt-model", True)
+
+    assert store.subscription_web_search_capability("gpt-model") is True
+    assert store.subscription_web_search_capability("different-model") is None
+
+    store.set_chat_credentials(ChatCredentials("access", "refresh", 123, "account-2", None))
+    assert store.subscription_web_search_capability("gpt-model") is None
+    store.clear_chat_credentials()
+    assert store.subscription_web_search_capability("gpt-model") is None
+    store.close()
+
+
 def test_database_explorer_redacts_secrets_searches_and_deletes_mutable_rows(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
     store.set_discord_token("very-secret-token")

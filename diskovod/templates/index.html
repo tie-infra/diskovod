@@ -24,6 +24,7 @@
           <a class="nav-link" href="#behavior">Behavior</a>
           <a class="nav-link" href="#usage">Usage</a>
           <a class="nav-link" href="#conversations">Conversations</a>
+          <a class="nav-link" href="#database">Database</a>
         </div>
       </div>
     </nav>
@@ -889,6 +890,113 @@
               <div class="empty-state">No DMs observed yet.</div>
             {% endfor %}
           </div>
+        </article>
+      </section>
+
+      <section id="database" class="page-section" aria-label="Database management">
+        <article class="card database-card">
+          <div class="card-header">
+            <div>
+              <span class="step">08</span>
+              <h2>Database explorer</h2>
+            </div>
+            <span class="pill">{{ database.total }} matching rows</span>
+          </div>
+
+          <p>
+            Browse Diskovod's local SQLite tables. Encrypted configuration values are redacted;
+            configuration is read-only and cannot be deleted here.
+          </p>
+
+          <nav class="database-tabs" aria-label="Database tables">
+            {% for table in database.tables %}
+              <a
+                href="{{ table.url }}"
+                class="btn btn-sm {{ 'btn-primary' if table.selected else 'btn-outline-secondary' }}"
+                {% if table.selected %}aria-current="page"{% endif %}
+              >
+                {{ table.label }} <span class="badge text-bg-dark">{{ table.count }}</span>
+              </a>
+            {% endfor %}
+          </nav>
+
+          <form method="get" action="/" class="database-search">
+            <input type="hidden" name="db_table" value="{{ database.name }}">
+            <label>
+              Search {{ database.label | lower }}
+              <input
+                name="db_query"
+                value="{{ database.query }}"
+                maxlength="200"
+                placeholder="Search visible columns…"
+              >
+            </label>
+            <button>Search</button>
+            {% if database.query %}
+              <a class="btn btn-outline-secondary" href="{{ database.tables | selectattr('selected') | map(attribute='url') | first }}">
+                Clear
+              </a>
+            {% endif %}
+          </form>
+
+          <div class="table-wrap database-table-wrap">
+            <table class="table table-dark table-hover align-middle mb-0 database-table">
+              <thead>
+                <tr>
+                  {% for column in database.columns %}<th>{{ column }}</th>{% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in database.rows %}
+                  <tr>
+                    {% for cell in row.cells %}
+                      <td><span title="{{ cell }}">{{ cell }}</span></td>
+                    {% endfor %}
+                  </tr>
+                {% else %}
+                  <tr>
+                    <td colspan="{{ database.columns | length }}" class="table-empty">
+                      No rows match this view.
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="database-pagination">
+            <span>Page {{ database.page }} of {{ database.pages }}</span>
+            <div class="button-row">
+              {% if database.previous_url %}
+                <a class="btn btn-outline-secondary" href="{{ database.previous_url }}">Previous</a>
+              {% endif %}
+              {% if database.next_url %}
+                <a class="btn btn-outline-secondary" href="{{ database.next_url }}">Next</a>
+              {% endif %}
+            </div>
+          </div>
+
+          {% if not database.read_only %}
+            <details class="database-delete">
+              <summary>Delete one row</summary>
+              <form method="post" action="/database/delete" class="form-stack">
+                <input type="hidden" name="table" value="{{ database.name }}">
+                <input type="hidden" name="db_query" value="{{ database.query }}">
+                <label>
+                  {{ database.primary_key }} value
+                  <input name="row_key" list="database-row-keys" required autocomplete="off">
+                </label>
+                <datalist id="database-row-keys">
+                  {% for row in database.rows %}<option value="{{ row.key }}"></option>{% endfor %}
+                </datalist>
+                <label class="toggle">
+                  <input type="checkbox" name="confirm" value="delete" required>
+                  I understand that this permanently deletes the selected row
+                </label>
+                <button class="button-danger">Delete row</button>
+              </form>
+            </details>
+          {% endif %}
         </article>
       </section>
     </main>

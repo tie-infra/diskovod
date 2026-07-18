@@ -17,6 +17,40 @@ from .models import (
 from .security import SecretBox
 
 LEGACY_BASE_INSTRUCTIONS_SHA256 = "ce9bd3d8ffbef462362269db68c7996d9ca0e3e93761d197fcf82f5e0f25502c"
+DATABASE_TABLES = {
+    "config": {"label": "Configuration", "primary_key": "key", "order_by": "updated_at", "read_only": True},
+    "conversations": {
+        "label": "Conversations",
+        "primary_key": "channel_id",
+        "order_by": "updated_at",
+        "read_only": False,
+    },
+    "messages": {"label": "Messages", "primary_key": "id", "order_by": "timestamp", "read_only": False},
+    "assistant_reactions": {
+        "label": "Assistant reactions",
+        "primary_key": "trigger_message_id",
+        "order_by": "created_at",
+        "read_only": False,
+    },
+    "chatgpt_usage": {
+        "label": "Model usage",
+        "primary_key": "id",
+        "order_by": "recorded_at",
+        "read_only": False,
+    },
+    "bot_nonces": {
+        "label": "Pending nonces",
+        "primary_key": "nonce",
+        "order_by": "created_at",
+        "read_only": False,
+    },
+    "bot_message_ids": {
+        "label": "Assistant message markers",
+        "primary_key": "id",
+        "order_by": "created_at",
+        "read_only": False,
+    },
+}
 
 
 class Store:
@@ -483,3 +517,70 @@ class Store:
         with self._lock, self._db:
             self._db.execute("DELETE FROM bot_nonces WHERE created_at<?", (cutoff,))
             self._db.execute("DELETE FROM bot_message_ids WHERE created_at<?", (cutoff,))
+
+    def database_tables(self) -> list[dict[str, Any]]:
+        with self._lock:
+            result = []
+            for name, spec in DATABASE_TABLES.items():
+                count = self._db.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+                result.append({"name": name, "count": count, **spec})
+        return result
+
+    def database_rows(
+        self,
+        table: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        query: str = "",
+    ) -> dict[str, Any]:
+        spec = DATABASE_TABLES.get(table)
+        if spec is None:
+            raise ValueError("Unknown database table")
+        page_limit = max(1, min(limit, 100))
+        page_offset = max(0, offset)
+        with self._lock:
+            columns = [row["name"] for row in self._db.execute(f'PRAGMA table_info("{table}")').fetchall()]
+            searchable = ["key"] if table == "config" else columns
+            parameters: list[Any] = []
+            where = ""
+            if query:
+                where = " WHERE " + " OR ".join(f'CAST("{column}" AS TEXT) LIKE ?' for column in searchable)
+                parameters.extend([f"%{query}%"] * len(searchable))
+            total = self._db.execute(f'SELECT COUNT(*) FROM "{table}"{where}', parameters).fetchone()[0]
+            rows = [
+                dict(row)
+                for row in self._db.execute(
+                    f'SELECT * FROM "{table}"{where} ORDER BY "{spec["order_by"]}" DESC LIMIT ? OFFSET ?',
+                    (*parameters, page_limit, page_offset),
+                ).fetchall()
+            ]
+        if table == "config":
+            for row in rows:
+                if row["secret"]:
+                    row["value"] = "[encrypted value redacted]"
+        return {
+            "name": table,
+            "label": spec["label"],
+            "primary_key": spec["primary_key"],
+            "read_only": spec["read_only"],
+            "columns": columns,
+            "rows": rows,
+            "total": total,
+            "limit": page_limit,
+            "offset": page_offset,
+            "query": query,
+        }
+
+    def delete_database_row(self, table: str, row_key: str) -> bool:
+        spec = DATABASE_TABLES.get(table)
+        if spec is None:
+            raise ValueError("Unknown database table")
+        if spec["read_only"]:
+            raise ValueError("This database table is read-only")
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                f'DELETE FROM "{table}" WHERE "{spec["primary_key"]}"=?',
+                (row_key,),
+            )
+        return cursor.rowcount > 0

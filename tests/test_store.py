@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from diskovod.models import (
     DEFAULT_BASE_INSTRUCTIONS,
     AppSettings,
@@ -96,6 +98,59 @@ def test_secrets_are_encrypted_and_round_trip(tmp_path: Path):
     assert store.discord_token() == "very-secret-token"
     assert store.chat_credentials().account_id == "acct"
     assert store.custom_provider().api_key == "provider-secret"
+    store.close()
+
+
+def test_database_explorer_redacts_secrets_searches_and_deletes_mutable_rows(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.set_discord_token("very-secret-token")
+    store.upsert_conversation("dm", "peer", "Peer")
+    store.save_message(
+        id="message-1",
+        channel_id="dm",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="find this phrase",
+        timestamp=100,
+    )
+    store.save_message(
+        id="message-2",
+        channel_id="dm",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="something else",
+        timestamp=200,
+    )
+
+    tables = {table["name"]: table for table in store.database_tables()}
+    assert tables["messages"]["count"] == 2
+    assert tables["config"]["read_only"] is True
+
+    config = store.database_rows("config")
+    token_row = next(row for row in config["rows"] if row["key"] == "discord.token")
+    assert token_row["value"] == "[encrypted value redacted]"
+    assert "very-secret-token" not in str(config)
+
+    messages = store.database_rows("messages", query="find this")
+    assert messages["total"] == 1
+    assert messages["rows"][0]["id"] == "message-1"
+    assert store.delete_database_row("messages", "message-1") is True
+    assert store.delete_database_row("messages", "missing") is False
+    assert store.database_rows("messages")["total"] == 1
+    store.close()
+
+
+def test_database_management_rejects_unknown_and_read_only_tables(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+
+    with pytest.raises(ValueError, match="Unknown database table"):
+        store.database_rows("sqlite_master")
+    with pytest.raises(ValueError, match="read-only"):
+        store.delete_database_row("config", "app.settings")
     store.close()
 
 

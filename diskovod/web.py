@@ -109,7 +109,13 @@ class WebApp:
         auth = self.require_admin
 
         @self.app.get("/")
-        async def dashboard(request: Request, _: str = Depends(auth)):
+        async def dashboard(
+            request: Request,
+            db_table: str = "messages",
+            db_page: int = 1,
+            db_query: str = "",
+            _: str = Depends(auth),
+        ):
             custom_provider = self.store.custom_provider()
             return self.templates.TemplateResponse(
                 request,
@@ -140,6 +146,7 @@ class WebApp:
                     "personality": self.store.personality(),
                     "conversations": self._conversation_views(),
                     "usage_stats": self._usage_views(),
+                    "database": self._database_view(db_table, db_page, db_query),
                     "message": request.query_params.get("message"),
                     "error": request.query_params.get("error"),
                 },
@@ -366,6 +373,28 @@ class WebApp:
             self.store.clear_snooze(channel_id)
             return self._back(message="Automation enabled; the next incoming DM may receive a reply")
 
+        @self.app.post("/database/delete")
+        async def database_delete(
+            table: str = Form(...),
+            row_key: str = Form(...),
+            confirm: str | None = Form(None),
+            db_query: str = Form(""),
+            _: str = Depends(auth),
+        ):
+            if confirm != "delete":
+                return self._database_back(
+                    table,
+                    db_query,
+                    error="Confirm the row deletion before submitting",
+                )
+            try:
+                deleted = self.store.delete_database_row(table, row_key)
+            except ValueError as exc:
+                return self._database_back(table, db_query, error=str(exc))
+            if not deleted:
+                return self._database_back(table, db_query, error="Database row was not found")
+            return self._database_back(table, db_query, message=f"Deleted row {row_key!r} from {table}")
+
     def _conversation_views(self) -> list[dict]:
         now = time.time()
         result = self.store.conversations()
@@ -384,6 +413,53 @@ class WebApp:
                 datetime.fromtimestamp(record["recorded_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
             )
         return stats
+
+    def _database_view(self, table: str, page: int, query: str) -> dict:
+        tables = self.store.database_tables()
+        table_names = {item["name"] for item in tables}
+        selected = table if table in table_names else "messages"
+        search = query.strip()[:200]
+        current_page = max(1, page)
+        data = self.store.database_rows(
+            selected,
+            limit=50,
+            offset=(current_page - 1) * 50,
+            query=search,
+        )
+        if data["offset"] >= data["total"] and data["total"]:
+            current_page = max(1, (data["total"] - 1) // data["limit"] + 1)
+            data = self.store.database_rows(
+                selected,
+                limit=50,
+                offset=(current_page - 1) * 50,
+                query=search,
+            )
+        for item in tables:
+            item["url"] = self._database_url(item["name"], 1, "")
+            item["selected"] = item["name"] == selected
+        rows = []
+        for row in data["rows"]:
+            cells = []
+            for column in data["columns"]:
+                raw = row.get(column)
+                value = "NULL" if raw is None else str(raw)
+                cells.append(value if len(value) <= 500 else value[:497] + "…")
+            rows.append({"key": str(row[data["primary_key"]]), "cells": cells})
+        data.update(
+            tables=tables,
+            rows=rows,
+            page=current_page,
+            pages=max(1, (data["total"] + data["limit"] - 1) // data["limit"]),
+            previous_url=(
+                self._database_url(selected, current_page - 1, search) if current_page > 1 else None
+            ),
+            next_url=(
+                self._database_url(selected, current_page + 1, search)
+                if data["offset"] + data["limit"] < data["total"]
+                else None
+            ),
+        )
+        return data
 
     def _set_provider(self, provider: str) -> None:
         if provider not in PROVIDERS:
@@ -413,6 +489,32 @@ class WebApp:
 
     def _url(self, path: str) -> str:
         return self.public_url + "/" + path.lstrip("/")
+
+    def _database_url(self, table: str, page: int, query: str) -> str:
+        parameters = {"db_table": table, "db_page": max(1, page)}
+        if query:
+            parameters["db_query"] = query
+        return self._url("/") + "?" + urlencode(parameters) + "#database"
+
+    def _database_back(
+        self,
+        table: str,
+        query: str,
+        *,
+        message: str | None = None,
+        error: str | None = None,
+    ) -> RedirectResponse:
+        parameters = {"db_table": table, "db_page": 1}
+        if query:
+            parameters["db_query"] = query
+        if message:
+            parameters["message"] = message
+        if error:
+            parameters["error"] = error
+        return RedirectResponse(
+            self._url("/") + "?" + urlencode(parameters) + "#database",
+            status_code=303,
+        )
 
     def _back(self, *, message: str | None = None, error: str | None = None) -> RedirectResponse:
         query = urlencode({k: v for k, v in {"message": message, "error": error}.items() if v})

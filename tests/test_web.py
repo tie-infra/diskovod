@@ -49,8 +49,12 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/discord/connect" in route_paths
     assert "/discord/settings" not in route_paths
     assert "/discord/captcha/{request_id}" in route_paths
+    assert "/database/delete" in route_paths
     assert web._url("/chatgpt/oauth/callback") == ("https://diskovod.example/base/chatgpt/oauth/callback")
     assert web._back(message="connected").headers["location"].startswith("https://diskovod.example/base/")
+    assert web._database_url("messages", 2, "hello world") == (
+        "https://diskovod.example/base/?db_table=messages&db_page=2&db_query=hello+world#database"
+    )
 
 
 @pytest.mark.asyncio

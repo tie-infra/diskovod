@@ -109,6 +109,36 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
                 }
             ],
         },
+        database={
+            "name": "messages",
+            "label": "Messages",
+            "primary_key": "id",
+            "read_only": False,
+            "columns": ["id", "content"],
+            "rows": [{"key": "message-1", "cells": ["message-1", "hello"]}],
+            "total": 1,
+            "query": "",
+            "page": 1,
+            "pages": 1,
+            "previous_url": None,
+            "next_url": None,
+            "tables": [
+                {
+                    "name": "messages",
+                    "label": "Messages",
+                    "count": 1,
+                    "selected": True,
+                    "url": "/?db_table=messages#database",
+                },
+                {
+                    "name": "config",
+                    "label": "Configuration",
+                    "count": 2,
+                    "selected": False,
+                    "url": "/?db_table=config#database",
+                },
+            ],
+        },
         message=None,
         error=None,
     )
@@ -121,6 +151,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'href="#behavior"' in rendered
     assert 'href="#usage"' in rendered
     assert 'href="#conversations"' in rendered
+    assert 'href="#database"' in rendered
     assert 'id="main-content"' in rendered
     assert 'name="min_human_quiet_minutes"' in rendered
     assert 'name="max_human_quiet_minutes"' in rendered
@@ -163,3 +194,6 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "1,434" in rendered
     assert "Dm Reply" in rendered
     assert "2026-07-17 12:00:00 MSK" in rendered
+    assert "Database explorer" in rendered
+    assert 'action="/database/delete"' in rendered
+    assert 'name="row_key"' in rendered

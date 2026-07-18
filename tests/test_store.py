@@ -79,6 +79,18 @@ def test_localization_settings_round_trip_and_unknown_values_fall_back(tmp_path:
     store.close()
 
 
+def test_admin_theme_round_trip_and_unknown_value_falls_back(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+
+    assert store.app_settings().admin_theme == "light"
+    store.set_app_settings(AppSettings(admin_theme="black"))
+    assert store.app_settings().admin_theme == "black"
+
+    store.set_app_settings(AppSettings(admin_theme="neon"))
+    assert store.app_settings().admin_theme == "light"
+    store.close()
+
+
 def test_legacy_impersonation_prompt_is_replaced_but_custom_prompt_is_preserved(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
     store._set("app.settings", {"base_instructions": LEGACY_BASE_INSTRUCTIONS})
@@ -246,6 +258,25 @@ def test_permanent_pause_remains_until_explicit_resume(tmp_path: Path):
 
     store.set_permanent_pause("dm-1", False)
     assert store.conversation("dm-1")["paused"] is False
+    store.close()
+
+
+def test_inline_conversation_mode_survives_pause_and_resume(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.upsert_conversation("dm-1", "peer-1", "Sam")
+
+    assert store.conversation("dm-1")["mode"] == "automatic"
+    assert store.set_conversation_mode("dm-1", "inline") is True
+    assert store.conversation("dm-1")["mode"] == "inline"
+    assert store.can_automate("dm-1") is True
+
+    store.set_permanent_pause("dm-1", True)
+    assert store.conversation("dm-1")["mode"] == "inline"
+    assert store.can_automate("dm-1") is False
+
+    store.set_permanent_pause("dm-1", False)
+    assert store.conversation("dm-1")["mode"] == "inline"
+    assert store.can_automate("dm-1") is True
     store.close()
 
 

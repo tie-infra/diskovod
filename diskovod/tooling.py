@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .localization import tool_text
+from .localization import inline_tool_text, tool_text
 from .models import FunctionCall
 
 ALLOWED_REACTIONS = frozenset(
@@ -18,7 +18,7 @@ ALLOWED_REACTIONS = frozenset(
 MAX_DISCORD_MESSAGE_LENGTH = 2000
 MAX_ACTION_MESSAGES = 5
 
-TOOL_SCHEMA_VERSION = "fully-localized-native-tools-v5"
+TOOL_SCHEMA_VERSION = "inline-collaboration-tools-v6"
 MAX_HOSTED_WEB_SEARCH_CALLS = 2
 ESCALATION_REASONS = frozenset({"peer_requested_owner", "owner_only_information", "other_explicit_request"})
 
@@ -28,9 +28,9 @@ WEB_SEARCH_TOOL: dict[str, Any] = {
 }
 
 
-def function_tools(locale: str) -> list[dict[str, Any]]:
+def function_tools(locale: str, *, allow_silence: bool = False) -> list[dict[str, Any]]:
     text = tool_text(locale)
-    return [
+    tools = [
         {
             "type": "function",
             "name": "get_current_datetime",
@@ -129,10 +129,31 @@ def function_tools(locale: str) -> list[dict[str, Any]]:
             "strict": True,
         },
     ]
+    if allow_silence:
+        tools.append(
+            {
+                "type": "function",
+                "name": "stay_silent",
+                "description": inline_tool_text(locale)["stay_silent"],
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            }
+        )
+    return tools
 
 
-def action_tools(locale: str, *, web_search: bool) -> list[dict[str, Any]]:
-    tools = function_tools(locale)
+def action_tools(
+    locale: str,
+    *,
+    web_search: bool,
+    allow_silence: bool = False,
+) -> list[dict[str, Any]]:
+    tools = function_tools(locale, allow_silence=allow_silence)
     return [*tools, WEB_SEARCH_TOOL] if web_search else tools
 
 
@@ -211,6 +232,7 @@ def validate_discord_action(
     *,
     max_messages: int,
     allow_reaction: bool,
+    allow_silence: bool = False,
 ) -> DiscordAction | None:
     arguments = call.parsed_arguments
     if arguments is None:
@@ -236,6 +258,8 @@ def validate_discord_action(
         emoji = arguments["emoji"]
         if allow_reaction and emoji in ALLOWED_REACTIONS:
             return DiscordAction("reaction", emoji=emoji)
+    if call.name == "stay_silent" and allow_silence and not arguments:
+        return DiscordAction("silent")
     return None
 
 

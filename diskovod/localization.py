@@ -218,6 +218,44 @@ TOOL_TEXT = {
     },
 }
 
+INLINE_TOOL_TEXT = {
+    "en": {
+        "stay_silent": "Do not send anything when the assistant has no useful contribution to make to this inline conversation.",
+        "policy": "This chat is in inline collaboration mode. Participate openly as an AI assistant alongside the account owner and help either participant when useful. Prefer stay_silent when the exchange is already handled, your contribution would interrupt the flow, or you would merely repeat someone. Use send_messages only for a concrete, useful contribution.",
+        "owner_trigger": "The latest message was written manually by the account owner. Treat it as part of the shared conversation and add a follow-up only if it would genuinely help either participant.",
+    },
+    "ru": {
+        "stay_silent": "Не отправлять ничего, если ассистенту нечего полезного добавить к совместному разговору.",
+        "policy": "Этот чат работает в режиме совместного участия. Открыто участвуй как ИИ-ассистент рядом с владельцем аккаунта и помогай любому собеседнику, когда это полезно. Выбирай stay_silent, если вопрос уже решён, твой ответ нарушит ход разговора или лишь повторит сказанное. Используй send_messages только для конкретного полезного вклада.",
+        "owner_trigger": "Последнее сообщение вручную написал владелец аккаунта. Считай его частью общего разговора и добавляй продолжение только если оно действительно поможет кому-либо из собеседников.",
+    },
+    "uk": {
+        "stay_silent": "Нічого не надсилати, якщо асистенту нічого корисного додати до спільної розмови.",
+        "policy": "Цей чат працює в режимі спільної участі. Відкрито долучайся як ШІ-асистент поруч із власником облікового запису й допомагай будь-якому співрозмовнику, коли це корисно. Обирай stay_silent, якщо питання вже вирішено, твоя відповідь перерве хід розмови або лише повторить сказане. Використовуй send_messages лише для конкретного корисного внеску.",
+        "owner_trigger": "Останнє повідомлення власник облікового запису написав вручну. Вважай його частиною спільної розмови й додавай продовження лише якщо воно справді допоможе комусь зі співрозмовників.",
+    },
+    "ja": {
+        "stay_silent": "この共同会話に有用な付け加えがない場合は、何も送信しません。",
+        "policy": "このチャットはインライン共同モードです。アカウント所有者と並ぶAIアシスタントとして明示的に参加し、役立つ場合はどちらの参加者も支援してください。すでに話がまとまっている、流れを妨げる、または単なる繰り返しになる場合は stay_silent を優先してください。具体的で有用な貢献がある場合だけ send_messages を使ってください。",
+        "owner_trigger": "最新のメッセージはアカウント所有者が手動で書きました。共有会話の一部として扱い、どちらかの参加者に本当に役立つ場合だけ補足してください。",
+    },
+    "zh": {
+        "stay_silent": "如果助手无法为当前协作对话提供有用内容，则不发送任何消息。",
+        "policy": "此聊天处于内联协作模式。请以明确的 AI 助手身份与账号所有者共同参与，并在有帮助时协助任一参与者。如果事情已处理妥当、发言会打断交流，或只会重复他人，请优先使用 stay_silent。只有能提供具体有用内容时才使用 send_messages。",
+        "owner_trigger": "最新消息由账号所有者手动发送。将其视为共同对话的一部分，只有后续补充确实能帮助任一参与者时才发言。",
+    },
+    "de": {
+        "stay_silent": "Nichts senden, wenn der Assistent keinen nützlichen Beitrag zu dieser gemeinsamen Unterhaltung hat.",
+        "policy": "Dieser Chat befindet sich im Inline-Kollaborationsmodus. Nimm offen als KI-Assistent neben dem Kontoinhaber teil und hilf beiden Beteiligten, wenn es nützlich ist. Bevorzuge stay_silent, wenn das Anliegen bereits erledigt ist, dein Beitrag den Gesprächsfluss stören oder nur Gesagtes wiederholen würde. Verwende send_messages nur für einen konkreten, nützlichen Beitrag.",
+        "owner_trigger": "Die letzte Nachricht wurde vom Kontoinhaber manuell geschrieben. Behandle sie als Teil der gemeinsamen Unterhaltung und ergänze sie nur, wenn dies einem der Beteiligten wirklich hilft.",
+    },
+    "fr": {
+        "stay_silent": "Ne rien envoyer lorsque l’assistant n’a aucune contribution utile à apporter à cette conversation partagée.",
+        "policy": "Cette discussion est en mode de collaboration intégrée. Participe ouvertement comme assistant IA aux côtés du propriétaire du compte et aide l’un ou l’autre interlocuteur lorsque c’est utile. Préfère stay_silent si la situation est déjà traitée, si ton intervention couperait le fil ou ne ferait que répéter. Utilise send_messages uniquement pour une contribution concrète et utile.",
+        "owner_trigger": "Le dernier message a été écrit manuellement par le propriétaire du compte. Considère-le comme faisant partie de la conversation commune et n’ajoute un suivi que s’il aide réellement l’un des interlocuteurs.",
+    },
+}
+
 
 def normalize_locale(locale: str) -> str:
     return locale if locale in SUPPORTED_LOCALES else DEFAULT_LOCALE
@@ -233,6 +271,10 @@ def tool_policy(locale: str) -> str:
 
 def tool_text(locale: str) -> dict:
     return TOOL_TEXT[normalize_locale(locale)]
+
+
+def inline_tool_text(locale: str) -> dict[str, str]:
+    return INLINE_TOOL_TEXT[normalize_locale(locale)]
 
 
 @dataclass(frozen=True, slots=True)

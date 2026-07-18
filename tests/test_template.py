@@ -13,7 +13,8 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
         loader=FileSystemLoader(template_dir),
         autoescape=select_autoescape(["html"]),
     )
-    rendered = environment.get_template("index.html").render(
+    template = environment.get_template("index.html")
+    context = dict(
         app_settings=AppSettings(),
         locale="en",
         locales=SUPPORTED_LOCALES,
@@ -75,6 +76,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
             {
                 "channel_id": "dm-1",
                 "peer_name": "Peer",
+                "mode": "automatic",
                 "paused": False,
                 "snoozed": True,
                 "quiet_minutes_remaining": 12,
@@ -174,17 +176,37 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
         message=None,
         error=None,
     )
+    rendered_by_tab = {
+        tab: template.render(active_tab=tab, **context)
+        for tab in ("connections", "assistant", "conversations", "usage", "database")
+    }
+    rendered = "\n".join(rendered_by_tab.values())
 
     assert "<script" not in rendered
     assert "bootstrap@5.3.8/dist/css/bootstrap.min.css" in rendered
     assert 'aria-label="Admin navigation"' in rendered
-    assert 'href="#connections"' in rendered
-    assert 'href="#personality"' in rendered
-    assert 'href="#behavior"' in rendered
-    assert 'href="#usage"' in rendered
-    assert 'href="#escalations"' in rendered
-    assert 'href="#conversations"' in rendered
-    assert 'href="#database"' in rendered
+    assert 'href="/?tab=connections"' in rendered
+    assert 'href="/?tab=assistant"' in rendered
+    assert 'href="/?tab=usage"' in rendered
+    assert 'href="/?tab=conversations"' in rendered
+    assert 'href="/?tab=database"' in rendered
+    assert 'name="admin_theme"' in rendered
+    assert 'value="light" selected' in rendered
+    assert 'value="dark"' in rendered
+    assert 'value="black"' in rendered
+    assert "Black (OLED)" in rendered
+    assert 'data-bs-theme="light"' in rendered
+    assert 'data-admin-theme="light"' in rendered
+    assert "table table-dark" not in rendered
+    assert 'action="/discord/connect"' in rendered_by_tab["connections"]
+    assert 'action="/discord/connect"' not in rendered_by_tab["assistant"]
+    assert 'action="/personality/save"' in rendered_by_tab["assistant"]
+    assert 'action="/personality/save"' not in rendered_by_tab["connections"]
+    assert 'action="/conversations/dm-1/force-reply"' in rendered_by_tab["conversations"]
+    assert 'action="/conversations/dm-1/mode"' in rendered_by_tab["conversations"]
+    assert "Inline collaboration" in rendered_by_tab["conversations"]
+    assert "Model token usage" in rendered_by_tab["usage"]
+    assert 'action="/database/delete"' in rendered_by_tab["database"]
     assert 'id="main-content"' in rendered
     assert 'name="min_human_quiet_minutes"' in rendered
     assert 'name="max_human_quiet_minutes"' in rendered
@@ -243,3 +265,11 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'action="/escalations/3/claim"' in rendered
     assert 'action="/escalations/3/resolve"' in rendered
     assert 'action="/escalations/3/dismiss"' in rendered
+
+
+def test_oled_theme_uses_true_black_bootstrap_overrides():
+    stylesheet = (Path(__file__).parents[1] / "diskovod" / "static" / "style.css").read_text()
+
+    assert '[data-admin-theme="black"]' in stylesheet
+    assert "--bs-body-bg: #000" in stylesheet
+    assert "--bs-secondary-bg: #070707" in stylesheet

@@ -10,6 +10,7 @@ from typing import Any
 
 from .localization import normalize_locale
 from .models import (
+    ADMIN_THEMES,
     DEFAULT_BASE_INSTRUCTIONS,
     AppSettings,
     ChatCredentials,
@@ -77,7 +78,7 @@ class Store:
               CREATE TABLE IF NOT EXISTS conversations (
                 channel_id TEXT PRIMARY KEY, peer_id TEXT NOT NULL, peer_name TEXT NOT NULL,
                 paused INTEGER NOT NULL DEFAULT 0, paused_at REAL, updated_at REAL NOT NULL,
-                snoozed_until REAL
+                snoozed_until REAL, mode TEXT NOT NULL DEFAULT 'automatic'
               );
               CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, author_id TEXT NOT NULL,
@@ -127,6 +128,13 @@ class Store:
             }
             if "attachments" not in message_columns:
                 self._db.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+            conversation_columns = {
+                row["name"] for row in self._db.execute("PRAGMA table_info(conversations)").fetchall()
+            }
+            if "mode" not in conversation_columns:
+                self._db.execute(
+                    "ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'automatic'"
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -163,6 +171,9 @@ class Store:
         ):
             saved["base_instructions"] = DEFAULT_BASE_INSTRUCTIONS
         saved["admin_locale"] = normalize_locale(str(saved.get("admin_locale", "en")))
+        saved["admin_theme"] = (
+            str(saved.get("admin_theme", "light")) if saved.get("admin_theme") in ADMIN_THEMES else "light"
+        )
         saved["prompt_locale"] = normalize_locale(str(saved.get("prompt_locale", "en")))
         defaults = AppSettings().to_dict()
         known = {key: value for key, value in saved.items() if key in defaults}
@@ -348,8 +359,8 @@ class Store:
         with self._lock, self._db:
             self._db.execute(
                 """INSERT INTO conversations
-                   (channel_id, peer_id, peer_name, paused, paused_at, updated_at, snoozed_until)
-                   VALUES(?,?,?,?,?,?,NULL)
+                   (channel_id, peer_id, peer_name, paused, paused_at, updated_at, snoozed_until, mode)
+                   VALUES(?,?,?,?,?,?,NULL,'automatic')
               ON CONFLICT(channel_id) DO UPDATE SET peer_id=excluded.peer_id, peer_name=excluded.peer_name, updated_at=excluded.updated_at""",
                 (
                     channel_id,
@@ -368,6 +379,21 @@ class Store:
                 "UPDATE conversations SET paused=?, paused_at=?, updated_at=? WHERE channel_id=?",
                 (int(paused), now if paused else None, now, channel_id),
             )
+
+    def set_conversation_mode(self, channel_id: str, mode: str) -> bool:
+        if mode not in {"automatic", "inline", "paused"}:
+            raise ValueError("Unknown conversation mode")
+        now = time.time()
+        paused = mode == "paused"
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """UPDATE conversations
+                   SET mode=CASE WHEN ?='paused' THEN mode ELSE ? END,
+                       paused=?, paused_at=?, snoozed_until=NULL, updated_at=?
+                   WHERE channel_id=?""",
+                (mode, mode, int(paused), now if paused else None, now, channel_id),
+            )
+        return cursor.rowcount > 0
 
     def snooze(self, channel_id: str, seconds: float) -> float:
         until = time.time() + max(0.0, seconds)
@@ -501,6 +527,7 @@ class Store:
             "peer_name": row["peer_name"],
             "paused": bool(row["paused"]),
             "paused_at": row["paused_at"],
+            "mode": row["mode"],
             "snoozed_until": row["snoozed_until"],
             "updated_at": row["updated_at"],
         }

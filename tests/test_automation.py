@@ -11,6 +11,7 @@ import pytest
 
 from diskovod.automation import Automation, build_reply_instructions
 from diskovod.chatgpt import ChatGPTClient
+from diskovod.localization import inline_tool_text
 from diskovod.models import AppSettings, FunctionCall, HostedToolCall, ModelResult, TextOutput
 from diskovod.store import Store
 
@@ -139,6 +140,19 @@ async def test_human_activity_cancels_inflight_work_and_snoozes(tmp_path: Path):
     store.close()
 
 
+def test_human_activity_does_not_snooze_inline_collaboration(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.upsert_conversation("dm", "peer", "Peer")
+    store.set_conversation_mode("dm", "inline")
+    automation = Automation(store, cast(ChatGPTClient, None))
+
+    automation.human_activity("dm")
+
+    assert store.conversation("dm")["snoozed_until"] is None
+    assert store.can_automate("dm") is True
+    store.close()
+
+
 def test_permanent_pause_is_separate_from_human_quiet_window(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     store.upsert_conversation("dm", "peer", "Peer")
@@ -221,6 +235,40 @@ async def test_native_message_sequence_uses_delivery_options_and_stores_clean_co
     assert [item["content"] for item in saved] == ["hey", "what's up?"]
     assert chatgpt.calls[0]["tool_choice"] == "required"
     assert chatgpt.calls[0]["cache_key"].startswith("diskovod:dm-profile:")
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_inline_mode_can_stay_silent_after_an_owner_message(tmp_path: Path):
+    store = reply_store(tmp_path)
+    store.set_conversation_mode("dm", "inline")
+    chatgpt = ReplyingChatGPT([function_result("stay_silent", {})])
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0, owner_trigger=True)
+
+    assert trigger.channel.sent == []
+    call_record = chatgpt.calls[0]
+    assert inline_tool_text("en")["policy"] in call_record["instructions"]
+    assert inline_tool_text("en")["owner_trigger"] in call_record["instructions"]
+    assert "stay_silent" in {tool["name"] for tool in call_record["tools"]}
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_inline_mode_always_marks_assistant_messages(tmp_path: Path):
+    store = reply_store(tmp_path, robot_prefix=False)
+    store.set_conversation_mode("dm", "inline")
+    chatgpt = ReplyingChatGPT([function_result("send_messages", {"messages": ["useful context"]})])
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0)
+
+    assert trigger.channel.sent[0][0] == "🤖 useful context"
     store.close()
 
 
@@ -440,4 +488,16 @@ def test_profile_cache_key_changes_when_hosted_tool_schema_availability_changes(
     with_search = automation._profile_cache_key(settings, None)
 
     assert without_search != with_search
+    store.close()
+
+
+def test_profile_cache_key_separates_inline_and_automatic_tools(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    automation = Automation(store, cast(ChatGPTClient, ReplyingChatGPT([])))
+    settings = AppSettings(model="model", base_instructions="stable")
+
+    automatic = automation._profile_cache_key(settings, None)
+    inline = automation._profile_cache_key(settings, None, inline_mode=True)
+
+    assert automatic != inline
     store.close()

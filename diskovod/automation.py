@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from .chatgpt import ChatGPTClient, make_prompt_cache_key
-from .localization import escalation_fallback, prompts_for, tool_policy, tool_text
+from .localization import escalation_fallback, inline_tool_text, prompts_for, tool_policy, tool_text
 from .models import AppSettings
 from .store import Store
 from .tooling import (
@@ -77,6 +77,9 @@ class Automation:
             task.cancel()
 
     def human_activity(self, channel_id: str) -> float:
+        conversation = self.store.conversation(channel_id)
+        if conversation and conversation["mode"] == "inline" and not conversation["paused"]:
+            return time.time()
         settings = self.store.app_settings()
         quiet_minutes = random.uniform(settings.min_human_quiet_minutes, settings.max_human_quiet_minutes)
         snoozed_until = self.store.snooze(channel_id, quiet_minutes * 60)
@@ -92,7 +95,7 @@ class Automation:
         self.store.set_permanent_pause(channel_id, True)
         self.cancel(channel_id)
 
-    def schedule(self, message: Any) -> None:
+    def schedule(self, message: Any, *, owner_trigger: bool = False) -> None:
         channel_id = str(message.channel.id)
         self.cancel(channel_id)
         if not self.store.app_settings().enabled:
@@ -100,7 +103,10 @@ class Automation:
         if not self.store.can_automate(channel_id):
             return
         version = self.versions[channel_id]
-        task = asyncio.create_task(self._reply(message, version), name=f"reply-{channel_id}")
+        task = asyncio.create_task(
+            self._reply(message, version, owner_trigger=owner_trigger),
+            name=f"reply-{channel_id}",
+        )
         self.tasks[channel_id] = task
         self.trigger_ids[channel_id] = str(message.id)
         task.add_done_callback(lambda done: self._finished(channel_id, done))
@@ -138,7 +144,14 @@ class Automation:
     def _still_allowed(self, channel_id: str, version: int, *, force: bool = False) -> bool:
         return self.versions.get(channel_id) == version and (force or self.store.can_automate(channel_id))
 
-    async def _reply(self, trigger: Any, version: int, *, force: bool = False) -> None:
+    async def _reply(
+        self,
+        trigger: Any,
+        version: int,
+        *,
+        force: bool = False,
+        owner_trigger: bool = False,
+    ) -> None:
         settings = self.store.app_settings()
         channel_id = str(trigger.channel.id)
         started_at = time.time()
@@ -148,6 +161,8 @@ class Automation:
 
         history = self.store.history(channel_id, settings.history_limit)
         prompts = prompts_for(settings.prompt_locale)
+        conversation = self.store.conversation(channel_id)
+        inline_mode = bool(conversation and conversation["mode"] == "inline")
         messages = [
             {
                 "role": "assistant" if item["direction"] == "out" else "user",
@@ -165,20 +180,28 @@ class Automation:
         ]
         personality = self.store.personality()
         instructions = build_reply_instructions(settings, personality, history)
+        if inline_mode:
+            inline_text = inline_tool_text(settings.prompt_locale)
+            instructions += "\n\n" + inline_text["policy"]
+            if owner_trigger:
+                instructions += "\n\n" + inline_text["owner_trigger"]
         if force:
             instructions += "\n\n" + prompts.forced_reply
-        cache_key = self._profile_cache_key(settings, personality)
+        cache_key = self._profile_cache_key(settings, personality, inline_mode=inline_mode)
         max_messages = settings.max_reply_messages if settings.multi_message_replies else 1
-        allow_reaction = not force and self.store.reaction_allowed(channel_id)
+        allow_reaction = not force and not owner_trigger and self.store.reaction_allowed(channel_id)
         action = await self._generate_action(
             messages,
             instructions,
             settings,
             max_messages=max_messages,
             allow_reaction=allow_reaction,
+            allow_silence=inline_mode and not force,
             cache_key=cache_key,
         )
         if action is None:
+            return
+        if action.kind == "silent":
             return
 
         if not self._still_allowed(channel_id, version, force=force):
@@ -207,7 +230,9 @@ class Automation:
                     await asyncio.sleep(min(12.0, max(0.8, len(acknowledgement) / cps)))
                 nonce = secrets.token_hex(12)
                 self.store.remember_nonce(nonce)
-                outbound = f"🤖 {acknowledgement}" if settings.robot_prefix else acknowledgement
+                outbound = (
+                    f"🤖 {acknowledgement}" if settings.robot_prefix or inline_mode else acknowledgement
+                )
                 sent = await trigger.channel.send(
                     outbound,
                     nonce=nonce,
@@ -251,6 +276,7 @@ class Automation:
                 settings,
                 max_messages=max_messages,
                 allow_reaction=False,
+                allow_silence=inline_mode and not force,
                 cache_key=cache_key,
             )
             if (
@@ -288,7 +314,7 @@ class Automation:
 
             nonce = secrets.token_hex(12)
             self.store.remember_nonce(nonce)
-            outbound = f"🤖 {part}" if settings.robot_prefix else part
+            outbound = f"🤖 {part}" if settings.robot_prefix or inline_mode else part
             sent = await trigger.channel.send(outbound, nonce=nonce, silent=settings.silent_replies)
             self.store.remember_bot_message(str(sent.id))
             me = sent.author
@@ -303,7 +329,13 @@ class Automation:
                 timestamp=sent.created_at.timestamp(),
             )
 
-    def _profile_cache_key(self, settings: AppSettings, personality: dict | None) -> str:
+    def _profile_cache_key(
+        self,
+        settings: AppSettings,
+        personality: dict | None,
+        *,
+        inline_mode: bool = False,
+    ) -> str:
         provider = getattr(self.chatgpt, "active_provider", "chatgpt")
         custom = self.store.custom_provider() if provider == "custom" else None
         protocol = custom.protocol if custom else "responses"
@@ -319,6 +351,7 @@ class Automation:
                 settings.base_instructions,
                 settings.owner_details,
                 str(bool(getattr(self.chatgpt, "hosted_web_search_available", False))),
+                str(inline_mode),
                 str(profile_hash),
             )
         )
@@ -332,6 +365,7 @@ class Automation:
         *,
         max_messages: int,
         allow_reaction: bool,
+        allow_silence: bool = False,
         cache_key: str | None = None,
     ) -> DiscordAction | None:
         provider = self.store.custom_provider() if self.chatgpt.active_provider == "custom" else None
@@ -340,7 +374,11 @@ class Automation:
             return None
         continuation: list[dict[str, Any]] = []
         web_search_enabled = bool(getattr(self.chatgpt, "hosted_web_search_available", False))
-        tools = action_tools(settings.prompt_locale, web_search=web_search_enabled)
+        tools = action_tools(
+            settings.prompt_locale,
+            web_search=web_search_enabled,
+            allow_silence=allow_silence,
+        )
         repair_used = False
         read_only_calls = 0
         tool_choice: str | dict[str, Any] = "required"
@@ -392,6 +430,7 @@ class Automation:
                 call,
                 max_messages=max_messages,
                 allow_reaction=allow_reaction,
+                allow_silence=allow_silence,
             )
             if action is not None:
                 return action
@@ -407,8 +446,14 @@ class Automation:
                 log.error("Rejected malformed native Discord action after one repair")
                 return None
             repair_used = True
-            repair_name = call.name if call.name in {"send_messages", "react_to_message"} else "send_messages"
+            repair_name = (
+                call.name
+                if call.name in {"send_messages", "react_to_message", "stay_silent"}
+                else "send_messages"
+            )
             if repair_name == "react_to_message" and not allow_reaction:
+                repair_name = "stay_silent" if allow_silence else "send_messages"
+            if repair_name == "stay_silent" and not allow_silence:
                 repair_name = "send_messages"
             tool_choice = {"type": "function", "name": repair_name}
         log.error("Rejected reply after exceeding the total model request budget")

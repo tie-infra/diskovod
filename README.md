@@ -4,17 +4,17 @@ Diskovod is a Discord DM assistant backed by either a ChatGPT Plus/Pro subscript
 OpenAI-compatible API. It watches DMs, replies using a cached personality profile, and provides an
 admin UI for Discord, model providers, personality, and conversation controls.
 
-When the account owner sends a message, Diskovod cancels pending work and enters a configurable
-quiet window. Messages received during that window are recorded but not answered. Automation can
-resume on the next incoming message after the window expires. Individual conversations can also be
-paused until an administrator resumes them.
+In Automatic mode, an account-owner message cancels pending work and starts a configurable quiet
+window. Inline collaboration instead lets the assistant participate openly alongside the owner,
+help either participant when useful, and remain silent when it has nothing useful to add. Individual
+conversations can also be paused.
 
 ## Features
 
 - ChatGPT OAuth with PKCE, refresh-token rotation, and subscription-backed streaming responses.
 - Custom OpenAI-compatible Responses or Chat Completions providers, including keyless local endpoints.
 - Discord connection through `discord.py-self`.
-- Responsive Bootstrap admin navigation with a script-free interface.
+- Server-rendered Bootstrap admin tabs with Light, Dark, and OLED Black themes.
 - A guarded SQLite explorer with secret redaction, search, pagination, and confirmed row deletion.
 - Personality inference from bounded Discord or pasted message history, with an editable cache.
 - Editable owner details for names, preferences, relationships, plans, and other personal context.
@@ -30,6 +30,7 @@ paused until an administrator resumes them.
 - On-demand current date/time and bounded arithmetic tools.
 - Capability-gated hosted web search with natural source links in replies.
 - Configurable opt-in or opt-out default with per-conversation enrollment controls.
+- Per-conversation Automatic, Inline collaboration, and Paused modes.
 - Detailed model token accounting by time window, model, and operation.
 - SQLite storage with encrypted Discord, ChatGPT, and custom-provider credentials.
 - An IPv6 loopback listener default, with a separate browser-facing public URL.
@@ -254,19 +255,26 @@ The **New conversation default** determines enrollment when Diskovod first obser
 recorded but no reply is generated until automation is enabled for that conversation in the admin
 UI. Changing the default does not alter conversations already known to Diskovod.
 
+Each known conversation can then use one of three modes. **Automatic** replies to incoming messages
+and yields to manual owner activity through the quiet window. **Inline collaboration** considers
+messages from either participant, uses a dedicated no-op action when no contribution is needed, and
+always prefixes generated contributions with 🤖. **Paused** records messages without generating.
+
 Diskovod records a nonce before each generated send. A self-authored Gateway event without that
-nonce is treated as human activity: active generation is cancelled and a random quiet window
-starts. The task checks the current generation and pause state before typing and again before
-sending. It also checks recent Discord history immediately before sending in case the Gateway
-event is delayed.
+nonce is treated as human activity. In Automatic mode, active generation is cancelled and a random
+quiet window starts. In Inline collaboration, the owner message becomes the newest shared turn and
+may produce a clearly marked assistant follow-up. The task checks the current generation and pause
+state before typing and again before sending. It also checks recent Discord history immediately
+before sending in case the Gateway event is delayed.
 
 Messages received during a quiet window are not queued for a later reply. Conversation enrollment
 is separate from the quiet window and remains disabled until **Enable automation** is selected.
 
 Message content edits are reflected in stored history. Editing an outgoing message marks its final
-version as human-authored, cancels pending automation, and starts the normal quiet window. If the
-peer edits the exact incoming message that currently has a reply pending, Diskovod cancels and
-regenerates from the edited content. Older edits update context but do not cause duplicate replies.
+version as human-authored. It starts the normal quiet window in Automatic mode or becomes a revised
+shared turn in Inline collaboration. If the peer edits the exact incoming message that currently has
+a reply pending, Diskovod cancels and regenerates from the edited content. Older edits update context
+but do not cause duplicate replies.
 
 ## Overlay
 

@@ -49,17 +49,19 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/provider/custom/remove" in route_paths
     assert "/provider/select" in route_paths
     assert "/discord/connect" in route_paths
+    assert "/settings/theme" in route_paths
     assert "/discord/settings" not in route_paths
     assert "/discord/captcha/{request_id}" in route_paths
     assert "/database/delete" in route_paths
     assert "/conversations/{channel_id}/force-reply" in route_paths
+    assert "/conversations/{channel_id}/mode" in route_paths
     assert "/escalations/{escalation_id}/claim" in route_paths
     assert "/escalations/{escalation_id}/resolve" in route_paths
     assert "/escalations/{escalation_id}/dismiss" in route_paths
     assert web._url("/chatgpt/oauth/callback") == ("https://diskovod.example/base/chatgpt/oauth/callback")
     assert web._back(message="connected").headers["location"].startswith("https://diskovod.example/base/")
     assert web._database_url("messages", 2, "hello world") == (
-        "https://diskovod.example/base/?db_table=messages&db_page=2&db_query=hello+world#database"
+        "https://diskovod.example/base/?tab=database&db_table=messages&db_page=2&db_query=hello+world"
     )
 
 

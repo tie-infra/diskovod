@@ -25,7 +25,7 @@ from .chatgpt import (
 )
 from .discord import DiscordService
 from .localization import SUPPORTED_LOCALES, normalize_locale, prompts_for
-from .models import AppSettings, CustomProvider
+from .models import ADMIN_THEMES, AppSettings, CustomProvider
 from .security import password_matches
 from .store import Store
 from .ui_localization import ui_text
@@ -33,6 +33,7 @@ from .ui_localization import ui_text
 PERSONALITY_PROMPT_VERSION = "style-base-rates-examples-and-sequences-v4"
 PERSONALITY_MAX_OUTPUT_TOKENS = 2000
 PERSONALITY_INSTRUCTIONS = prompts_for("en").personality
+ADMIN_TABS = frozenset({"connections", "assistant", "conversations", "usage", "database"})
 
 
 @dataclass(slots=True)
@@ -130,6 +131,7 @@ class WebApp:
         @self.app.get("/")
         async def dashboard(
             request: Request,
+            tab: str = "connections",
             db_table: str = "messages",
             db_page: int = 1,
             db_query: str = "",
@@ -138,6 +140,7 @@ class WebApp:
         ):
             custom_provider = self.store.custom_provider()
             app_settings = self.store.app_settings()
+            active_tab = tab if tab in ADMIN_TABS else "connections"
             draft = self._provider_draft(provider_draft)
             provider_view = (
                 {
@@ -169,6 +172,7 @@ class WebApp:
                 "index.html",
                 {
                     "app_settings": app_settings,
+                    "active_tab": active_tab,
                     "locale": app_settings.admin_locale,
                     "locales": SUPPORTED_LOCALES,
                     "t": lambda key, **values: ui_text(app_settings.admin_locale, key, **values),
@@ -207,6 +211,18 @@ class WebApp:
         @self.app.get("/static/style.css")
         async def css():
             return FileResponse(Path(__file__).parent / "static" / "style.css", media_type="text/css")
+
+        @self.app.post("/settings/theme")
+        async def theme_save(
+            admin_theme: str = Form(...),
+            tab: str = Form("connections"),
+            _: str = Depends(auth),
+        ):
+            if admin_theme not in ADMIN_THEMES:
+                return self._back(tab=tab, error=self._t("unknown_theme"))
+            current = self.store.app_settings()
+            self.store.set_app_settings(replace(current, admin_theme=admin_theme))
+            return self._back(tab=tab, message=self._t("theme_saved"))
 
         @self.app.post("/chatgpt/connect")
         async def chat_connect(_: str = Depends(auth)):
@@ -479,37 +495,37 @@ class WebApp:
             _: str = Depends(auth),
         ):
             if admin_locale not in SUPPORTED_LOCALES or prompt_locale not in SUPPORTED_LOCALES:
-                return self._back(error=ui_text(admin_locale, "unknown_locale"))
+                return self._back(tab="assistant", error=ui_text(admin_locale, "unknown_locale"))
             try:
                 ZoneInfo(owner_timezone)
             except (KeyError, ValueError):
-                return self._back(error=self._t("timezone_invalid"))
+                return self._back(tab="assistant", error=self._t("timezone_invalid"))
             if provider not in PROVIDERS:
-                return self._back(error=self._t("unknown_model_provider"))
+                return self._back(tab="assistant", error=self._t("unknown_model_provider"))
             if conversation_default not in {"opt_in", "opt_out"}:
-                return self._back(error=self._t("conversation_default_invalid"))
+                return self._back(tab="assistant", error=self._t("conversation_default_invalid"))
             if provider == "custom" and not self.chatgpt.custom_connected:
-                return self._back(error=self._t("configure_custom_provider_first"))
+                return self._back(tab="assistant", error=self._t("configure_custom_provider_first"))
             custom = self.store.custom_provider()
             if (
                 enabled is not None
                 and provider == "custom"
                 and (not custom or not custom.supports("native_function_calls"))
             ):
-                return self._back(error=self._t("detect_native_calls_before_enable"))
+                return self._back(tab="assistant", error=self._t("detect_native_calls_before_enable"))
             model = model.strip()
             if not model:
-                return self._back(error=self._t("model_name_required"))
+                return self._back(tab="assistant", error=self._t("model_name_required"))
             owner_details = owner_details.strip()
             if len(owner_details) > 20_000:
-                return self._back(error=self._t("owner_details_too_long"))
+                return self._back(tab="assistant", error=self._t("owner_details_too_long"))
             if (
                 min_delay_seconds > max_delay_seconds
                 or min_message_gap_seconds > max_message_gap_seconds
                 or min_typing_cps > max_typing_cps
                 or min_human_quiet_minutes > max_human_quiet_minutes
             ):
-                return self._back(error=self._t("minimum_exceeds_maximum"))
+                return self._back(tab="assistant", error=self._t("minimum_exceeds_maximum"))
             previous = self.store.app_settings()
             normalized_prompt_locale = normalize_locale(prompt_locale)
             base_instructions = localized_base_instructions(
@@ -522,6 +538,7 @@ class WebApp:
                 silent_replies=silent_replies is not None,
                 robot_prefix=robot_prefix is not None,
                 admin_locale=normalize_locale(admin_locale),
+                admin_theme=previous.admin_theme,
                 prompt_locale=normalized_prompt_locale,
                 owner_timezone=owner_timezone,
                 multi_message_replies=multi_message_replies is not None,
@@ -545,13 +562,16 @@ class WebApp:
                 base_instructions=base_instructions,
             )
             self.store.set_app_settings(value)
-            return self._back(message=ui_text(value.admin_locale, "settings_saved"))
+            return self._back(
+                tab="assistant",
+                message=ui_text(value.admin_locale, "settings_saved"),
+            )
 
         @self.app.post("/personality/infer")
         async def personality_infer(samples: str = Form(...), _: str = Depends(auth)):
             samples = samples.strip()
             if len(samples) < 200:
-                return self._back(error=self._t("history_too_short"))
+                return self._back(tab="assistant", error=self._t("history_too_short"))
             return await self._infer_personality(samples, source="pasted_history")
 
         @self.app.post("/personality/infer-history")
@@ -562,25 +582,25 @@ class WebApp:
             try:
                 messages = await self.discord.personality_history(max(20, min(history_limit, 500)))
             except Exception as exc:
-                return self._back(error=self._localized_known_error(exc))
+                return self._back(tab="assistant", error=self._localized_known_error(exc))
             samples = "\n\n---\n\n".join(messages)
             if len(samples) < 200:
-                return self._back(error=self._t("discord_history_too_short"))
+                return self._back(tab="assistant", error=self._t("discord_history_too_short"))
             return await self._infer_personality(samples, source="discord_history")
 
         @self.app.post("/personality/save")
         async def personality_save(profile: str = Form(...), _: str = Depends(auth)):
             profile = profile.strip()
             if len(profile) < 50:
-                return self._back(error=self._t("personality_too_short"))
+                return self._back(tab="assistant", error=self._t("personality_too_short"))
             source_hash = hashlib.sha256(("edited\n" + profile).encode()).hexdigest()
             self.store.set_personality(profile, source_hash, source="edited")
-            return self._back(message=self._t("personality_updated"))
+            return self._back(tab="assistant", message=self._t("personality_updated"))
 
         @self.app.post("/conversations/{channel_id}/pause")
         async def pause(channel_id: str, _: str = Depends(auth)):
             self.automation.permanently_pause(channel_id)
-            return self._back(message=self._t("conversation_paused"))
+            return self._back(tab="conversations", message=self._t("conversation_paused"))
 
         @self.app.post("/conversations/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
@@ -588,29 +608,52 @@ class WebApp:
             self.store.resolve_escalation_on_owner_reply(channel_id)
             self.store.set_permanent_pause(channel_id, False)
             self.store.clear_snooze(channel_id)
-            return self._back(message=self._t("conversation_resumed"))
+            return self._back(tab="conversations", message=self._t("conversation_resumed"))
+
+        @self.app.post("/conversations/{channel_id}/mode")
+        async def conversation_mode(
+            channel_id: str,
+            mode: str = Form(...),
+            _: str = Depends(auth),
+        ):
+            if mode not in {"automatic", "inline", "paused"}:
+                return self._back(
+                    tab="conversations",
+                    error=self._t("conversation_mode_invalid"),
+                )
+            if not self.store.set_conversation_mode(channel_id, mode):
+                return self._back(
+                    tab="conversations",
+                    error=self._t("conversation_not_found"),
+                )
+            self.automation.cancel(channel_id)
+            return self._back(
+                tab="conversations",
+                message=self._t("conversation_mode_saved"),
+            )
 
         @self.app.post("/conversations/{channel_id}/force-reply")
         async def force_reply(channel_id: str, _: str = Depends(auth)):
             if not self.chatgpt.automation_ready:
                 return self._back(
+                    tab="conversations",
                     error=(
                         self._t("custom_provider_native_required")
                         if self.chatgpt.automation_error
                         else self._t("connect_provider_before_force")
-                    )
+                    ),
                 )
             try:
                 await self.discord.force_reply(channel_id)
             except Exception as exc:
-                return self._back(error=self._localized_known_error(exc))
-            return self._back(message=self._t("forced_reply_scheduled"))
+                return self._back(tab="conversations", error=self._localized_known_error(exc))
+            return self._back(tab="conversations", message=self._t("forced_reply_scheduled"))
 
         @self.app.post("/escalations/{escalation_id}/claim")
         async def escalation_claim(escalation_id: int, _: str = Depends(auth)):
             if not self.store.set_escalation_state(escalation_id, "claimed"):
-                return self._back(error=self._t("escalation_not_found"))
-            return self._back(message=self._t("escalation_claimed"))
+                return self._back(tab="conversations", error=self._t("escalation_not_found"))
+            return self._back(tab="conversations", message=self._t("escalation_claimed"))
 
         @self.app.post("/escalations/{escalation_id}/resolve")
         async def escalation_resolve(
@@ -623,10 +666,11 @@ class WebApp:
                 "resolved",
                 resume=resume is not None,
             ):
-                return self._back(error=self._t("escalation_not_found"))
+                return self._back(tab="conversations", error=self._t("escalation_not_found"))
             return self._back(
+                tab="conversations",
                 message=self._t("escalation_resolved")
-                + (self._t("automation_resumed_suffix") if resume is not None else "")
+                + (self._t("automation_resumed_suffix") if resume is not None else ""),
             )
 
         @self.app.post("/escalations/{escalation_id}/dismiss")
@@ -640,10 +684,11 @@ class WebApp:
                 "dismissed",
                 resume=resume is not None,
             ):
-                return self._back(error=self._t("escalation_not_found"))
+                return self._back(tab="conversations", error=self._t("escalation_not_found"))
             return self._back(
+                tab="conversations",
                 message=self._t("escalation_dismissed")
-                + (self._t("automation_resumed_suffix") if resume is not None else "")
+                + (self._t("automation_resumed_suffix") if resume is not None else ""),
             )
 
         @self.app.post("/database/delete")
@@ -785,7 +830,7 @@ class WebApp:
         source_hash = personality_source_hash(samples, cfg.prompt_locale)
         cached = self.store.personality()
         if cached and cached["source_hash"] == source_hash:
-            return self._back(message=self._t("personality_cached"))
+            return self._back(tab="assistant", message=self._t("personality_cached"))
         try:
             profile = await self.chatgpt.complete(
                 [{"role": "user", "content": samples}],
@@ -798,9 +843,9 @@ class WebApp:
                 locale=cfg.prompt_locale,
             )
         except Exception as exc:
-            return self._back(error=str(exc))
+            return self._back(tab="assistant", error=str(exc))
         self.store.set_personality(profile, source_hash, source=source)
-        return self._back(message=self._t("personality_inferred"))
+        return self._back(tab="assistant", message=self._t("personality_inferred"))
 
     def _url(self, path: str) -> str:
         return self.public_url + "/" + path.lstrip("/")
@@ -821,10 +866,10 @@ class WebApp:
         return self._t(key) if key else str(error)
 
     def _database_url(self, table: str, page: int, query: str) -> str:
-        parameters = {"db_table": table, "db_page": max(1, page)}
+        parameters = {"tab": "database", "db_table": table, "db_page": max(1, page)}
         if query:
             parameters["db_query"] = query
-        return self._url("/") + "?" + urlencode(parameters) + "#database"
+        return self._url("/") + "?" + urlencode(parameters)
 
     def _database_back(
         self,
@@ -834,7 +879,7 @@ class WebApp:
         message: str | None = None,
         error: str | None = None,
     ) -> RedirectResponse:
-        parameters = {"db_table": table, "db_page": 1}
+        parameters = {"tab": "database", "db_table": table, "db_page": 1}
         if query:
             parameters["db_query"] = query
         if message:
@@ -842,7 +887,7 @@ class WebApp:
         if error:
             parameters["error"] = error
         return RedirectResponse(
-            self._url("/") + "?" + urlencode(parameters) + "#database",
+            self._url("/") + "?" + urlencode(parameters),
             status_code=303,
         )
 
@@ -860,10 +905,28 @@ class WebApp:
         message: str | None = None,
         error: str | None = None,
     ) -> RedirectResponse:
-        values = {"provider_draft": token, "message": message, "error": error}
+        values = {
+            "tab": "connections",
+            "provider_draft": token,
+            "message": message,
+            "error": error,
+        }
         query = urlencode({key: value for key, value in values.items() if value})
-        return RedirectResponse(self._url("/") + "?" + query + "#connections", status_code=303)
+        return RedirectResponse(self._url("/") + "?" + query, status_code=303)
 
-    def _back(self, *, message: str | None = None, error: str | None = None) -> RedirectResponse:
-        query = urlencode({k: v for k, v in {"message": message, "error": error}.items() if v})
+    def _back(
+        self,
+        *,
+        tab: str = "connections",
+        message: str | None = None,
+        error: str | None = None,
+    ) -> RedirectResponse:
+        selected_tab = tab if tab in ADMIN_TABS else "connections"
+        query = urlencode(
+            {
+                key: value
+                for key, value in {"tab": selected_tab, "message": message, "error": error}.items()
+                if value
+            }
+        )
         return RedirectResponse(self._url("/") + ("?" + query if query else ""), status_code=303)

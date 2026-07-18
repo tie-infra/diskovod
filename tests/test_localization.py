@@ -5,6 +5,7 @@ from diskovod.automation import build_reply_instructions
 from diskovod.localization import (
     PROMPTS,
     SUPPORTED_LOCALES,
+    INLINE_TOOL_TEXT,
     TOOL_TEXT,
     TOOL_POLICIES,
     prompts_for,
@@ -105,6 +106,12 @@ def test_every_tool_string_supports_every_locale():
     expected_keys = set(TOOL_TEXT["en"])
     for locale, translations in TOOL_TEXT.items():
         assert set(translations) == expected_keys, locale
+        assert all(translations.values()), locale
+
+    assert set(INLINE_TOOL_TEXT) == set(SUPPORTED_LOCALES)
+    inline_keys = set(INLINE_TOOL_TEXT["en"])
+    for locale, translations in INLINE_TOOL_TEXT.items():
+        assert set(translations) == inline_keys, locale
         assert all(translations.values()), locale
 
 

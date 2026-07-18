@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from diskovod.models import FunctionCall
-from diskovod.localization import tool_text
+from diskovod.localization import inline_tool_text, tool_text
 from diskovod.tooling import (
     execute_read_only_tool,
     function_tools,
@@ -75,6 +75,30 @@ def test_reaction_action_respects_runtime_availability():
         max_messages=1,
         allow_reaction=True,
     )
+
+
+def test_inline_silence_action_is_only_available_when_enabled():
+    silent_call = call("stay_silent", {})
+
+    assert "stay_silent" not in {tool["name"] for tool in function_tools("en")}
+    inline_tools = {tool["name"]: tool for tool in function_tools("fr", allow_silence=True)}
+    assert inline_tools["stay_silent"]["description"] == inline_tool_text("fr")["stay_silent"]
+    assert (
+        validate_discord_action(
+            silent_call,
+            max_messages=1,
+            allow_reaction=False,
+        )
+        is None
+    )
+    action = validate_discord_action(
+        silent_call,
+        max_messages=1,
+        allow_reaction=False,
+        allow_silence=True,
+    )
+    assert action is not None
+    assert action.kind == "silent"
     assert (
         validate_discord_action(
             call("react_to_message", {"emoji": "👍"}),

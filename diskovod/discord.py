@@ -125,7 +125,11 @@ class PrivateDiscordClient(discord.Client):
             )
             if self.store.resolve_escalation_on_owner_reply(channel_id):
                 log.info("Manual owner reply resolved the active escalation for %s", channel_id)
-            self.automation.human_activity(channel_id)
+            conversation = self.store.conversation(channel_id)
+            if conversation and conversation["mode"] == "inline" and not conversation["paused"]:
+                self.automation.schedule(message, owner_trigger=True)
+            else:
+                self.automation.human_activity(channel_id)
             return
         if message.author.bot:
             return
@@ -154,7 +158,11 @@ class PrivateDiscordClient(discord.Client):
         if message.author == self.user:
             updated = self.store.update_message_content(str(message.id), content, source="human")
             if updated and updated["changed"]:
-                self.automation.human_activity(channel_id)
+                conversation = self.store.conversation(channel_id)
+                if conversation and conversation["mode"] == "inline" and not conversation["paused"]:
+                    self.automation.schedule(message, owner_trigger=True)
+                else:
+                    self.automation.human_activity(channel_id)
             return
         if message.author.bot:
             return

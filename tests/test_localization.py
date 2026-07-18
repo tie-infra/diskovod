@@ -6,7 +6,19 @@ from diskovod.web import localized_base_instructions, personality_source_hash
 
 
 def test_every_supported_locale_has_a_complete_prompt_bundle():
-    assert set(PROMPTS) == set(SUPPORTED_LOCALES) == {"en", "ru", "uk", "ja", "de", "fr"}
+    assert (
+        set(PROMPTS)
+        == set(SUPPORTED_LOCALES)
+        == {
+            "en",
+            "ru",
+            "uk",
+            "ja",
+            "zh",
+            "de",
+            "fr",
+        }
+    )
     for locale, prompts in PROMPTS.items():
         assert all(getattr(prompts, field) for field in prompts.__dataclass_fields__), locale
         assert "3" in prompts.sequence.format(max_messages=3)

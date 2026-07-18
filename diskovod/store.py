@@ -33,6 +33,12 @@ DATABASE_TABLES = {
         "order_by": "created_at",
         "read_only": False,
     },
+    "conversation_escalations": {
+        "label": "Owner escalations",
+        "primary_key": "id",
+        "order_by": "requested_at",
+        "read_only": False,
+    },
     "chatgpt_usage": {
         "label": "Model usage",
         "primary_key": "id",
@@ -88,6 +94,19 @@ class Store:
               );
               CREATE INDEX IF NOT EXISTS assistant_reactions_channel_time
                 ON assistant_reactions(channel_id, created_at DESC);
+              CREATE TABLE IF NOT EXISTS conversation_escalations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT NOT NULL,
+                trigger_message_id TEXT NOT NULL UNIQUE,
+                state TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                requested_at REAL NOT NULL,
+                acknowledged_at REAL,
+                resolved_at REAL,
+                delivery_error TEXT
+              );
+              CREATE INDEX IF NOT EXISTS escalation_channel_state
+                ON conversation_escalations(channel_id, state, requested_at DESC);
               CREATE TABLE IF NOT EXISTS chatgpt_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 response_id TEXT UNIQUE,
@@ -337,6 +356,95 @@ class Store:
                 "UPDATE conversations SET snoozed_until=NULL, updated_at=? WHERE channel_id=?",
                 (time.time(), channel_id),
             )
+
+    def create_escalation(
+        self,
+        *,
+        channel_id: str,
+        trigger_message_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        now = time.time()
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT OR IGNORE INTO conversation_escalations
+                   (channel_id, trigger_message_id, state, reason, requested_at)
+                   VALUES(?, ?, 'pending', ?, ?)""",
+                (channel_id, trigger_message_id, reason, now),
+            )
+            self._db.execute(
+                "UPDATE conversations SET paused=1, paused_at=?, updated_at=? WHERE channel_id=?",
+                (now, now, channel_id),
+            )
+            row = self._db.execute(
+                "SELECT * FROM conversation_escalations WHERE trigger_message_id=?",
+                (trigger_message_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Could not create owner escalation")
+        return dict(row)
+
+    def mark_escalation_acknowledgement(
+        self,
+        trigger_message_id: str,
+        *,
+        delivered: bool,
+        error: str | None = None,
+    ) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                """UPDATE conversation_escalations
+                   SET acknowledged_at=?, delivery_error=? WHERE trigger_message_id=?""",
+                (
+                    time.time() if delivered else None,
+                    None if delivered else (error or "delivery failed")[:500],
+                    trigger_message_id,
+                ),
+            )
+
+    def resolve_escalation_on_owner_reply(self, channel_id: str) -> bool:
+        now = time.time()
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """UPDATE conversation_escalations SET state='resolved', resolved_at=?
+                   WHERE channel_id=? AND state IN ('pending', 'claimed')""",
+                (now, channel_id),
+            )
+        return cursor.rowcount > 0
+
+    def set_escalation_state(self, escalation_id: int, state: str, *, resume: bool = False) -> bool:
+        if state not in {"claimed", "resolved", "dismissed"}:
+            raise ValueError("Unknown escalation state")
+        now = time.time()
+        resolved_at = now if state in {"resolved", "dismissed"} else None
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """UPDATE conversation_escalations SET state=?, resolved_at=?
+                   WHERE id=? AND state IN ('pending', 'claimed')""",
+                (state, resolved_at, escalation_id),
+            )
+            if cursor.rowcount and resume:
+                row = self._db.execute(
+                    "SELECT channel_id FROM conversation_escalations WHERE id=?",
+                    (escalation_id,),
+                ).fetchone()
+                if row:
+                    self._db.execute(
+                        """UPDATE conversations SET paused=0, paused_at=NULL,
+                           snoozed_until=NULL, updated_at=? WHERE channel_id=?""",
+                        (now, row["channel_id"]),
+                    )
+        return cursor.rowcount > 0
+
+    def active_escalations(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT e.*, c.peer_name FROM conversation_escalations e
+                   LEFT JOIN conversations c ON c.channel_id=e.channel_id
+                   WHERE e.state IN ('pending', 'claimed')
+                   ORDER BY e.requested_at DESC"""
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def can_automate(self, channel_id: str, now: float | None = None) -> bool:
         conversation = self.conversation(channel_id)

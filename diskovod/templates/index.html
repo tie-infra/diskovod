@@ -23,6 +23,7 @@
           <a class="nav-link" href="#personality">{{ t("personality") }}</a>
           <a class="nav-link" href="#behavior">{{ t("behavior") }}</a>
           <a class="nav-link" href="#usage">{{ t("usage") }}</a>
+          <a class="nav-link" href="#escalations">{{ t("escalations") }}</a>
           <a class="nav-link" href="#conversations">{{ t("conversations") }}</a>
           <a class="nav-link" href="#database">{{ t("database") }}</a>
         </div>
@@ -947,11 +948,72 @@
         </article>
       </section>
 
-      <section id="conversations" class="page-section" aria-label="{{ t('conversations') }}">
+      <section id="escalations" class="page-section" aria-label="{{ t('escalations') }}">
         <article class="card">
           <div class="card-header">
             <div>
               <span class="step">07</span>
+              <h2>{{ t("escalations") }}</h2>
+            </div>
+            <span class="pill {{ 'is-warn' if escalations else '' }}">
+              {{ t("escalation_count", count=escalations | length) }}
+            </span>
+          </div>
+
+          <p>
+            {{ t("escalation_help") }}
+          </p>
+
+          <div class="conversation-list">
+            {% for escalation in escalations %}
+              <div class="conversation">
+                <div class="conversation-name">
+                  <strong>{{ escalation.peer_name or t("unknown_peer") }}</strong>
+                  <small>
+                    {{ escalation.requested_at_label }} ·
+                    {{ escalation.reason_label }}
+                  </small>
+                  {% if escalation.delivery_error %}
+                    <small class="inline-error">
+                      {{ t("ack_delivery_failed", error=escalation.delivery_error) }}
+                    </small>
+                  {% endif %}
+                </div>
+
+                <span class="pill {{ 'is-good' if escalation.state == 'claimed' else 'is-warn' }}">
+                  {{ t(escalation.state) }}
+                </span>
+
+                <div class="conversation-actions">
+                  {% if escalation.state == "pending" %}
+                    <form method="post" action="/escalations/{{ escalation.id }}/claim">
+                      <button class="button-secondary">{{ t("claim") }}</button>
+                    </form>
+                  {% endif %}
+                  <form method="post" action="/escalations/{{ escalation.id }}/resolve">
+                    <button class="button-secondary">{{ t("resolve_keep_paused") }}</button>
+                  </form>
+                  <form method="post" action="/escalations/{{ escalation.id }}/resolve">
+                    <input type="hidden" name="resume" value="1">
+                    <button>{{ t("resolve_resume") }}</button>
+                  </form>
+                  <form method="post" action="/escalations/{{ escalation.id }}/dismiss">
+                    <button class="button-quiet">{{ t("dismiss_keep_paused") }}</button>
+                  </form>
+                </div>
+              </div>
+            {% else %}
+              <div class="empty-state">{{ t("no_escalations") }}</div>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+
+      <section id="conversations" class="page-section" aria-label="{{ t('conversations') }}">
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <span class="step">08</span>
               <h2>{{ t("conversations") }}</h2>
             </div>
             <span class="pill">{{ conversations | length }} known</span>
@@ -989,7 +1051,7 @@
                   >
                     <button
                       class="button-secondary"
-                      {% if not discord_connected or not model_connected %}disabled{% endif %}
+                      {% if not discord_connected or not automation_ready %}disabled{% endif %}
                     >
                       {{ t("force_reply") }}
                     </button>
@@ -1021,7 +1083,7 @@
         <article class="card database-card">
           <div class="card-header">
             <div>
-              <span class="step">08</span>
+              <span class="step">09</span>
               <h2>{{ t("database_explorer") }}</h2>
             </div>
             <span class="pill">{{ database.total }} matching rows</span>

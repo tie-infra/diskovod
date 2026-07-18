@@ -227,6 +227,64 @@ def test_permanent_pause_remains_until_explicit_resume(tmp_path: Path):
     store.close()
 
 
+def test_escalation_is_idempotent_and_pauses_until_explicit_resume(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.upsert_conversation("dm-1", "peer-1", "Sam")
+
+    created = store.create_escalation(
+        channel_id="dm-1",
+        trigger_message_id="incoming-1",
+        reason="peer_requested_owner",
+    )
+    repeated = store.create_escalation(
+        channel_id="dm-1",
+        trigger_message_id="incoming-1",
+        reason="peer_requested_owner",
+    )
+
+    assert repeated["id"] == created["id"]
+    assert store.conversation("dm-1")["paused"] is True
+    assert len(store.active_escalations()) == 1
+
+    store.mark_escalation_acknowledgement("incoming-1", delivered=True)
+    assert store.active_escalations()[0]["acknowledged_at"] is not None
+    assert store.set_escalation_state(created["id"], "claimed") is True
+    assert store.set_escalation_state(created["id"], "resolved") is True
+    assert store.active_escalations() == []
+    assert store.conversation("dm-1")["paused"] is True
+    store.close()
+
+
+def test_escalation_dashboard_can_close_and_explicitly_resume(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.upsert_conversation("dm-1", "peer-1", "Sam")
+    escalation = store.create_escalation(
+        channel_id="dm-1",
+        trigger_message_id="incoming-1",
+        reason="peer_requested_owner",
+    )
+
+    assert store.set_escalation_state(escalation["id"], "dismissed", resume=True) is True
+    assert store.conversation("dm-1")["paused"] is False
+    assert store.can_automate("dm-1") is True
+    store.close()
+
+
+def test_manual_owner_reply_resolves_escalation_but_keeps_conversation_paused(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.upsert_conversation("dm-1", "peer-1", "Sam")
+    store.create_escalation(
+        channel_id="dm-1",
+        trigger_message_id="incoming-1",
+        reason="peer_requested_owner",
+    )
+
+    assert store.resolve_escalation_on_owner_reply("dm-1") is True
+    assert store.active_escalations() == []
+    assert store.conversation("dm-1")["paused"] is True
+    store.close()
+
+
 def test_bot_markers_are_consumed_once(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
     store.remember_nonce("nonce")

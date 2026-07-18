@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from .chatgpt import ChatGPTClient, make_prompt_cache_key
-from .localization import prompts_for
+from .localization import escalation_fallback, prompts_for
 from .models import AppSettings
 from .store import Store
 from .tooling import (
@@ -20,6 +20,7 @@ from .tooling import (
     function_call_item,
     function_output_item,
     validate_discord_action,
+    validate_escalation_action,
 )
 
 log = logging.getLogger(__name__)
@@ -41,9 +42,10 @@ def build_reply_instructions(
     sections.append(prompts.dm_style)
     sections.append(
         "Use the available native tools for every action. Finish with exactly one terminal action: "
-        "send_messages for written replies or, only when genuinely appropriate, react_to_message. "
-        "Do not return final reply text outside a terminal action. Use get_current_datetime whenever "
-        "the answer depends on the current date or time, and calculate for non-trivial arithmetic."
+        "send_messages for written replies, escalate_to_owner when the peer explicitly asks for the "
+        "owner, or, only when genuinely appropriate, react_to_message. Do not return final reply text "
+        "outside a terminal action. Use get_current_datetime whenever the answer depends on the "
+        "current date or time, and calculate for non-trivial arithmetic."
     )
 
     owner_examples = [
@@ -192,6 +194,47 @@ class Automation:
             return
         if await self._manual_message_exists(trigger.channel, started_at):
             self.human_activity(channel_id)
+            return
+
+        if action.kind == "escalation":
+            assert action.messages and action.reason
+            self.store.create_escalation(
+                channel_id=channel_id,
+                trigger_message_id=str(trigger.id),
+                reason=action.reason,
+            )
+            acknowledgement = action.messages[0]
+            try:
+                cps = random.uniform(settings.min_typing_cps, settings.max_typing_cps)
+                async with trigger.channel.typing():
+                    await asyncio.sleep(min(12.0, max(0.8, len(acknowledgement) / cps)))
+                nonce = secrets.token_hex(12)
+                self.store.remember_nonce(nonce)
+                outbound = f"🤖 {acknowledgement}" if settings.robot_prefix else acknowledgement
+                sent = await trigger.channel.send(
+                    outbound,
+                    nonce=nonce,
+                    silent=settings.silent_replies,
+                )
+                self.store.remember_bot_message(str(sent.id))
+                self.store.save_message(
+                    id=str(sent.id),
+                    channel_id=channel_id,
+                    author_id=str(sent.author.id),
+                    author_name=str(sent.author),
+                    direction="out",
+                    source="assistant",
+                    content=acknowledgement,
+                    timestamp=sent.created_at.timestamp(),
+                )
+            except Exception as exc:
+                self.store.mark_escalation_acknowledgement(
+                    str(trigger.id),
+                    delivered=False,
+                    error=str(exc),
+                )
+                raise
+            self.store.mark_escalation_acknowledgement(str(trigger.id), delivered=True)
             return
 
         if action.kind == "reaction":
@@ -344,6 +387,14 @@ class Automation:
             )
             if action is not None:
                 return action
+            escalation = validate_escalation_action(
+                call,
+                escalation_fallback(settings.prompt_locale),
+            )
+            if escalation is not None:
+                if escalation.invalid_arguments:
+                    log.warning("Using fixed acknowledgement for invalid escalation arguments")
+                return escalation
             if repair_used:
                 log.error("Rejected malformed native Discord action after one repair")
                 return None

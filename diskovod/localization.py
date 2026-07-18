@@ -13,9 +13,23 @@ SUPPORTED_LOCALES = {
     "fr": "Français",
 }
 
+ESCALATION_FALLBACKS = {
+    "en": "I've marked this conversation for the account owner.",
+    "ru": "Я отметил этот разговор для владельца аккаунта.",
+    "uk": "Я позначив цю розмову для власника облікового запису.",
+    "ja": "この会話をアカウント所有者が確認できるようにしました。",
+    "zh": "我已将此对话标记给账号所有者处理。",
+    "de": "Ich habe dieses Gespräch für den Kontoinhaber markiert.",
+    "fr": "J’ai signalé cette conversation au propriétaire du compte.",
+}
+
 
 def normalize_locale(locale: str) -> str:
     return locale if locale in SUPPORTED_LOCALES else DEFAULT_LOCALE
+
+
+def escalation_fallback(locale: str) -> str:
+    return ESCALATION_FALLBACKS[normalize_locale(locale)]
 
 
 @dataclass(frozen=True, slots=True)

@@ -58,6 +58,18 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
             }
         ],
         personality=None,
+        escalations=[
+            {
+                "id": 3,
+                "channel_id": "dm-1",
+                "peer_name": "Peer",
+                "state": "pending",
+                "reason": "peer_requested_owner",
+                "reason_label": "peer requested the owner",
+                "requested_at_label": "2026-07-19 12:00:00 MSK",
+                "delivery_error": None,
+            }
+        ],
         conversations=[
             {
                 "channel_id": "dm-1",
@@ -167,6 +179,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'href="#personality"' in rendered
     assert 'href="#behavior"' in rendered
     assert 'href="#usage"' in rendered
+    assert 'href="#escalations"' in rendered
     assert 'href="#conversations"' in rendered
     assert 'href="#database"' in rendered
     assert 'id="main-content"' in rendered
@@ -224,3 +237,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'name="row_key"' in rendered
     assert 'action="/conversations/dm-1/force-reply"' in rendered
     assert "Force reply" in rendered
+    assert "Owner escalations" in rendered
+    assert 'action="/escalations/3/claim"' in rendered
+    assert 'action="/escalations/3/resolve"' in rendered
+    assert 'action="/escalations/3/dismiss"' in rendered

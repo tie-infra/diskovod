@@ -303,6 +303,63 @@ async def test_time_tool_output_is_ephemeral_and_terminal_action_follows(tmp_pat
     store.close()
 
 
+@pytest.mark.asyncio
+async def test_owner_escalation_pauses_chat_and_sends_model_acknowledgement(tmp_path: Path):
+    store = reply_store(tmp_path, robot_prefix=True)
+    chatgpt = ReplyingChatGPT(
+        [
+            function_result(
+                "escalate_to_owner",
+                {
+                    "reason": "peer_requested_owner",
+                    "acknowledgement": "Sure — I've marked this conversation for Alex.",
+                },
+            )
+        ]
+    )
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0)
+
+    assert [item[0] for item in trigger.channel.sent] == ["🤖 Sure — I've marked this conversation for Alex."]
+    assert store.conversation("dm")["paused"] is True
+    escalation = store.active_escalations()[0]
+    assert escalation["reason"] == "peer_requested_owner"
+    assert escalation["acknowledged_at"] is not None
+    assert len(chatgpt.calls) == 1
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_escalation_arguments_use_localized_fallback_without_repair(tmp_path: Path):
+    store = reply_store(tmp_path, prompt_locale="fr")
+    chatgpt = ReplyingChatGPT(
+        [
+            function_result(
+                "escalate_to_owner",
+                {
+                    "reason": "unsupported_reason",
+                    "acknowledgement": "Alex has been paged and will reply in ten minutes.",
+                },
+            )
+        ]
+    )
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0)
+
+    assert [item[0] for item in trigger.channel.sent] == [
+        "J’ai signalé cette conversation au propriétaire du compte."
+    ]
+    assert store.active_escalations()[0]["reason"] == "invalid_tool_arguments"
+    assert len(chatgpt.calls) == 1
+    store.close()
+
+
 def test_profile_cache_key_is_shared_without_sharing_conversation_state(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     chatgpt = ReplyingChatGPT([])

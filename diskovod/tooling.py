@@ -17,7 +17,8 @@ ALLOWED_REACTIONS = frozenset(
 MAX_DISCORD_MESSAGE_LENGTH = 2000
 MAX_ACTION_MESSAGES = 5
 
-TOOL_SCHEMA_VERSION = "native-actions-v1"
+TOOL_SCHEMA_VERSION = "native-actions-escalation-v2"
+ESCALATION_REASONS = frozenset({"peer_requested_owner", "owner_only_information", "other_explicit_request"})
 
 FUNCTION_TOOLS: list[dict[str, Any]] = [
     {
@@ -91,6 +92,26 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "escalate_to_owner",
+        "description": (
+            "Use only when the peer explicitly asks to involve, contact, or hand the conversation "
+            "to the account owner. The acknowledgement must be a friendly, concise DM in the "
+            "conversation language. It may say the conversation was marked for the owner, but must "
+            "not claim the owner has read it, was externally notified, or will respond by any time."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "enum": sorted(ESCALATION_REASONS)},
+                "acknowledgement": {"type": "string", "minLength": 1, "maxLength": 2000},
+            },
+            "required": ["reason", "acknowledgement"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -99,6 +120,8 @@ class DiscordAction:
     kind: str
     messages: tuple[str, ...] = ()
     emoji: str | None = None
+    reason: str | None = None
+    invalid_arguments: bool = False
 
 
 def function_call_item(call: FunctionCall) -> dict[str, Any]:
@@ -191,6 +214,32 @@ def validate_discord_action(
         if allow_reaction and emoji in ALLOWED_REACTIONS:
             return DiscordAction("reaction", emoji=emoji)
     return None
+
+
+def validate_escalation_action(call: FunctionCall, fallback: str) -> DiscordAction | None:
+    if call.name != "escalate_to_owner":
+        return None
+    arguments = call.parsed_arguments
+    if arguments is not None and set(arguments) == {"reason", "acknowledgement"}:
+        reason = arguments["reason"]
+        acknowledgement = arguments["acknowledgement"]
+        if (
+            reason in ESCALATION_REASONS
+            and isinstance(acknowledgement, str)
+            and 1 <= len(acknowledgement.strip()) <= MAX_DISCORD_MESSAGE_LENGTH
+            and not any(ord(character) < 32 and character not in "\n\t" for character in acknowledgement)
+        ):
+            return DiscordAction(
+                "escalation",
+                (acknowledgement.strip(),),
+                reason=str(reason),
+            )
+    return DiscordAction(
+        "escalation",
+        (fallback,),
+        reason="invalid_tool_arguments",
+        invalid_arguments=True,
+    )
 
 
 _BINARY_OPERATORS = {

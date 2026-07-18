@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 
@@ -187,6 +188,7 @@ class WebApp:
                     "has_discord_token": self.store.discord_token() is not None,
                     "captcha_requests": self.discord.captcha_requests(),
                     "personality": self.store.personality(),
+                    "escalations": self._escalation_views(),
                     "conversations": self._conversation_views(),
                     "usage_stats": self._usage_views(),
                     "database": self._database_view(db_table, db_page, db_query),
@@ -558,6 +560,7 @@ class WebApp:
         @self.app.post("/conversations/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
             self.automation.cancel(channel_id)
+            self.store.resolve_escalation_on_owner_reply(channel_id)
             self.store.set_permanent_pause(channel_id, False)
             self.store.clear_snooze(channel_id)
             return self._back(message="Automation enabled; the next incoming DM may receive a reply")
@@ -574,6 +577,44 @@ class WebApp:
             except Exception as exc:
                 return self._back(error=str(exc))
             return self._back(message="Forced reply scheduled")
+
+        @self.app.post("/escalations/{escalation_id}/claim")
+        async def escalation_claim(escalation_id: int, _: str = Depends(auth)):
+            if not self.store.set_escalation_state(escalation_id, "claimed"):
+                return self._back(error="Escalation was not found or is already closed")
+            return self._back(message="Escalation claimed")
+
+        @self.app.post("/escalations/{escalation_id}/resolve")
+        async def escalation_resolve(
+            escalation_id: int,
+            resume: str | None = Form(None),
+            _: str = Depends(auth),
+        ):
+            if not self.store.set_escalation_state(
+                escalation_id,
+                "resolved",
+                resume=resume is not None,
+            ):
+                return self._back(error="Escalation was not found or is already closed")
+            return self._back(
+                message="Escalation resolved" + (" and automation resumed" if resume is not None else "")
+            )
+
+        @self.app.post("/escalations/{escalation_id}/dismiss")
+        async def escalation_dismiss(
+            escalation_id: int,
+            resume: str | None = Form(None),
+            _: str = Depends(auth),
+        ):
+            if not self.store.set_escalation_state(
+                escalation_id,
+                "dismissed",
+                resume=resume is not None,
+            ):
+                return self._back(error="Escalation was not found or is already closed")
+            return self._back(
+                message="Escalation dismissed" + (" and automation resumed" if resume is not None else "")
+            )
 
         @self.app.post("/database/delete")
         async def database_delete(
@@ -605,6 +646,20 @@ class WebApp:
             conversation["snoozed"] = bool(until and until > now)
             conversation["quiet_minutes_remaining"] = (
                 max(1, int((until - now + 59) // 60)) if until and until > now else 0
+            )
+        return result
+
+    def _escalation_views(self) -> list[dict[str, Any]]:
+        result = self.store.active_escalations()
+        for escalation in result:
+            escalation["reason_label"] = ui_text(
+                self.store.app_settings().admin_locale,
+                f"reason_{escalation['reason']}",
+            )
+            escalation["requested_at_label"] = (
+                datetime.fromtimestamp(escalation["requested_at"])
+                .astimezone()
+                .strftime("%Y-%m-%d %H:%M:%S %Z")
             )
         return result
 

@@ -123,6 +123,8 @@ class PrivateDiscordClient(discord.Client):
                 timestamp=message.created_at.timestamp(),
                 attachments=attachments,
             )
+            if self.store.resolve_escalation_on_owner_reply(channel_id):
+                log.info("Manual owner reply resolved the active escalation for %s", channel_id)
             self.automation.human_activity(channel_id)
             return
         if message.author.bot:

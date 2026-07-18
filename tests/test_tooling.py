@@ -2,7 +2,11 @@ import json
 from datetime import UTC, datetime
 
 from diskovod.models import FunctionCall
-from diskovod.tooling import execute_read_only_tool, validate_discord_action
+from diskovod.tooling import (
+    execute_read_only_tool,
+    validate_discord_action,
+    validate_escalation_action,
+)
 
 
 def call(name: str, arguments: object) -> FunctionCall:
@@ -75,3 +79,37 @@ def test_reaction_action_respects_runtime_availability():
         )
         is None
     )
+
+
+def test_valid_escalation_preserves_the_models_context_aware_acknowledgement():
+    action = validate_escalation_action(
+        call(
+            "escalate_to_owner",
+            {
+                "reason": "peer_requested_owner",
+                "acknowledgement": "Sure — I've marked this for Alex.",
+            },
+        ),
+        "fixed fallback",
+    )
+
+    assert action is not None
+    assert action.kind == "escalation"
+    assert action.messages == ("Sure — I've marked this for Alex.",)
+    assert action.reason == "peer_requested_owner"
+    assert action.invalid_arguments is False
+
+
+def test_invalid_escalation_arguments_use_fixed_reply_without_repair():
+    action = validate_escalation_action(
+        call(
+            "escalate_to_owner",
+            {"reason": "invented", "acknowledgement": "I paged Alex and they will reply at 3."},
+        ),
+        "fixed fallback",
+    )
+
+    assert action is not None
+    assert action.messages == ("fixed fallback",)
+    assert action.reason == "invalid_tool_arguments"
+    assert action.invalid_arguments is True

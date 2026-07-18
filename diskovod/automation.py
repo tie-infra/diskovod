@@ -22,6 +22,7 @@ ALLOWED_REACTIONS = frozenset(
 REACTION_PATTERN = re.compile(r"\A<react>([^<>\s]+)</react>\Z")
 MESSAGE_BLOCK_PATTERN = re.compile(r"<message>(.*?)</message>", re.IGNORECASE | re.DOTALL)
 
+
 def parse_reaction(answer: str) -> str | None:
     stripped = answer.strip()
     match = REACTION_PATTERN.fullmatch(stripped)
@@ -79,9 +80,7 @@ def build_reply_instructions(
     ][-12:]
     if owner_examples:
         sections.append(
-            prompts.owner_examples.format(
-                examples=json.dumps(owner_examples, ensure_ascii=False)
-            )
+            prompts.owner_examples.format(examples=json.dumps(owner_examples, ensure_ascii=False))
         )
 
     return "\n\n".join(sections)

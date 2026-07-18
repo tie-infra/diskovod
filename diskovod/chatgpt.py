@@ -300,9 +300,8 @@ class ChatGPTClient:
             # The ChatGPT Codex backend rejects the public Responses API's
             # max_output_tokens field. Preserve the requested budget as a
             # best-effort instruction while omitting the incompatible field.
-            body["instructions"] += (
-                "\n\n"
-                + prompts_for(locale).length_budget.format(tokens=max(1, max_output_tokens))
+            body["instructions"] += "\n\n" + prompts_for(locale).length_budget.format(
+                tokens=max(1, max_output_tokens)
             )
         if cache_key:
             body["prompt_cache_key"] = cache_key[:64]

@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .localization import prompts_for
+
 log = logging.getLogger(__name__)
 
 MAX_ATTACHMENTS_PER_MESSAGE = 4
@@ -65,15 +67,7 @@ TEXT_EXTENSIONS = frozenset(
     if extension not in {".doc", ".docx", ".odt", ".pdf", ".ppt", ".pptx", ".rtf", ".xls", ".xlsx"}
 )
 
-DEFAULT_BASE_INSTRUCTIONS = (
-    "Write as an AI assistant helping the account owner respond in a private chat. Follow the "
-    "owner's dominant communication style rather than merely borrowing occasional traits. Default "
-    "to a short, single-line reply. Be honest that you are an AI assistant if your identity or the "
-    "reply's origin is relevant or asked about. Never claim to be the account owner or to have "
-    "performed actions you did not perform. Match the conversation's language. Do not use headings, "
-    "paragraphs, or lists unless the current message genuinely requires that structure; keep any "
-    "necessary list dense and compact."
-)
+DEFAULT_BASE_INSTRUCTIONS = prompts_for("en").base
 
 
 def _content_type(filename: str, value: object) -> str:
@@ -170,6 +164,7 @@ def attachment_context(
     *,
     provider: str,
     model: str,
+    locale: str = "en",
 ) -> str:
     """Add stable metadata and retrieval text for attachments not sent as native files."""
     notes: list[str] = []
@@ -187,8 +182,9 @@ def attachment_context(
         notes.append(note)
     if not notes:
         return content
-    prefix = content.strip() or "(No message text; respond to the attached material.)"
-    return prefix + "\n\nAttachments:\n" + "\n".join(notes)
+    prompts = prompts_for(locale)
+    prefix = content.strip() or prompts.no_message_text
+    return prefix + f"\n\n{prompts.attachments_heading}\n" + "\n".join(notes)
 
 
 @dataclass(slots=True)
@@ -196,6 +192,8 @@ class AppSettings:
     enabled: bool = False
     silent_replies: bool = False
     robot_prefix: bool = False
+    admin_locale: str = "en"
+    prompt_locale: str = "en"
     default_conversation_enabled: bool = True
     provider: str = "chatgpt"
     model: str = "gpt-5.4-mini"

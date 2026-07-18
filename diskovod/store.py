@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .localization import normalize_locale
 from .models import (
     DEFAULT_BASE_INSTRUCTIONS,
     AppSettings,
@@ -142,6 +143,8 @@ class Store:
             and hashlib.sha256(base_instructions.encode()).hexdigest() == LEGACY_BASE_INSTRUCTIONS_SHA256
         ):
             saved["base_instructions"] = DEFAULT_BASE_INSTRUCTIONS
+        saved["admin_locale"] = normalize_locale(str(saved.get("admin_locale", "en")))
+        saved["prompt_locale"] = normalize_locale(str(saved.get("prompt_locale", "en")))
         return AppSettings(**(AppSettings().to_dict() | saved))
 
     def set_app_settings(self, value: AppSettings) -> None:

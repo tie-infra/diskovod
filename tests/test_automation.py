@@ -159,6 +159,7 @@ class ReplyingChatGPT:
         purpose,
         max_output_tokens=None,
         cache_key=None,
+        locale="en",
     ):
         self.calls.append(
             {
@@ -166,6 +167,7 @@ class ReplyingChatGPT:
                 "purpose": purpose,
                 "max_output_tokens": max_output_tokens,
                 "cache_key": cache_key,
+                "locale": locale,
             }
         )
         return next(self.answers)

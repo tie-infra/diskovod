@@ -13,6 +13,7 @@ from urllib.parse import urlencode, urlparse
 
 import aiohttp
 
+from .localization import prompts_for
 from .models import ChatCredentials, attachment_context, can_send_file, can_send_image
 from .store import Store
 
@@ -240,6 +241,7 @@ class ChatGPTClient:
         purpose: str = "conversation",
         max_output_tokens: int | None = None,
         cache_key: str | None = None,
+        locale: str = "en",
     ) -> str:
         try:
             if self.active_provider == "custom":
@@ -255,6 +257,7 @@ class ChatGPTClient:
                     purpose,
                     max_output_tokens,
                     cache_key,
+                    locale,
                 )
         except Exception as exc:
             self.last_error = str(exc)
@@ -271,6 +274,7 @@ class ChatGPTClient:
         purpose: str,
         max_output_tokens: int | None,
         cache_key: str | None,
+        locale: str,
     ) -> str:
         creds = await self.credentials()
         assert self.session
@@ -297,8 +301,8 @@ class ChatGPTClient:
             # max_output_tokens field. Preserve the requested budget as a
             # best-effort instruction while omitting the incompatible field.
             body["instructions"] += (
-                f"\n\nLength budget: keep the final response within approximately "
-                f"{max(1, max_output_tokens)} tokens."
+                "\n\n"
+                + prompts_for(locale).length_budget.format(tokens=max(1, max_output_tokens))
             )
         if cache_key:
             body["prompt_cache_key"] = cache_key[:64]
@@ -416,6 +420,7 @@ class ChatGPTClient:
             attachments,
             provider="chatgpt",
             model=model,
+            locale=str(message.get("locale") or "en"),
         )
         if role == "assistant":
             content = [{"type": "output_text", "text": text, "annotations": []}]
@@ -448,6 +453,7 @@ class ChatGPTClient:
             attachments,
             provider="custom",
             model=model,
+            locale=str(message.get("locale") or "en"),
         )
         images = (
             [attachment for attachment in attachments if can_send_image(attachment, model)]

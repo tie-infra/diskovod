@@ -1,0 +1,64 @@
+from diskovod.automation import build_reply_instructions
+from diskovod.localization import PROMPTS, SUPPORTED_LOCALES, prompts_for
+from diskovod.models import AppSettings, attachment_context
+from diskovod.web import personality_source_hash
+
+
+def test_every_supported_locale_has_a_complete_prompt_bundle():
+    assert set(PROMPTS) == set(SUPPORTED_LOCALES) == {"en", "ru", "uk", "ja", "de", "fr"}
+    for locale, prompts in PROMPTS.items():
+        assert all(getattr(prompts, field) for field in prompts.__dataclass_fields__), locale
+        assert "3" in prompts.sequence.format(max_messages=3)
+        assert "details" in prompts.owner_details.format(details="details")
+        assert "profile" in prompts.cached_personality.format(profile="profile")
+        assert "examples" in prompts.owner_examples.format(examples="examples")
+        assert "256" in prompts.length_budget.format(tokens=256)
+
+
+def test_reply_instructions_use_the_selected_prompt_locale():
+    for locale in SUPPORTED_LOCALES:
+        prompts = prompts_for(locale)
+        settings = AppSettings(
+            prompt_locale=locale,
+            base_instructions=prompts.base,
+            owner_details="details",
+        )
+        instructions = build_reply_instructions(
+            settings,
+            {"profile": "profile"},
+            [
+                {
+                    "direction": "out",
+                    "source": "human",
+                    "content": "example",
+                }
+            ],
+        )
+
+        assert prompts.base in instructions
+        assert prompts.dm_style in instructions
+        assert prompts.reaction in instructions
+        assert prompts.single_message in instructions
+        assert prompts.owner_details.format(details="details") in instructions
+        assert prompts.cached_personality.format(profile="profile") in instructions
+
+
+def test_attachment_context_uses_the_selected_prompt_locale():
+    result = attachment_context(
+        "",
+        [{"filename": "notes.txt", "content_type": "text/plain", "size": 4}],
+        provider="custom",
+        model="local",
+        locale="uk",
+    )
+
+    assert prompts_for("uk").no_message_text in result
+    assert prompts_for("uk").attachments_heading in result
+
+
+def test_prompt_locale_is_part_of_the_personality_cache_identity():
+    assert personality_source_hash("samples", "en") != personality_source_hash("samples", "fr")
+
+
+def test_unknown_locale_falls_back_to_english():
+    assert prompts_for("unknown") is prompts_for("en")

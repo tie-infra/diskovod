@@ -15,29 +15,20 @@ from fastapi.templating import Jinja2Templates
 from .automation import Automation
 from .chatgpt import PROVIDERS, ChatGPTClient, make_prompt_cache_key, normalize_custom_base_url
 from .discord import DiscordService
+from .localization import prompts_for
 from .models import AppSettings, CustomProvider
 from .security import password_matches
 from .store import Store
 
 PERSONALITY_PROMPT_VERSION = "style-base-rates-examples-and-sequences-v4"
 PERSONALITY_MAX_OUTPUT_TOKENS = 2000
-PERSONALITY_INSTRUCTIONS = """Infer a comprehensive, reusable personality and writing-style profile of the person who authored these messages. Model base rates and dominant patterns, not a checklist of every behavior that appears. Never promote a rare trait or format to a default merely because it occurs once.
-
-Make the profile operational for another model. Cover:
-- Default message shape: approximate word or character range, usual line count, sentence versus fragment use, and the frequency and density of line breaks and lists. State explicitly whether single-line text is the norm.
-- Message sequencing: how often the owner sends consecutive-message bursts, the usual number of messages, timing and thought boundaries, and which contexts justify a sequence rather than one complete message. Distinguish true bursts from standalone messages using the anonymous history annotations.
-- Writing mechanics: vocabulary, casing, punctuation, contractions, abbreviations, emoji, humor, and pacing.
-- Tone and social behavior, including how responses differ by context or relationship when the evidence supports it.
-- Preferred languages and switching patterns.
-- Recurring interests, habits, preferences, apparent values, temperament, decision-making tendencies, and other stable traits supported by the history.
-- Rare or context-dependent deviations, clearly labeled with when they occur and what must not be overused.
-- A final "Representative examples" section containing 8–12 newly written example messages that demonstrate the inferred style across common DM contexts. These must be synthetic examples, not samples, quotations, close paraphrases, or reconstructions of any source message. Make most examples reflect the dominant short-form style; include rare formats only in realistic proportion and label their context.
-
-Give highest priority to the default reply shape and useful negative constraints. Quantify approximate frequencies or ranges when the evidence permits. Distinguish strong evidence from tentative impressions. Do not quote private messages, name conversation partners, reveal secrets, or infer highly sensitive attributes. Return only the detailed profile."""
+PERSONALITY_INSTRUCTIONS = prompts_for("en").personality
 
 
-def personality_source_hash(samples: str) -> str:
-    return hashlib.sha256(f"{PERSONALITY_PROMPT_VERSION}\0{samples}".encode()).hexdigest()
+def personality_source_hash(samples: str, locale: str = "en") -> str:
+    return hashlib.sha256(
+        f"{PERSONALITY_PROMPT_VERSION}\0{locale}\0{samples}".encode()
+    ).hexdigest()
 
 
 class WebApp:
@@ -477,20 +468,21 @@ class WebApp:
         self.store.set_app_settings(replace(self.store.app_settings(), provider=provider))
 
     async def _infer_personality(self, samples: str, *, source: str) -> RedirectResponse:
-        source_hash = personality_source_hash(samples)
+        cfg = self.store.app_settings()
+        source_hash = personality_source_hash(samples, cfg.prompt_locale)
         cached = self.store.personality()
         if cached and cached["source_hash"] == source_hash:
             return self._back(message="This message history is already cached; no model call was made")
-        cfg = self.store.app_settings()
         try:
             profile = await self.chatgpt.complete(
                 [{"role": "user", "content": samples}],
-                PERSONALITY_INSTRUCTIONS,
+                prompts_for(cfg.prompt_locale).personality,
                 cfg.model,
                 cfg.reasoning_effort,
                 purpose="personality_inference",
                 max_output_tokens=PERSONALITY_MAX_OUTPUT_TOKENS,
                 cache_key=make_prompt_cache_key("personality", cfg.model),
+                locale=cfg.prompt_locale,
             )
         except Exception as exc:
             return self._back(error=str(exc))

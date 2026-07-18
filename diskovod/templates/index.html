@@ -14,7 +14,9 @@
   </head>
 
   <body
-    data-bs-theme="{{ 'light' if app_settings.admin_theme == 'light' else 'dark' }}"
+    {% if app_settings.admin_theme != "system" %}
+      data-bs-theme="{{ 'dark' if app_settings.admin_theme == 'black' else app_settings.admin_theme }}"
+    {% endif %}
     data-admin-theme="{{ app_settings.admin_theme }}"
   >
     <a class="visually-hidden-focusable skip-link" href="#main-content">{{ t("skip") }}</a>
@@ -30,6 +32,7 @@
             <label class="visually-hidden" for="admin-theme">{{ t("theme") }}</label>
             <select id="admin-theme" name="admin_theme" class="form-select form-select-sm" aria-label="{{ t('theme') }}">
               {% for theme, label in [
+                ("system", t("theme_system")),
                 ("light", t("theme_light")),
                 ("dark", t("theme_dark")),
                 ("black", t("theme_black"))

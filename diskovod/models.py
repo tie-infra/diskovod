@@ -68,7 +68,7 @@ TEXT_EXTENSIONS = frozenset(
 )
 
 DEFAULT_BASE_INSTRUCTIONS = prompts_for("en").base
-ADMIN_THEMES = frozenset({"light", "dark", "black"})
+ADMIN_THEMES = frozenset({"system", "light", "dark", "black"})
 
 
 def _content_type(filename: str, value: object) -> str:
@@ -194,7 +194,7 @@ class AppSettings:
     silent_replies: bool = False
     robot_prefix: bool = False
     admin_locale: str = "en"
-    admin_theme: str = "light"
+    admin_theme: str = "system"
     prompt_locale: str = "en"
     owner_timezone: str = "UTC"
     default_conversation_enabled: bool = True

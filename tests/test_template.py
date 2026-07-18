@@ -191,12 +191,12 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'href="/?tab=conversations"' in rendered
     assert 'href="/?tab=database"' in rendered
     assert 'name="admin_theme"' in rendered
-    assert 'value="light" selected' in rendered
+    assert 'value="system" selected' in rendered
+    assert 'value="light"' in rendered
     assert 'value="dark"' in rendered
     assert 'value="black"' in rendered
     assert "Black (OLED)" in rendered
-    assert 'data-bs-theme="light"' in rendered
-    assert 'data-admin-theme="light"' in rendered
+    assert 'data-admin-theme="system"' in rendered
     assert "table table-dark" not in rendered
     assert 'action="/discord/connect"' in rendered_by_tab["connections"]
     assert 'action="/discord/connect"' not in rendered_by_tab["assistant"]
@@ -273,3 +273,11 @@ def test_oled_theme_uses_true_black_bootstrap_overrides():
     assert '[data-admin-theme="black"]' in stylesheet
     assert "--bs-body-bg: #000" in stylesheet
     assert "--bs-secondary-bg: #070707" in stylesheet
+
+
+def test_system_theme_tracks_the_dark_color_scheme_without_javascript():
+    stylesheet = (Path(__file__).parents[1] / "diskovod" / "static" / "style.css").read_text()
+
+    assert "@media (prefers-color-scheme: dark)" in stylesheet
+    assert '[data-admin-theme="system"]' in stylesheet
+    assert "--bs-body-bg: #212529" in stylesheet

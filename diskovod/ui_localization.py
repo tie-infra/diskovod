@@ -2360,6 +2360,7 @@ UI_TEXT: dict[str, dict[str, str]] = {
     ),
     "appearance": _text("Appearance", "Оформление", "Вигляд", "外観", "外观", "Darstellung", "Apparence"),
     "theme": _text("Theme", "Тема", "Тема", "テーマ", "主题", "Design", "Thème"),
+    "theme_system": _text("System", "Системная", "Системна", "システム", "跟随系统", "System", "Système"),
     "theme_light": _text("Light", "Светлая", "Світла", "ライト", "浅色", "Hell", "Clair"),
     "theme_dark": _text("Dark", "Тёмная", "Темна", "ダーク", "深色", "Dunkel", "Sombre"),
     "theme_black": _text(

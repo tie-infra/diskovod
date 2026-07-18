@@ -14,7 +14,8 @@ conversations can also be paused.
 - ChatGPT OAuth with PKCE, refresh-token rotation, and subscription-backed streaming responses.
 - Custom OpenAI-compatible Responses or Chat Completions providers, including keyless local endpoints.
 - Discord connection through `discord.py-self`.
-- Server-rendered Bootstrap admin tabs with Light, Dark, and OLED Black themes.
+- Server-rendered Bootstrap admin tabs with a system-color-scheme default and explicit Light, Dark,
+  and OLED Black themes.
 - A guarded SQLite explorer with secret redaction, search, pagination, and confirmed row deletion.
 - Personality inference from bounded Discord or pasted message history, with an editable cache.
 - Editable owner details for names, preferences, relationships, plans, and other personal context.

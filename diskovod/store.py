@@ -172,7 +172,7 @@ class Store:
             saved["base_instructions"] = DEFAULT_BASE_INSTRUCTIONS
         saved["admin_locale"] = normalize_locale(str(saved.get("admin_locale", "en")))
         saved["admin_theme"] = (
-            str(saved.get("admin_theme", "light")) if saved.get("admin_theme") in ADMIN_THEMES else "light"
+            str(saved.get("admin_theme", "system")) if saved.get("admin_theme") in ADMIN_THEMES else "system"
         )
         saved["prompt_locale"] = normalize_locale(str(saved.get("prompt_locale", "en")))
         defaults = AppSettings().to_dict()

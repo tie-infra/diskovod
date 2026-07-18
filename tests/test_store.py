@@ -82,12 +82,12 @@ def test_localization_settings_round_trip_and_unknown_values_fall_back(tmp_path:
 def test_admin_theme_round_trip_and_unknown_value_falls_back(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
 
-    assert store.app_settings().admin_theme == "light"
+    assert store.app_settings().admin_theme == "system"
     store.set_app_settings(AppSettings(admin_theme="black"))
     assert store.app_settings().admin_theme == "black"
 
     store.set_app_settings(AppSettings(admin_theme="neon"))
-    assert store.app_settings().admin_theme == "light"
+    assert store.app_settings().admin_theme == "system"
     store.close()
 
 

@@ -2,7 +2,9 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from diskovod.localization import SUPPORTED_LOCALES
 from diskovod.models import AppSettings
+from diskovod.ui_localization import ui_text
 
 
 def test_admin_template_is_script_free_and_contains_human_quiet_controls():
@@ -13,6 +15,9 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     )
     rendered = environment.get_template("index.html").render(
         app_settings=AppSettings(),
+        locale="en",
+        locales=SUPPORTED_LOCALES,
+        t=lambda key, **values: ui_text("en", key, **values),
         public_url="http://localhost:3090",
         chat_connected=False,
         chat_email=None,
@@ -155,6 +160,9 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'id="main-content"' in rendered
     assert 'name="min_human_quiet_minutes"' in rendered
     assert 'name="max_human_quiet_minutes"' in rendered
+    assert 'name="admin_locale"' in rendered
+    assert 'name="prompt_locale"' in rendered
+    assert 'value="uk"' in rendered
     assert 'name="history_limit"' in rendered
     assert 'name="max_reply_tokens"' in rendered
     assert "Reply token budget" in rendered

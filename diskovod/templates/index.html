@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ locale }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -14,34 +14,34 @@
   </head>
 
   <body data-bs-theme="dark">
-    <a class="visually-hidden-focusable skip-link" href="#main-content">Skip to content</a>
-    <nav class="navbar navbar-expand-lg sticky-top border-bottom" aria-label="Admin navigation">
+    <a class="visually-hidden-focusable skip-link" href="#main-content">{{ t("skip") }}</a>
+    <nav class="navbar navbar-expand-lg sticky-top border-bottom" aria-label="{{ t('admin_navigation') }}">
       <div class="container-xl navbar-shell">
         <a class="navbar-brand" href="#overview">Diskovod</a>
         <div class="navbar-nav flex-row flex-wrap gap-1 ms-lg-auto">
-          <a class="nav-link" href="#connections">Connections</a>
-          <a class="nav-link" href="#personality">Personality</a>
-          <a class="nav-link" href="#behavior">Behavior</a>
-          <a class="nav-link" href="#usage">Usage</a>
-          <a class="nav-link" href="#conversations">Conversations</a>
-          <a class="nav-link" href="#database">Database</a>
+          <a class="nav-link" href="#connections">{{ t("connections") }}</a>
+          <a class="nav-link" href="#personality">{{ t("personality") }}</a>
+          <a class="nav-link" href="#behavior">{{ t("behavior") }}</a>
+          <a class="nav-link" href="#usage">{{ t("usage") }}</a>
+          <a class="nav-link" href="#conversations">{{ t("conversations") }}</a>
+          <a class="nav-link" href="#database">{{ t("database") }}</a>
         </div>
       </div>
     </nav>
 
     <header class="site-header" id="overview">
       <div>
-        <span class="eyebrow">Private DM automation</span>
+        <span class="eyebrow">{{ t("tagline_label") }}</span>
         <h1>Diskovod</h1>
-        <p>Natural replies that step aside whenever you join the conversation.</p>
+        <p>{{ t("tagline") }}</p>
       </div>
 
       <div class="system-status">
         <span class="status-dot {{ 'is-on' if app_settings.enabled else '' }}"></span>
         {% if app_settings.enabled %}
-          Automation enabled · {{ provider_label }}
+          {{ t("automation_enabled") }} · {{ provider_label }}
         {% else %}
-          Automation disabled
+          {{ t("automation_disabled") }}
         {% endif %}
       </div>
     </header>
@@ -55,18 +55,18 @@
         <div class="notice notice-error" role="alert">{{ error }}</div>
       {% endif %}
 
-      <section id="connections" class="card-grid connection-grid page-section" aria-label="Connections">
+      <section id="connections" class="card-grid connection-grid page-section" aria-label="{{ t('connections') }}">
         <article class="card">
           <div class="card-header">
             <div>
               <span class="step">01</span>
-              <h2>ChatGPT subscription</h2>
+              <h2>{{ t("chatgpt_subscription") }}</h2>
             </div>
             <span class="pill {{ 'is-good' if chat_connected else '' }}">
               {% if active_provider == "chatgpt" and chat_connected %}
-                Active
+                {{ t("active") }}
               {% else %}
-                {{ chat_email or ("Connected" if chat_connected else "Not connected") }}
+                {{ chat_email or (t("connected") if chat_connected else t("not_connected")) }}
               {% endif %}
             </span>
           </div>
@@ -82,7 +82,7 @@
 
           <form method="post" action="/chatgpt/{{ 'disconnect' if chat_connected else 'connect' }}">
             <button class="{{ 'button-secondary' if chat_connected else '' }}">
-              {{ "Disconnect" if chat_connected else "Sign in with ChatGPT" }}
+              {{ t("disconnect") if chat_connected else t("sign_in_chatgpt") }}
             </button>
           </form>
 
@@ -105,15 +105,15 @@
           <div class="card-header">
             <div>
               <span class="step">02</span>
-              <h2>OpenAI-compatible API</h2>
+              <h2>{{ t("custom_api") }}</h2>
             </div>
             <span class="pill {{ 'is-good' if custom_provider else '' }}">
               {% if active_provider == "custom" and custom_provider %}
-                Active · {{ custom_provider.name }}
+                {{ t("active") }} · {{ custom_provider.name }}
               {% elif custom_provider %}
-                Configured
+                {{ t("configured") }}
               {% else %}
-                Not configured
+                {{ t("not_configured") }}
               {% endif %}
             </span>
           </div>
@@ -190,10 +190,10 @@
           <div class="card-header">
             <div>
               <span class="step">03</span>
-              <h2>Discord</h2>
+              <h2>{{ t("discord") }}</h2>
             </div>
             <span class="pill {{ 'is-good' if discord_connected else '' }}">
-              {{ discord_identity or ("Connecting" if has_discord_token else "Not connected") }}
+              {{ discord_identity or ("Connecting" if has_discord_token else t("not_connected")) }}
             </span>
           </div>
 
@@ -212,7 +212,7 @@
                 required
               >
             </label>
-            <button>{{ "Replace token and reconnect" if has_discord_token else "Save token and connect" }}</button>
+            <button>{{ "Replace token and reconnect" if has_discord_token else t("save_connect") }}</button>
           </form>
 
           {% if has_discord_token %}
@@ -272,15 +272,15 @@
         </article>
       </section>
 
-      <section class="card-grid page-section" aria-label="Behavior">
+      <section class="card-grid page-section" aria-label="{{ t('behavior') }}">
         <article class="card" id="personality">
           <div class="card-header">
             <div>
               <span class="step">04</span>
-              <h2>Personality cache</h2>
+              <h2>{{ t("personality_cache") }}</h2>
             </div>
             <span class="pill {{ 'is-good' if personality else '' }}">
-              {{ "Cached" if personality else "Empty" }}
+              {{ t("cached") if personality else t("empty") }}
             </span>
           </div>
 
@@ -351,14 +351,38 @@
           <div class="card-header">
             <div>
               <span class="step">05</span>
-              <h2>Reply behavior</h2>
+              <h2>{{ t("reply_behavior") }}</h2>
             </div>
           </div>
 
           <form method="post" action="/settings" class="form-stack">
+            <div class="field-grid field-grid-two">
+              <label>
+                {{ t("admin_language") }}
+                <select name="admin_locale">
+                  {% for code, name in locales.items() %}
+                    <option value="{{ code }}" {% if code == app_settings.admin_locale %}selected{% endif %}>
+                      {{ name }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                {{ t("prompt_language") }}
+                <select name="prompt_locale">
+                  {% for code, name in locales.items() %}
+                    <option value="{{ code }}" {% if code == app_settings.prompt_locale %}selected{% endif %}>
+                      {{ name }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </label>
+            </div>
+            <p class="field-help">{{ t("prompt_language_help") }}</p>
+
             <label class="toggle">
               <input type="checkbox" name="enabled" {% if app_settings.enabled %}checked{% endif %}>
-              Enable automated replies
+              {{ t("enable_replies") }}
             </label>
 
             <label class="toggle">
@@ -367,7 +391,7 @@
                 name="silent_replies"
                 {% if app_settings.silent_replies %}checked{% endif %}
               >
-              Send generated replies without notifications
+              {{ t("silent_replies") }}
             </label>
             <p class="field-help">
               Uses Discord's suppress-notifications message option. The visible reply text is not
@@ -380,7 +404,7 @@
                 name="robot_prefix"
                 {% if app_settings.robot_prefix %}checked{% endif %}
               >
-              Prefix generated replies with 🤖
+              {{ t("robot_prefix") }}
             </label>
             <p class="field-help">
               Adds a visible robot emoji to every generated message so recipients can distinguish
@@ -388,7 +412,7 @@
             </p>
 
             <fieldset>
-              <legend>New conversation default</legend>
+              <legend>{{ t("new_conversation_default") }}</legend>
               <label>
                 Enrollment policy
                 <select name="conversation_default">
@@ -414,7 +438,7 @@
 
             <div class="field-grid field-grid-two">
               <label>
-                Provider
+                {{ t("provider") }}
                 <select name="provider">
                   <option value="chatgpt" {% if active_provider == "chatgpt" %}selected{% endif %}>
                     ChatGPT subscription
@@ -430,14 +454,14 @@
               </label>
 
               <label>
-                Model
+                {{ t("model") }}
                 <input name="model" value="{{ app_settings.model }}">
               </label>
             </div>
 
             <div class="field-grid field-grid-two">
               <label>
-                Reasoning
+                {{ t("reasoning") }}
                 <select name="reasoning_effort">
                   {% for effort in ["low", "medium", "high"] %}
                     <option {% if effort == app_settings.reasoning_effort %}selected{% endif %}>
@@ -447,7 +471,7 @@
                 </select>
               </label>
               <label>
-                Reply token budget
+                {{ t("reply_token_budget") }}
                 <input
                   type="number"
                   min="32"
@@ -464,7 +488,7 @@
             </p>
 
             <fieldset>
-              <legend>Multi-message replies</legend>
+              <legend>{{ t("multi_message_replies") }}</legend>
               <label class="toggle">
                 <input
                   type="checkbox"
@@ -528,7 +552,7 @@
             </fieldset>
 
             <fieldset>
-              <legend>Reply timing</legend>
+              <legend>{{ t("reply_timing") }}</legend>
               <div class="field-grid field-grid-three">
                 <label>
                   Debounce (seconds)
@@ -564,7 +588,7 @@
             </fieldset>
 
             <fieldset>
-              <legend>Human activity quiet window</legend>
+              <legend>{{ t("quiet_window") }}</legend>
               <p class="field-help">
                 A manual outgoing message cancels pending work and keeps Diskovod quiet for a
                 randomized duration in this range.
@@ -627,7 +651,7 @@
             </div>
 
             <label>
-              Owner details
+              {{ t("owner_details") }}
               <textarea
                 name="owner_details"
                 rows="7"
@@ -641,21 +665,21 @@
             </p>
 
             <label>
-              Base instructions
+              {{ t("base_instructions") }}
               <textarea name="base_instructions" rows="7">{{ app_settings.base_instructions }}</textarea>
             </label>
 
-            <button>Save behavior</button>
+            <button>{{ t("save_behavior") }}</button>
           </form>
         </article>
       </section>
 
-      <section id="usage" class="page-section" aria-label="ChatGPT usage">
+      <section id="usage" class="page-section" aria-label="{{ t('usage') }}">
         <article class="card usage-card">
           <div class="card-header">
             <div>
               <span class="step">06</span>
-              <h2>Model token usage</h2>
+              <h2>{{ t("model_token_usage") }}</h2>
             </div>
             <span class="pill">{{ "{:,}".format(usage_stats.all_time.requests) }} calls</span>
           </div>
@@ -836,12 +860,12 @@
         </article>
       </section>
 
-      <section id="conversations" class="page-section" aria-label="Conversations">
+      <section id="conversations" class="page-section" aria-label="{{ t('conversations') }}">
         <article class="card">
           <div class="card-header">
             <div>
               <span class="step">07</span>
-              <h2>Conversations</h2>
+              <h2>{{ t("conversations") }}</h2>
             </div>
             <span class="pill">{{ conversations | length }} known</span>
           </div>
@@ -880,12 +904,12 @@
                       class="button-secondary"
                       {% if not discord_connected or not model_connected %}disabled{% endif %}
                     >
-                      Force reply
+                      {{ t("force_reply") }}
                     </button>
                   </form>
                   {% if conversation.paused %}
                     <form method="post" action="/conversations/{{ conversation.channel_id }}/resume">
-                      <button class="button-secondary">Enable automation</button>
+                      <button class="button-secondary">{{ t("enable_automation") }}</button>
                     </form>
                   {% else %}
                     {% if conversation.snoozed %}
@@ -894,7 +918,7 @@
                       </form>
                     {% endif %}
                     <form method="post" action="/conversations/{{ conversation.channel_id }}/pause">
-                      <button class="button-quiet">Disable automation</button>
+                      <button class="button-quiet">{{ t("disable_automation") }}</button>
                     </form>
                   {% endif %}
                 </div>
@@ -906,12 +930,12 @@
         </article>
       </section>
 
-      <section id="database" class="page-section" aria-label="Database management">
+      <section id="database" class="page-section" aria-label="{{ t('database') }}">
         <article class="card database-card">
           <div class="card-header">
             <div>
               <span class="step">08</span>
-              <h2>Database explorer</h2>
+              <h2>{{ t("database_explorer") }}</h2>
             </div>
             <span class="pill">{{ database.total }} matching rows</span>
           </div>
@@ -944,10 +968,10 @@
                 placeholder="Search visible columns…"
               >
             </label>
-            <button>Search</button>
+            <button>{{ t("search") }}</button>
             {% if database.query %}
               <a class="btn btn-outline-secondary" href="{{ database.tables | selectattr('selected') | map(attribute='url') | first }}">
-                Clear
+                {{ t("clear") }}
               </a>
             {% endif %}
           </form>
@@ -981,10 +1005,10 @@
             <span>Page {{ database.page }} of {{ database.pages }}</span>
             <div class="button-row">
               {% if database.previous_url %}
-                <a class="btn btn-outline-secondary" href="{{ database.previous_url }}">Previous</a>
+                <a class="btn btn-outline-secondary" href="{{ database.previous_url }}">{{ t("previous") }}</a>
               {% endif %}
               {% if database.next_url %}
-                <a class="btn btn-outline-secondary" href="{{ database.next_url }}">Next</a>
+                <a class="btn btn-outline-secondary" href="{{ database.next_url }}">{{ t("next") }}</a>
               {% endif %}
             </div>
           </div>

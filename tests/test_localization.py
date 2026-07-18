@@ -1,7 +1,8 @@
 from diskovod.automation import build_reply_instructions
 from diskovod.localization import PROMPTS, SUPPORTED_LOCALES, prompts_for
 from diskovod.models import AppSettings, attachment_context
-from diskovod.web import personality_source_hash
+from diskovod.ui_localization import UI_TEXT, ui_text
+from diskovod.web import localized_base_instructions, personality_source_hash
 
 
 def test_every_supported_locale_has_a_complete_prompt_bundle():
@@ -62,3 +63,16 @@ def test_prompt_locale_is_part_of_the_personality_cache_identity():
 
 def test_unknown_locale_falls_back_to_english():
     assert prompts_for("unknown") is prompts_for("en")
+
+
+def test_every_admin_string_supports_every_locale():
+    for key, translations in UI_TEXT.items():
+        assert set(translations) == set(SUPPORTED_LOCALES), key
+        assert all(translations.values()), key
+        for locale in SUPPORTED_LOCALES:
+            assert ui_text(locale, key) == translations[locale]
+
+
+def test_locale_switch_translates_only_the_stock_base_prompt():
+    assert localized_base_instructions("en", "ja", prompts_for("en").base) == prompts_for("ja").base
+    assert localized_base_instructions("en", "ja", "  custom instructions  ") == ("custom instructions")

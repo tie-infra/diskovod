@@ -53,6 +53,22 @@ def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
     store.close()
 
 
+def test_localization_settings_round_trip_and_unknown_values_fall_back(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    settings = AppSettings(admin_locale="fr", prompt_locale="uk")
+    store.set_app_settings(settings)
+
+    assert store.app_settings().admin_locale == "fr"
+    assert store.app_settings().prompt_locale == "uk"
+
+    settings.admin_locale = "invalid"
+    settings.prompt_locale = "invalid"
+    store.set_app_settings(settings)
+    assert store.app_settings().admin_locale == "en"
+    assert store.app_settings().prompt_locale == "en"
+    store.close()
+
+
 def test_legacy_impersonation_prompt_is_replaced_but_custom_prompt_is_preserved(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
     store._set("app.settings", {"base_instructions": LEGACY_BASE_INSTRUCTIONS})

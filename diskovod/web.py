@@ -15,10 +15,11 @@ from fastapi.templating import Jinja2Templates
 from .automation import Automation
 from .chatgpt import PROVIDERS, ChatGPTClient, make_prompt_cache_key, normalize_custom_base_url
 from .discord import DiscordService
-from .localization import prompts_for
+from .localization import SUPPORTED_LOCALES, normalize_locale, prompts_for
 from .models import AppSettings, CustomProvider
 from .security import password_matches
 from .store import Store
+from .ui_localization import ui_text
 
 PERSONALITY_PROMPT_VERSION = "style-base-rates-examples-and-sequences-v4"
 PERSONALITY_MAX_OUTPUT_TOKENS = 2000
@@ -26,9 +27,15 @@ PERSONALITY_INSTRUCTIONS = prompts_for("en").personality
 
 
 def personality_source_hash(samples: str, locale: str = "en") -> str:
-    return hashlib.sha256(
-        f"{PERSONALITY_PROMPT_VERSION}\0{locale}\0{samples}".encode()
-    ).hexdigest()
+    return hashlib.sha256(f"{PERSONALITY_PROMPT_VERSION}\0{locale}\0{samples}".encode()).hexdigest()
+
+
+def localized_base_instructions(previous_locale: str, new_locale: str, submitted: str) -> str:
+    """Translate only the stock prompt; never overwrite user-customized instructions."""
+    submitted = submitted.strip()
+    if submitted == prompts_for(previous_locale).base:
+        return prompts_for(new_locale).base
+    return submitted
 
 
 class WebApp:
@@ -108,11 +115,15 @@ class WebApp:
             _: str = Depends(auth),
         ):
             custom_provider = self.store.custom_provider()
+            app_settings = self.store.app_settings()
             return self.templates.TemplateResponse(
                 request,
                 "index.html",
                 {
-                    "app_settings": self.store.app_settings(),
+                    "app_settings": app_settings,
+                    "locale": app_settings.admin_locale,
+                    "locales": SUPPORTED_LOCALES,
+                    "t": lambda key, **values: ui_text(app_settings.admin_locale, key, **values),
                     "public_url": self.public_url,
                     "chat_connected": self.chatgpt.subscription_connected,
                     "chat_email": self.chatgpt.email,
@@ -251,6 +262,8 @@ class WebApp:
             enabled: str | None = Form(None),
             silent_replies: str | None = Form(None),
             robot_prefix: str | None = Form(None),
+            admin_locale: str = Form("en"),
+            prompt_locale: str = Form("en"),
             multi_message_replies: str | None = Form(None),
             multi_message_chance: float = Form(12.0),
             max_reply_messages: int = Form(3),
@@ -273,6 +286,8 @@ class WebApp:
             base_instructions: str = Form(...),
             _: str = Depends(auth),
         ):
+            if admin_locale not in SUPPORTED_LOCALES or prompt_locale not in SUPPORTED_LOCALES:
+                return self._back(error=ui_text(admin_locale, "unknown_locale"))
             if provider not in PROVIDERS:
                 return self._back(error="Unknown model provider")
             if conversation_default not in {"opt_in", "opt_out"}:
@@ -292,10 +307,19 @@ class WebApp:
                 or min_human_quiet_minutes > max_human_quiet_minutes
             ):
                 return self._back(error="Minimum values cannot exceed maximum values")
+            previous = self.store.app_settings()
+            normalized_prompt_locale = normalize_locale(prompt_locale)
+            base_instructions = localized_base_instructions(
+                previous.prompt_locale,
+                normalized_prompt_locale,
+                base_instructions,
+            )
             value = AppSettings(
                 enabled=enabled is not None,
                 silent_replies=silent_replies is not None,
                 robot_prefix=robot_prefix is not None,
+                admin_locale=normalize_locale(admin_locale),
+                prompt_locale=normalized_prompt_locale,
                 multi_message_replies=multi_message_replies is not None,
                 multi_message_chance=max(0.0, min(multi_message_chance, 100.0)),
                 max_reply_messages=max(2, min(max_reply_messages, 5)),
@@ -315,10 +339,10 @@ class WebApp:
                 max_human_quiet_minutes=max(0.0, max_human_quiet_minutes),
                 history_limit=max(4, min(history_limit, 100)),
                 owner_details=owner_details,
-                base_instructions=base_instructions.strip(),
+                base_instructions=base_instructions,
             )
             self.store.set_app_settings(value)
-            return self._back(message="Automation settings saved")
+            return self._back(message=ui_text(value.admin_locale, "settings_saved"))
 
         @self.app.post("/personality/infer")
         async def personality_infer(samples: str = Form(...), _: str = Depends(auth)):

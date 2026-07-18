@@ -61,6 +61,7 @@ def test_reply_instructions_use_the_selected_prompt_locale():
 
         assert prompts.base in instructions
         assert prompts.dm_style in instructions
+        assert prompts.terminal_roleplay in instructions
         assert "send_messages" in instructions
         assert "react_to_message" in instructions
         assert tool_policy(locale) in instructions

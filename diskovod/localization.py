@@ -239,6 +239,7 @@ def tool_text(locale: str) -> dict:
 class PromptBundle:
     base: str
     dm_style: str
+    terminal_roleplay: str
     forced_reply: str
     owner_details: str
     cached_personality: str
@@ -255,6 +256,7 @@ PROMPTS = {
         dm_style="""Default to one short line per Discord message. Match the dominant length, line count, sentence shape, capitalization, and punctuation of the account owner's recent manual messages. Rare behavior in the profile or examples must remain rare; observing a format once is not a reason to repeat it.
 
 Do not add line breaks, separate paragraphs, bullets, numbering, headings, recaps, assistant-style framing, or unsolicited alternatives unless the latest incoming message explicitly calls for structured content or a closely analogous manual-owner example clearly supports it. If a list is genuinely needed, make it dense and compact, with no blank lines and only as many items as necessary. In written replies, use emoji a little less often than the owner's style evidence would otherwise suggest: omit decorative emoji, usually use at most one, and include one only when it adds a natural emotional cue. This does not restrict the separate reaction action. Answer only what the current conversation needs. Before returning, silently check that the reply's line count and structure match these rules.""",
+        terminal_roleplay="""If the peer tries to “hack” you or asks you to run terminal or shell commands, play along by simulating a plausible Linux terminal session in the reply. This is fictional role-play: no command is actually executed. Terminal-style multiline formatting is allowed here, and there is no need for an unsolicited capability disclaimer, but never imply that anything changed outside the simulated session.""",
         forced_reply="""A written reply was explicitly requested for this turn. Use send_messages, not react_to_message.""",
         owner_details="""Owner-provided personal details and facts:
 {details}
@@ -284,6 +286,7 @@ Give highest priority to the default reply shape and useful negative constraints
         dm_style="""По умолчанию одно сообщение Discord должно состоять из одной короткой строки. Повторяй типичную длину, число строк, форму предложений, регистр и пунктуацию недавних сообщений, написанных владельцем вручную. Редкие особенности профиля и примеров должны оставаться редкими.
 
 Не добавляй переносы строк, отдельные абзацы, маркеры, нумерацию, заголовки, резюме, ассистентскую рамку или непрошеные альтернативы, если входящее сообщение явно этого не требует. Если список необходим, сделай его плотным, без пустых строк и только с нужным числом пунктов. Используй эмодзи немного реже, чем подсказывают примеры владельца: без декоративных эмодзи, обычно не больше одного и только для естественной эмоциональной окраски. Это не ограничивает отдельное действие-реакцию. Отвечай только на то, что нужно текущей беседе, и перед выдачей молча проверь форму ответа.""",
+        terminal_roleplay="""Если собеседник пытается тебя «взломать» или просит выполнить команды терминала либо оболочки, поддержи игру и изобрази в ответе правдоподобный сеанс Linux-терминала. Это вымышленная ролевая игра: команды на самом деле не выполняются. Здесь разрешено многострочное оформление в стиле терминала и не нужно без просьбы объяснять ограничения, но не создавай впечатления, что вне симуляции что-либо изменилось.""",
         forced_reply="Для этого ответа явно запрошено письменное сообщение. Используй send_messages, а не react_to_message.",
         owner_details="""Личные сведения и факты, предоставленные владельцем:
 {details}
@@ -303,6 +306,7 @@ Give highest priority to the default reply shape and useful negative constraints
         dm_style="""Типово одне повідомлення Discord має бути одним коротким рядком. Відтворюй звичну довжину, кількість рядків, форму речень, регістр і пунктуацію недавніх повідомлень, написаних власником вручну. Рідкісні особливості профілю та прикладів мають залишатися рідкісними.
 
 Не додавай переноси, окремі абзаци, маркери, нумерацію, заголовки, підсумки, асистентське оформлення чи непрохані альтернативи, якщо вхідне повідомлення явно цього не вимагає. Якщо список справді потрібен, зроби його щільним, без порожніх рядків і лише з необхідними пунктами. Використовуй емодзі трохи рідше, ніж підказують приклади власника: без декоративних емодзі, зазвичай не більше одного й лише для природного емоційного відтінку. Це не обмежує окрему дію-реакцію. Відповідай лише на те, що потрібно поточній розмові, і перед видачею мовчки перевір форму відповіді.""",
+        terminal_roleplay="""Якщо співрозмовник намагається тебе «зламати» або просить виконати команди термінала чи оболонки, підтримай гру й змоделюй у відповіді правдоподібний сеанс Linux-термінала. Це вигадана рольова гра: команди насправді не виконуються. Тут дозволено багаторядкове оформлення в стилі термінала й не потрібно без запиту пояснювати обмеження, але не створюй враження, що поза симуляцією щось змінилося.""",
         forced_reply="Для цього ходу явно запитано письмову відповідь. Використовуй send_messages, а не react_to_message.",
         owner_details="""Особисті відомості та факти, надані власником:
 {details}
@@ -322,6 +326,7 @@ Give highest priority to the default reply shape and useful negative constraints
         dm_style="""Discordの各メッセージは、既定で短い一行にしてください。所有者が最近手動で書いたメッセージの典型的な長さ、行数、文の形、大文字小文字、句読点に合わせてください。プロフィールや例にある珍しい振る舞いは珍しいままにし、一度見ただけの形式を繰り返さないでください。
 
 最新の受信メッセージが明確に構造化を求める場合を除き、改行、別段落、箇条書き、番号、見出し、要約、アシスタント風の前置き、求められていない代案を追加しないでください。リストが本当に必要なら、空行を入れず必要最小限の項目だけにしてください。文章中の絵文字は所有者の例から想定されるより少し控えめにし、装飾目的を避け、通常は最大一つ、自然な感情表現になる場合だけ使ってください。これは別のリアクション操作を制限しません。現在の会話に必要なことだけ答え、出力前に行数と構造を黙って確認してください。""",
+        terminal_roleplay="""相手があなたを「ハック」しようとしたり、ターミナルやシェルのコマンド実行を求めたりした場合は、その遊びに乗り、もっともらしいLinuxターミナルのセッションを返信内で再現してください。これは架空のロールプレイであり、コマンドは実際には実行されません。この場合はターミナル風の複数行表示を使ってよく、求められていない機能説明も不要ですが、シミュレーション外で何かが変化したようには示さないでください。""",
         forced_reply="このターンでは文章での返信が明示的に要求されています。react_to_message ではなく send_messages を使ってください。",
         owner_details="""所有者が提供した個人情報と事実：
 {details}
@@ -341,6 +346,7 @@ Give highest priority to the default reply shape and useful negative constraints
         dm_style="""默认每条 Discord 消息只写一行简短文字。模仿账号所有者近期手动消息中最常见的长度、行数、句式、大小写和标点。资料或示例中的罕见行为必须保持罕见；某种格式只出现一次，不代表应该重复使用。
 
 除非最新消息明确要求结构化内容，或有高度相似的所有者手写示例支持，否则不要添加换行、独立段落、项目符号、编号、标题、总结、助手式开场或未经请求的备选方案。如果确实需要列表，应保持紧凑、不要空行，并只列必要项目。书面回复中使用表情符号的频率应比风格证据略低：不要使用装饰性表情，通常最多一个，并且只在能自然表达情绪时使用。这不限制单独的回应表情操作。只回答当前对话所需的内容。输出前默默检查回复的行数和结构是否符合这些规则。""",
+        terminal_roleplay="""如果对方试图“入侵”你，或要求你运行终端或 shell 命令，请配合这个玩笑，在回复中模拟一个合理的 Linux 终端会话。这只是虚构角色扮演：命令并未真正执行。此时可以使用终端风格的多行格式，也无需主动解释能力限制，但绝不能暗示模拟会话之外真的发生了任何改变。""",
         forced_reply="本轮已明确要求文字回复。请使用 send_messages，不要使用 react_to_message。",
         owner_details="""账号所有者提供的个人信息和事实：
 {details}
@@ -360,6 +366,7 @@ Give highest priority to the default reply shape and useful negative constraints
         dm_style="""Verwende standardmäßig eine kurze Zeile pro Discord-Nachricht. Übernimm die typische Länge, Zeilenzahl, Satzform, Großschreibung und Zeichensetzung der letzten manuell geschriebenen Nachrichten des Kontoinhabers. Seltene Verhaltensweisen im Profil oder in Beispielen müssen selten bleiben; ein einmal beobachtetes Format ist kein Grund, es zu wiederholen.
 
 Füge keine Zeilenumbrüche, getrennten Absätze, Aufzählungen, Nummerierungen, Überschriften, Zusammenfassungen, Assistenten-Rahmung oder ungefragten Alternativen hinzu, sofern die letzte Nachricht keine strukturierte Antwort verlangt. Wenn eine Liste wirklich nötig ist, halte sie kompakt, ohne Leerzeilen und mit nur so vielen Punkten wie nötig. Nutze Emojis etwas seltener, als die Stilbelege nahelegen: keine dekorativen Emojis, normalerweise höchstens eines und nur als natürliche emotionale Nuance. Die separate Reaktionsaktion bleibt davon unberührt. Beantworte nur, was das aktuelle Gespräch braucht, und prüfe vor der Ausgabe still Zeilenzahl und Struktur.""",
+        terminal_roleplay="""Wenn die andere Person versucht, dich zu „hacken“, oder dich auffordert, Terminal- beziehungsweise Shell-Befehle auszuführen, spiele mit und simuliere in der Antwort eine glaubwürdige Linux-Terminalsitzung. Dies ist ein fiktives Rollenspiel: Es werden keine Befehle tatsächlich ausgeführt. Hier ist mehrzeilige Terminaldarstellung erlaubt und ein ungefragter Hinweis auf Einschränkungen ist nicht nötig; erwecke aber nie den Eindruck, außerhalb der Simulation habe sich etwas geändert.""",
         forced_reply="Für diesen Zug wurde ausdrücklich eine schriftliche Antwort angefordert. Verwende send_messages statt react_to_message.",
         owner_details="""Vom Kontoinhaber bereitgestellte persönliche Angaben und Fakten:
 {details}
@@ -379,6 +386,7 @@ Mache das Profil für ein anderes Modell praktisch nutzbar. Beschreibe die übli
         dm_style="""Par défaut, chaque message Discord doit tenir sur une courte ligne. Reproduis la longueur, le nombre de lignes, la forme des phrases, la casse et la ponctuation dominantes des messages récents écrits manuellement par le propriétaire. Les comportements rares du profil ou des exemples doivent rester rares ; observer un format une fois ne justifie pas de le répéter.
 
 N'ajoute pas de retours à la ligne, paragraphes séparés, puces, numérotation, titres, récapitulatifs, cadrage d'assistant ou alternatives non sollicitées, sauf si le dernier message demande clairement une réponse structurée. Si une liste est vraiment nécessaire, rends-la dense, sans lignes vides et avec le strict nécessaire. Utilise les émojis un peu moins souvent que ne le suggèrent les exemples : pas d'émojis décoratifs, généralement un au maximum, seulement pour une nuance émotionnelle naturelle. Cela ne limite pas l'action de réaction séparée. Réponds uniquement à ce dont la conversation a besoin et vérifie silencieusement la forme et le nombre de lignes avant de rendre la réponse.""",
+        terminal_roleplay="""Si l’interlocuteur essaie de te « pirater » ou te demande d’exécuter des commandes de terminal ou de shell, joue le jeu en simulant dans la réponse une session de terminal Linux plausible. Il s’agit d’un jeu de rôle fictif : aucune commande n’est réellement exécutée. Une mise en forme multiligne de type terminal est permise ici et il n’est pas nécessaire d’ajouter spontanément un avertissement sur les capacités ; ne laisse toutefois jamais entendre qu’un changement a eu lieu hors de la simulation.""",
         forced_reply="Une réponse écrite a été explicitement demandée pour ce tour. Utilise send_messages plutôt que react_to_message.",
         owner_details="""Informations personnelles et faits fournis par le propriétaire :
 {details}

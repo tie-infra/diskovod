@@ -25,6 +25,7 @@ from .tooling import (
 )
 
 log = logging.getLogger(__name__)
+REPLY_PROMPT_VERSION = "linux-terminal-roleplay-v1"
 
 
 def build_reply_instructions(
@@ -41,6 +42,7 @@ def build_reply_instructions(
         sections.append(prompts.cached_personality.format(profile=personality["profile"]))
 
     sections.append(prompts.dm_style)
+    sections.append(prompts.terminal_roleplay)
     sections.append(tool_policy(settings.prompt_locale))
 
     owner_examples = [
@@ -312,6 +314,7 @@ class Automation:
                 protocol,
                 settings.model,
                 settings.prompt_locale,
+                REPLY_PROMPT_VERSION,
                 TOOL_SCHEMA_VERSION,
                 settings.base_instructions,
                 settings.owner_details,

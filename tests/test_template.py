@@ -131,7 +131,8 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'maxlength="20000"' in rendered
     assert 'value="opt_in"' in rendered
     assert 'value="opt_out"' in rendered
-    assert "Prefix generated replies with <code>@silent</code>" in rendered
+    assert "Send generated replies without notifications" in rendered
+    assert "suppress-notifications message option" in rendered
     assert 'action="/personality/save"' in rendered
     assert 'action="/personality/infer-history"' in rendered
     assert 'action="/discord/connect"' in rendered

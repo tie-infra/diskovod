@@ -346,11 +346,11 @@
                 name="silent_replies"
                 {% if app_settings.silent_replies %}checked{% endif %}
               >
-              Prefix generated replies with <code>@silent</code>
+              Send generated replies without notifications
             </label>
             <p class="field-help">
-              Requests that Discord deliver generated text without notifying the recipient. Emoji
-              reactions are unaffected.
+              Uses Discord's suppress-notifications message option. The visible reply text is not
+              modified; emoji reactions are unaffected.
             </p>
 
             <fieldset>

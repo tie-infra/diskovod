@@ -19,7 +19,7 @@ paused until an administrator resumes them.
 - An identity-disclosure guard that rewrites a rejected draft once and otherwise sends nothing.
 - Rare emoji reactions for lightweight acknowledgements when a written reply is unnecessary.
 - Model-composed multi-message replies with configurable frequency, count, and timing.
-- Optional `@silent` prefix for generated text replies that should not notify the recipient.
+- Optional Discord suppress-notifications flag for generated replies.
 - Configurable generation caps for concise DM replies.
 - Edit-aware message history that refreshes a pending reply when its trigger changes.
 - Configurable opt-in or opt-out default with per-conversation enrollment controls.
@@ -165,8 +165,8 @@ Diskovod does not split completed prose mechanically: the model chooses the boun
 a single message when a sequence would feel forced. Before every part, automation and recent manual
 owner activity are checked again, so the remainder stops if the owner joins the conversation.
 
-**Prefix generated replies with `@silent`** adds Discord's notification-suppression marker to text
-sent by Diskovod. The marker is not stored in conversation history and does not affect reactions.
+**Send generated replies without notifications** uses Discord's suppress-notifications message
+flag. It does not modify the visible message text and does not affect reactions.
 
 **Reply token budget** applies to each DM generation and any repair or reaction-fallback generation.
 The ChatGPT Subscription transport rejects `max_output_tokens`, so Diskovod expresses its value as

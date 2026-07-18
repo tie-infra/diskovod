@@ -338,8 +338,7 @@ class Automation:
 
             nonce = secrets.token_hex(12)
             self.store.remember_nonce(nonce)
-            outbound = f"@silent {part}" if settings.silent_replies else part
-            sent = await trigger.channel.send(outbound, nonce=nonce)
+            sent = await trigger.channel.send(part, nonce=nonce, silent=settings.silent_replies)
             self.store.remember_bot_message(str(sent.id))
             me = sent.author
             self.store.save_message(

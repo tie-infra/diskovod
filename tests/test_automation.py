@@ -281,7 +281,7 @@ class TextChannel:
     me = object()
 
     def __init__(self):
-        self.sent: list[tuple[str, str]] = []
+        self.sent: list[tuple[str, str, bool]] = []
 
     async def history(self, limit: int):
         if False:
@@ -291,8 +291,8 @@ class TextChannel:
     async def typing(self):
         yield
 
-    async def send(self, content: str, *, nonce: str):
-        self.sent.append((content, nonce))
+    async def send(self, content: str, *, nonce: str, silent: bool):
+        self.sent.append((content, nonce, silent))
         return SimpleNamespace(
             id=f"sent-{len(self.sent)}",
             author=SimpleNamespace(id="me"),
@@ -311,7 +311,7 @@ class TextTrigger:
 
 
 @pytest.mark.asyncio
-async def test_model_composed_sequence_is_sent_silently_and_stored_as_distinct_messages(
+async def test_model_composed_sequence_uses_silent_flag_and_is_stored_as_distinct_messages(
     tmp_path: Path,
 ):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
@@ -346,7 +346,8 @@ async def test_model_composed_sequence_is_sent_silently_and_stored_as_distinct_m
 
     await automation._reply(trigger, 0)
 
-    assert [item[0] for item in trigger.channel.sent] == ["@silent hey", "@silent what's up?"]
+    assert [item[0] for item in trigger.channel.sent] == ["hey", "what's up?"]
+    assert all(item[2] is True for item in trigger.channel.sent)
     saved = store.history("dm", 10)[-2:]
     assert [item["content"] for item in saved] == ["hey", "what's up?"]
     assert all(item["source"] == "assistant" for item in saved)

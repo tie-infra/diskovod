@@ -133,8 +133,9 @@ class WebApp:
         async def headers(request: Request, call_next):
             response = await call_next(request)
             response.headers["Content-Security-Policy"] = (
-                "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; "
-                "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+                "default-src 'none'; style-src 'self'; script-src 'self'; font-src 'self'; "
+                "img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; "
+                "frame-ancestors 'none'"
             )
             response.headers["X-Content-Type-Options"] = "nosniff"
             # `no-referrer` serializes the Origin of ordinary form POSTs as `null`.
@@ -479,6 +480,15 @@ class WebApp:
                 model_view=self._model_view(),
                 active_provider=self._active_provider(),
                 provider_label=self.models.provider_label,
+                model_capabilities=(
+                    {
+                        "native_tools": configuration.capabilities.native_tools,
+                        "hosted_web_search": configuration.capabilities.hosted_web_search,
+                        "output_token_limit": configuration.capabilities.output_token_limit,
+                    }
+                    if (configuration := self.models.configuration) is not None
+                    else {}
+                ),
                 subscription_web_search=self._hosted_search_capability(),
                 latest_probe=await self._subscription_web_search_probe_view(self._model_view()["model"]),
                 configuration_versions=await self.queries.configuration_versions(),
@@ -529,19 +539,49 @@ class WebApp:
 
         @self.app.get("/system/diagnostics")
         async def diagnostics(request: Request, offset: int = 0, _: str = Depends(auth)):
+            counts = await self.queries.diagnostic_counts()
             return await self._render(
                 request,
                 "diagnostics.html",
                 "system",
                 "diagnostics",
                 capability_probes=await self.queries.capability_probes(offset=offset),
-                diagnostic_counts=await self.queries.diagnostic_counts(),
+                diagnostic_counts=counts,
+                diagnostic_metrics=[
+                    {"label": self._t(name), "value": value}
+                    for name, value in counts.items()
+                    if name != "sqlite_version"
+                ],
                 health={
                     "discord": self.discord.connected,
                     "model": self.models.ready,
                     "chatgpt": self.account.connected,
                 },
                 versions=self._diagnostic_versions(),
+            )
+
+        @self.app.get("/system/diagnostics.json")
+        async def diagnostic_bundle(_: str = Depends(auth)):
+            probes = await self.queries.capability_probes(limit=50)
+            payload = redact_sensitive(
+                {
+                    "generated_at": time.time(),
+                    "health": {
+                        "discord": self.discord.connected,
+                        "model": self.models.ready,
+                        "chatgpt": self.account.connected,
+                    },
+                    "counts": await self.queries.diagnostic_counts(),
+                    "versions": self._diagnostic_versions(),
+                    "capability_probes": probes["items"],
+                }
+            )
+            return Response(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+                media_type="application/json",
+                headers={
+                    "Content-Disposition": 'attachment; filename="diskovod-diagnostic.json"'
+                },
             )
 
         @self.app.get("/system/database")
@@ -707,6 +747,7 @@ class WebApp:
             result = await self.queries.run(run_id)
             if result is None:
                 raise HTTPException(404, self._t("run_not_found"))
+            result["run"]["status_label"] = self._t(f"status_{result['run']['status']}")
             return JSONResponse(result)
 
         @self.app.get("/api/search")

@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -61,6 +62,7 @@ def test_multipage_admin_templates_parse_and_use_the_shared_shell():
     assert 'action="/search"' in rendered
     assert 'data-admin-theme="system"' in rendered
     assert 'id="main-content"' in rendered
+    assert 'aria-current="page"' in rendered
 
 
 def test_admin_pages_keep_settings_in_their_owned_domains():
@@ -97,6 +99,15 @@ def test_live_updates_use_fetch_readable_stream_not_websockets_or_eventsource():
     assert "EventSource" not in script
     assert 'details[data-json-url]' in script
     assert "JSON.stringify(payload, null, 2)" in script
+    assert "beforeunload" in script
+
+
+def test_admin_templates_do_not_depend_on_csp_blocked_inline_javascript():
+    template_dir = Path(__file__).parents[1] / "diskovod" / "templates"
+    inline_handler = re.compile(r"\son(?:click|change|submit|input|load)\s*=", re.IGNORECASE)
+
+    for template in template_dir.glob("*.html"):
+        assert inline_handler.search(template.read_text()) is None, template.name
 
 
 def test_admin_assets_are_self_hosted_and_old_dashboard_css_is_removed():

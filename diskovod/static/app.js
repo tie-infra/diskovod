@@ -52,6 +52,30 @@
     }
   });
 
+  document.querySelectorAll("[data-auto-submit]").forEach((control) => {
+    control.addEventListener("change", () => control.form?.requestSubmit());
+  });
+
+  let settingsDirty = false;
+  if (window.location.pathname.startsWith("/settings/")) {
+    document.querySelectorAll("form").forEach((form) => {
+      form.addEventListener("input", () => {
+        settingsDirty = true;
+      });
+      form.addEventListener("change", () => {
+        settingsDirty = true;
+      });
+      form.addEventListener("submit", () => {
+        settingsDirty = false;
+      });
+    });
+  }
+  window.addEventListener("beforeunload", (event) => {
+    if (!settingsDirty) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+
   const locale = root.lang || "en";
   const displayTimezone = body.dataset.displayTimezone || "browser";
   const dateOptions = { dateStyle: "medium", timeStyle: "short" };
@@ -288,7 +312,7 @@
     const payload = await fetchJSON(`/api/runs/${encodeURIComponent(id)}`);
     const status = document.querySelector("[data-run-status]");
     if (status) {
-      status.textContent = payload.run.status;
+      status.textContent = payload.run.status_label || payload.run.status;
       status.className = `badge status-${payload.run.status}`;
     }
     const timeline = document.querySelector("[data-run-timeline]");

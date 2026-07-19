@@ -1,4 +1,4 @@
 <nav class="subnav nav nav-pills" aria-label="{{ t('system') }}">
-  <a class="nav-link {{ 'active' if page_title == t('diagnostics') }}" href="/system/diagnostics">{{ t("diagnostics") }}</a>
-  <a class="nav-link {{ 'active' if page_title == t('database') }}" href="/system/database">{{ t("database") }}</a>
+  <a class="nav-link {{ 'active' if page_title == t('diagnostics') }}" href="/system/diagnostics" {{ 'aria-current="page"'|safe if page_title == t('diagnostics') }}>{{ t("diagnostics") }}</a>
+  <a class="nav-link {{ 'active' if page_title == t('database') }}" href="/system/database" {{ 'aria-current="page"'|safe if page_title == t('database') }}>{{ t("database") }}</a>
 </nav>

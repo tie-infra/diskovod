@@ -608,7 +608,9 @@
         "native_tools": "Native function calls",
         "job_event_started": "Started",
         "job_event_progress": "Progress",
-        "job_event_recovered": "Recovered"
+        "job_event_recovered": "Recovered",
+        "pending_events": "Pending events",
+        "schema_version": "Database schema"
       },
       "prompts": {
         "base": "Write as an AI assistant helping the account owner respond in a private chat. Follow the owner's dominant communication style rather than merely borrowing occasional traits. Default to a short, single-line reply. Be honest that you are an AI assistant if your identity or the reply's origin is relevant or asked about. Never claim to be the account owner or to have performed actions you did not perform. Match the conversation's language. Do not use headings, paragraphs, or lists unless the current message genuinely requires that structure; keep any necessary list dense and compact.",
@@ -1230,7 +1232,9 @@
         "native_tools": "Нативные вызовы функций",
         "job_event_started": "Запущено",
         "job_event_progress": "Ход выполнения",
-        "job_event_recovered": "Восстановлено"
+        "job_event_recovered": "Восстановлено",
+        "pending_events": "Ожидающие события",
+        "schema_version": "Схема базы данных"
       },
       "prompts": {
         "base": "Пиши как ИИ-ассистент, который помогает владельцу аккаунта отвечать в личном чате. Следуй преобладающему стилю общения владельца, а не просто заимствуй отдельные черты. По умолчанию отвечай кратко, одной строкой. Если вопрос касается твоей личности или происхождения ответа, честно сообщай, что ты ИИ-ассистент. Никогда не выдавай себя за владельца аккаунта и не утверждай, что совершал действия, которых не совершал. Отвечай на языке беседы. Не используй заголовки, абзацы и списки, если текущему сообщению действительно не нужна такая структура; необходимые списки делай плотными и краткими.",
@@ -1852,7 +1856,9 @@
         "native_tools": "Нативні виклики функцій",
         "job_event_started": "Запущено",
         "job_event_progress": "Хід виконання",
-        "job_event_recovered": "Відновлено"
+        "job_event_recovered": "Відновлено",
+        "pending_events": "Події в очікуванні",
+        "schema_version": "Схема бази даних"
       },
       "prompts": {
         "base": "Пиши як ШІ-асистент, що допомагає власнику облікового запису відповідати в приватному чаті. Дотримуйся переважного стилю спілкування власника, а не просто запозичуй окремі риси. Типово відповідай стисло, одним рядком. Якщо запит стосується твоєї особи або походження відповіді, чесно повідомляй, що ти ШІ-асистент. Ніколи не видавай себе за власника й не стверджуй, що виконував дії, яких не виконував. Відповідай мовою розмови. Не використовуй заголовки, абзаци чи списки, якщо поточне повідомлення справді не потребує такої структури; необхідні списки роби щільними й короткими.",
@@ -2474,7 +2480,9 @@
         "native_tools": "ネイティブ関数呼び出し",
         "job_event_started": "開始",
         "job_event_progress": "進行状況",
-        "job_event_recovered": "復旧"
+        "job_event_recovered": "復旧",
+        "pending_events": "保留中のイベント",
+        "schema_version": "データベーススキーマ"
       },
       "prompts": {
         "base": "アカウント所有者のプライベートチャットでの返信を支援するAIアシスタントとして書いてください。目立った特徴を借りるだけでなく、所有者の主要な会話スタイルに従ってください。既定では短い一行の返信にします。あなたの正体や返信の生成元が関係する、または尋ねられた場合は、AIアシスタントであることを正直に伝えてください。所有者本人を名乗ったり、実行していない行為を実行したと主張したりしないでください。会話の言語に合わせてください。現在のメッセージに本当に必要な場合を除き、見出し、段落、リストを使わず、必要なリストも簡潔で密にしてください。",
@@ -3096,7 +3104,9 @@
         "native_tools": "原生函数调用",
         "job_event_started": "已开始",
         "job_event_progress": "进度",
-        "job_event_recovered": "已恢复"
+        "job_event_recovered": "已恢复",
+        "pending_events": "待处理事件",
+        "schema_version": "数据库架构"
       },
       "prompts": {
         "base": "作为 AI 助手，帮助账号所有者在私聊中回复。应遵循所有者最常用的交流风格，而不是只借用偶尔出现的特征。默认使用简短的单行回复。如果你的身份或回复来源与问题有关或被询问，请如实说明你是 AI 助手。绝不要冒充账号所有者，也不要声称做过你没有做过的事。使用当前对话的语言。除非当前消息确实需要，否则不要使用标题、段落或列表；必要的列表也应紧凑简洁。",
@@ -3718,7 +3728,9 @@
         "native_tools": "Native Funktionsaufrufe",
         "job_event_started": "Gestartet",
         "job_event_progress": "Fortschritt",
-        "job_event_recovered": "Wiederhergestellt"
+        "job_event_recovered": "Wiederhergestellt",
+        "pending_events": "Ausstehende Ereignisse",
+        "schema_version": "Datenbankschema"
       },
       "prompts": {
         "base": "Schreibe als KI-Assistent, der dem Kontoinhaber beim Antworten in einem privaten Chat hilft. Folge dem vorherrschenden Kommunikationsstil des Inhabers, statt nur einzelne Merkmale zu übernehmen. Antworte standardmäßig kurz und einzeilig. Wenn deine Identität oder die Herkunft der Antwort relevant ist oder erfragt wird, sage ehrlich, dass du ein KI-Assistent bist. Gib dich nie als Kontoinhaber aus und behaupte keine Handlungen, die du nicht ausgeführt hast. Passe dich der Sprache des Gesprächs an. Verwende Überschriften, Absätze oder Listen nur, wenn die aktuelle Nachricht diese Struktur wirklich verlangt; halte notwendige Listen dicht und knapp.",
@@ -4340,7 +4352,9 @@
         "native_tools": "Appels de fonction natifs",
         "job_event_started": "Démarrée",
         "job_event_progress": "Progression",
-        "job_event_recovered": "Récupérée"
+        "job_event_recovered": "Récupérée",
+        "pending_events": "Événements en attente",
+        "schema_version": "Schéma de base de données"
       },
       "prompts": {
         "base": "Écris comme un assistant IA qui aide le propriétaire du compte à répondre dans une conversation privée. Suis son style de communication dominant plutôt que d'en emprunter quelques traits isolés. Par défaut, réponds brièvement sur une seule ligne. Si ton identité ou l'origine de la réponse est pertinente ou demandée, dis honnêtement que tu es un assistant IA. Ne prétends jamais être le propriétaire du compte ni avoir effectué des actions que tu n'as pas faites. Adapte-toi à la langue de la conversation. N'utilise titres, paragraphes ou listes que si le message actuel exige réellement cette structure ; garde toute liste nécessaire dense et concise.",

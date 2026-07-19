@@ -47,11 +47,8 @@ class RecordingTransport:
 
 
 async def wait_for_idle(service: AgentService) -> None:
-    for _ in range(100):
-        if not service.tasks:
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("agent service did not become idle")
+    while tasks := tuple(service.tasks.values()):
+        await asyncio.gather(*tasks)
 
 
 @pytest.mark.asyncio

@@ -103,6 +103,7 @@ class FakeEditDMChannel:
 
 class RetryClient:
     attempts = 0
+    ready_event: asyncio.Event
 
     def __init__(self, _store, _runtime, _captcha_handler, ready_callback):
         self.ready_callback = ready_callback
@@ -117,6 +118,7 @@ class RetryClient:
             raise OSError("network unavailable")
         self.ready = True
         self.ready_callback()
+        type(self).ready_event.set()
         await asyncio.Event().wait()
 
     def is_ready(self):
@@ -135,19 +137,17 @@ async def test_discord_connection_failure_retries_without_stopping_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     RetryClient.attempts = 0
+    RetryClient.ready_event = asyncio.Event()
     monkeypatch.setattr(discord_module, "PrivateDiscordClient", RetryClient)
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     store.set_discord_token("discord-token")
     service = DiscordService(store)
     service.attach_runtime(cast(object, SimpleNamespace()))
-    service.retry_initial_seconds = 0.001
-    service.retry_max_seconds = 0.001
+    service.retry_initial_seconds = 0
+    service.retry_max_seconds = 0
 
     await service.start()
-    for _ in range(100):
-        if service.connected:
-            break
-        await asyncio.sleep(0.001)
+    await RetryClient.ready_event.wait()
 
     assert RetryClient.attempts == 2
     assert service.connected is True

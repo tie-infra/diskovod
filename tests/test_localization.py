@@ -25,6 +25,7 @@ from diskovod.localization import (
     tool_policy,
     ui_text,
 )
+from diskovod.store import DATABASE_TABLES
 from diskovod.web import localized_base_instructions, personality_source_hash
 
 
@@ -217,6 +218,45 @@ def test_every_admin_string_supports_every_locale():
         assert all(translations.values()), key
         for locale in SUPPORTED_LOCALES:
             assert ui_text(locale, key) == translations[locale]
+
+
+def test_database_explorer_can_label_every_managed_table_in_every_locale():
+    for locale in SUPPORTED_LOCALES:
+        for table in DATABASE_TABLES:
+            specific_key = f"table_{table}"
+            specific = ui_text(locale, specific_key)
+            label = (
+                ui_text(locale, "database_table_label", name=table)
+                if specific == specific_key
+                else specific
+            )
+            assert label and label != specific_key
+
+
+def test_background_job_presentation_keys_are_localized():
+    job_types = {
+        "provider.capability_probe",
+        "provider.setup_draft_probe",
+        "assistant.personality_inference",
+        "runtime.checkpoint_replay",
+    }
+    stages = {
+        "building_probe_request",
+        "testing_native_tools",
+        "testing_hosted_web_search",
+        "loading_personality_samples",
+        "inferring_personality",
+        "loading_checkpoint",
+        "replaying_checkpoint",
+        "recovered_after_restart",
+    }
+    for locale in SUPPORTED_LOCALES:
+        for job_type in job_types:
+            key = "job_type_" + job_type.replace(".", "_")
+            assert ui_text(locale, key) != key
+        for stage in stages:
+            key = "job_stage_" + stage
+            assert ui_text(locale, key) != key
 
 
 def test_every_tool_string_supports_every_locale():

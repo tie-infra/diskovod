@@ -110,7 +110,7 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/inbox/escalations/{escalation_id}/dismiss" in route_paths
     assert web._url("/chatgpt/oauth/callback") == ("https://diskovod.example/base/chatgpt/oauth/callback")
     assert (
-        web._back(message="connected")
+        web._redirect("/settings/connections", message="connected")
         .headers["location"]
         .startswith("https://diskovod.example/base/settings/connections")
     )

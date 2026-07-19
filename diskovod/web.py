@@ -50,13 +50,6 @@ from .security import password_matches
 from .store import Store
 
 PERSONALITY_INSTRUCTIONS = prompts_for("en").personality
-SECTION_DESTINATIONS = {
-    "connections": "/settings/connections",
-    "assistant": "/settings/assistant",
-    "conversations": "/chats",
-    "usage": "/activity/runs",
-    "database": "/system/database",
-}
 PROVIDERS = frozenset({"chatgpt", "custom"})
 CUSTOM_PROTOCOLS = frozenset({"responses", "chat_completions"})
 LIVE_TOPIC_PATTERN = re.compile(r"^(?:jobs|inbox|(?:chat|run|job):[A-Za-z0-9_.:-]{1,500})$")
@@ -412,8 +405,11 @@ class WebApp:
         async def job_detail(request: Request, job_id: str, _: str = Depends(auth)):
             job = await self.jobs.get(job_id) if self.jobs else None
             if job is None:
-                raise HTTPException(404, "Job not found")
-            events = await self.jobs.repository.events(job_id)
+                raise HTTPException(404, self._t("job_not_found"))
+            events = [
+                self._job_event_view(event)
+                for event in await self.jobs.repository.events(job_id)
+            ]
             return await self._render(
                 request,
                 "job.html",
@@ -587,7 +583,7 @@ class WebApp:
         async def job_api(job_id: str, _: str = Depends(auth)):
             job = await self.jobs.get(job_id) if self.jobs else None
             if job is None:
-                raise HTTPException(404, "Job not found")
+                raise HTTPException(404, self._t("job_not_found"))
             return JSONResponse(self._job_view(job))
 
         @self.app.get("/api/inbox")
@@ -773,7 +769,7 @@ class WebApp:
         async def cancel_job(job_id: str, _: str = Depends(auth)):
             job = await self.jobs.cancel(job_id) if self.jobs else None
             if job is None:
-                raise HTTPException(404, "Job not found")
+                raise HTTPException(404, self._t("job_not_found"))
             return RedirectResponse(self._url(f"/activity/jobs/{job_id}"), status_code=303)
 
         @self.app.post("/settings/interface")
@@ -947,7 +943,7 @@ class WebApp:
             try:
                 return RedirectResponse(await self.account.begin_oauth(), status_code=303)
             except Exception as exc:
-                return self._back(error=str(exc))
+                return self._redirect("/settings/connections", error=str(exc))
 
         @self.app.get("/chatgpt/oauth/callback")
         async def chat_callback(
@@ -958,7 +954,7 @@ class WebApp:
             try:
                 await self.account.finish_oauth(code=code, state=state, error=error)
             except Exception as exc:
-                return self._back(error=str(exc))
+                return self._redirect("/settings/connections", error=str(exc))
             selected = self._model_view()
             try:
                 await self._save_provider_selection(
@@ -968,14 +964,14 @@ class WebApp:
                     max_output_tokens=selected["max_output_tokens"],
                 )
             except RuntimeError as exc:
-                return self._back(error=str(exc))
-            return self._back(message=self._t("chatgpt_connected"))
+                return self._redirect("/settings/connections", error=str(exc))
+            return self._redirect("/settings/connections", message=self._t("chatgpt_connected"))
 
         @self.app.post("/chatgpt/disconnect")
         async def chat_disconnect(_: str = Depends(auth)):
             await self.store.aclear_chat_credentials()
             self.account.last_error = None
-            return self._back(message=self._t("chatgpt_disconnected"))
+            return self._redirect("/settings/connections", message=self._t("chatgpt_disconnected"))
 
         @self.app.post("/chatgpt/web-search/detect")
         async def chat_web_search_detect(_: str = Depends(auth)):
@@ -1022,13 +1018,13 @@ class WebApp:
         ):
             name = name.strip()
             if not name or len(name) > 80:
-                return self._back(error=self._t("provider_name_invalid"))
+                return self._redirect("/settings/connections", error=self._t("provider_name_invalid"))
             try:
                 base_url = normalize_custom_base_url(base_url)
             except ValueError:
-                return self._back(error=self._t("api_base_url_invalid"))
+                return self._redirect("/settings/connections", error=self._t("api_base_url_invalid"))
             if protocol not in CUSTOM_PROTOCOLS:
-                return self._back(error=self._t("unknown_api_protocol"))
+                return self._redirect("/settings/connections", error=self._t("unknown_api_protocol"))
             existing = self.store.custom_provider()
             draft = await self._provider_draft(draft_token)
             api_key = api_key.strip()
@@ -1047,7 +1043,7 @@ class WebApp:
                 "hosted_web_search": hosted_web_search is not None and protocol == "responses",
             }
             if self.store.automation_settings().enabled and not capabilities["native_function_calls"]:
-                return self._back(error=self._t("disable_automation_for_provider"))
+                return self._redirect("/settings/connections", error=self._t("disable_automation_for_provider"))
             saved_provider = CustomProvider(name, base_url, api_key, protocol, capabilities)
             await self.store.aset_custom_provider(saved_provider)
             if draft_token:
@@ -1061,8 +1057,8 @@ class WebApp:
                     max_output_tokens=selected["max_output_tokens"],
                 )
             except RuntimeError as exc:
-                return self._back(error=str(exc))
-            return self._back(message=self._t("provider_saved", name=name))
+                return self._redirect("/settings/connections", error=str(exc))
+            return self._redirect("/settings/connections", message=self._t("provider_saved", name=name))
 
         @self.app.post("/provider/custom/detect")
         async def custom_provider_detect(
@@ -1084,13 +1080,13 @@ class WebApp:
             name = name.strip()
             probe_model = probe_model.strip()
             if not name or len(name) > 80:
-                return self._back(error=self._t("provider_name_invalid"))
+                return self._redirect("/settings/connections", error=self._t("provider_name_invalid"))
             if not probe_model:
-                return self._back(error=self._t("detection_model_required"))
+                return self._redirect("/settings/connections", error=self._t("detection_model_required"))
             try:
                 base_url = normalize_custom_base_url(base_url)
             except ValueError:
-                return self._back(error=self._t("api_base_url_invalid"))
+                return self._redirect("/settings/connections", error=self._t("api_base_url_invalid"))
             if protocol not in CUSTOM_PROTOCOLS:
                 protocol = "responses"
             existing = self.store.custom_provider()
@@ -1180,16 +1176,16 @@ class WebApp:
         async def custom_provider_remove(_: str = Depends(auth)):
             await self.store.aclear_custom_provider()
             await self.store.aclear_provider_credentials("custom_openai_default")
-            return self._back(message=self._t("custom_provider_removed"))
+            return self._redirect("/settings/connections", message=self._t("custom_provider_removed"))
 
         @self.app.post("/provider/select")
         async def provider_select(provider: str = Form(...), _: str = Depends(auth)):
             if provider not in PROVIDERS:
-                return self._back(error=self._t("unknown_model_provider"))
+                return self._redirect("/settings/connections", error=self._t("unknown_model_provider"))
             if provider == "chatgpt" and not self.account.connected:
-                return self._back(error=self._t("connect_chatgpt_first"))
+                return self._redirect("/settings/connections", error=self._t("connect_chatgpt_first"))
             if provider == "custom" and self.store.custom_provider() is None:
-                return self._back(error=self._t("configure_custom_provider_first"))
+                return self._redirect("/settings/connections", error=self._t("configure_custom_provider_first"))
             custom = self.store.custom_provider()
             if (
                 provider == "custom"
@@ -1197,7 +1193,7 @@ class WebApp:
                 and custom
                 and not custom.supports("native_function_calls")
             ):
-                return self._back(error=self._t("detect_native_calls_before_select"))
+                return self._redirect("/settings/connections", error=self._t("detect_native_calls_before_select"))
             selected = self._model_view()
             await self._save_provider_selection(
                 provider,
@@ -1205,23 +1201,23 @@ class WebApp:
                 reasoning_effort=selected["reasoning_effort"],
                 max_output_tokens=selected["max_output_tokens"],
             )
-            return self._back(message=self._t("provider_selected", name=self.models.provider_label))
+            return self._redirect("/settings/connections", message=self._t("provider_selected", name=self.models.provider_label))
 
         @self.app.post("/discord/connect")
         async def discord_connect(token: str = Form(...), _: str = Depends(auth)):
             token = token.strip()
             if len(token) < 20:
-                return self._back(error=self._t("discord_token_incomplete"))
+                return self._redirect("/settings/connections", error=self._t("discord_token_incomplete"))
             await self.store.aset_discord_token(token)
             self.discord.error = None
             await self.discord.restart()
-            return self._back(message=self._t("discord_connection_started"))
+            return self._redirect("/settings/connections", message=self._t("discord_connection_started"))
 
         @self.app.post("/discord/disconnect")
         async def discord_disconnect(_: str = Depends(auth)):
             await self.discord.stop()
             await self.store.aclear_discord_token()
-            return self._back(message=self._t("discord_disconnected"))
+            return self._redirect("/settings/connections", message=self._t("discord_disconnected"))
 
         @self.app.post("/discord/captcha/{request_id}")
         async def discord_captcha(
@@ -1280,15 +1276,15 @@ class WebApp:
         async def personality_infer(samples: str = Form(...), _: str = Depends(auth)):
             samples = samples.strip()
             if len(samples) < 200:
-                return self._back(tab="assistant", error=self._t("history_too_short"))
+                return self._redirect("/settings/assistant", error=self._t("history_too_short"))
             profile = self.store.assistant_profile()
             source_hash = personality_source_hash(samples, profile.prompt_locale)
             cached = self.store.personality()
             if cached and cached["source_hash"] == source_hash:
-                return self._back(tab="assistant", message=self._t("personality_cached"))
+                return self._redirect("/settings/assistant", message=self._t("personality_cached"))
             configuration_id = await self.store.aactive_configuration_id()
             if configuration_id is None or self.jobs is None:
-                return self._back(tab="assistant", error=self._t("connect_provider_before_force"))
+                return self._redirect("/settings/assistant", error=self._t("connect_provider_before_force"))
             input_id = secrets.token_urlsafe(24)
             await self.store.acreate_admin_job_input(
                 input_id,
@@ -1324,7 +1320,7 @@ class WebApp:
             profile = self.store.assistant_profile()
             configuration_id = await self.store.aactive_configuration_id()
             if configuration_id is None or self.jobs is None:
-                return self._back(tab="assistant", error=self._t("connect_provider_before_force"))
+                return self._redirect("/settings/assistant", error=self._t("connect_provider_before_force"))
             fingerprint = assistant_profile_fingerprint(profile)
             job, _ = await self.jobs.enqueue(
                 "assistant.personality_inference",
@@ -1345,7 +1341,7 @@ class WebApp:
         async def personality_save(profile: str = Form(...), _: str = Depends(auth)):
             profile = profile.strip()
             if len(profile) < 50:
-                return self._back(tab="assistant", error=self._t("personality_too_short"))
+                return self._redirect("/settings/assistant", error=self._t("personality_too_short"))
             source_hash = hashlib.sha256(("edited\n" + profile).encode()).hexdigest()
             await self.store.aset_personality(
                 profile,
@@ -1353,7 +1349,7 @@ class WebApp:
                 source="edited",
             )
             await self.models.arefresh_prompt_cache_identity()
-            return self._back(tab="assistant", message=self._t("personality_updated"))
+            return self._redirect("/settings/assistant", message=self._t("personality_updated"))
 
         @self.app.post("/chats/{channel_id}/pause")
         async def pause(channel_id: str, _: str = Depends(auth)):
@@ -1515,10 +1511,16 @@ class WebApp:
             _: str = Depends(auth),
         ):
             if confirm != "emulate":
-                return self._back(tab="usage", error=self._t("replay_confirmation_required"))
+                return self._redirect(
+                    f"/activity/checkpoints/{thread_id}/{checkpoint_id}",
+                    error=self._t("replay_confirmation_required"),
+                )
             configuration_id = await self.store.aactive_configuration_id()
             if configuration_id is None or self.jobs is None:
-                return self._back(tab="usage", error=self._t("connect_provider_before_force"))
+                return self._redirect(
+                    f"/activity/checkpoints/{thread_id}/{checkpoint_id}",
+                    error=self._t("connect_provider_before_force"),
+                )
             job, _ = await self.jobs.enqueue(
                 "runtime.checkpoint_replay",
                 {
@@ -1540,15 +1542,19 @@ class WebApp:
             _: str = Depends(auth),
         ):
             if confirm != "delete":
-                return self._back(tab="usage", error=self._t("delete_confirmation_required"))
+                return self._redirect(
+                    "/knowledge/memories", error=self._t("delete_confirmation_required")
+                )
             try:
                 labels = tuple(json.loads(namespace))
                 if not labels or not all(isinstance(label, str) for label in labels):
                     raise ValueError
                 await self.runtime.memory.adelete(labels, key)
             except (TypeError, ValueError, json.JSONDecodeError):
-                return self._back(tab="usage", error=self._t("memory_identity_invalid"))
-            return self._back(tab="usage", message=self._t("memory_deleted"))
+                return self._redirect(
+                    "/knowledge/memories", error=self._t("memory_identity_invalid")
+                )
+            return self._redirect("/knowledge/memories", message=self._t("memory_deleted"))
 
     async def _render(
         self,
@@ -1777,7 +1783,13 @@ class WebApp:
         tables = await self.store.adatabase_tables()
         locale = self.store.interface_settings().locale
         for item in tables:
-            item["label"] = ui_text(locale, f"table_{item['name']}")
+            label_key = f"table_{item['name']}"
+            label = ui_text(locale, label_key)
+            item["label"] = (
+                ui_text(locale, "database_table_label", name=item["name"])
+                if label == label_key
+                else label
+            )
         table_names = {item["name"] for item in tables}
         selected = table if table in table_names else "messages"
         search = query.strip()[:200]
@@ -1874,6 +1886,15 @@ class WebApp:
 
     def _job_view(self, job: dict[str, Any]) -> dict[str, Any]:
         item = dict(job)
+        job_type = str(item.get("type") or "")
+        progress_stage = str(item.get("progress_stage") or "")
+        type_key = "job_type_" + job_type.replace(".", "_")
+        stage_key = "job_stage_" + progress_stage
+        item["type_label"] = self._t(type_key) if self._t(type_key) != type_key else job_type
+        item["stage_label"] = (
+            self._t(stage_key) if progress_stage and self._t(stage_key) != stage_key else progress_stage
+        )
+        item["status_label"] = self._t(f"status_{item.get('status')}")
         result_kind = str(item.get("result_kind") or "")
         result_id = str(item.get("result_id") or "")
         item["result_url"] = (
@@ -1895,6 +1916,24 @@ class WebApp:
             )
         else:
             item["target_url"] = None
+        return item
+
+    def _job_event_view(self, event: dict[str, Any]) -> dict[str, Any]:
+        item = dict(event)
+        kind = str(item.get("kind") or "")
+        key = (
+            f"status_{kind}"
+            if kind
+            in {"queued", "running", "cancellation_requested", "succeeded", "failed", "cancelled"}
+            else f"job_event_{kind}"
+        )
+        item["kind_label"] = self._t(key) if self._t(key) != key else kind
+        payload = dict(item.get("payload") or {})
+        stage = str(payload.get("stage") or "")
+        stage_key = f"job_stage_{stage}"
+        if stage and self._t(stage_key) != stage_key:
+            payload["stage"] = self._t(stage_key)
+        item["payload"] = payload
         return item
 
     def _active_provider(self) -> str:
@@ -1994,16 +2033,3 @@ class WebApp:
             {key: value for key, value in {"message": message, "error": error}.items() if value}
         )
         return RedirectResponse(self._url(path) + ("?" + query if query else ""), status_code=303)
-
-    def _back(
-        self,
-        *,
-        tab: str = "connections",
-        message: str | None = None,
-        error: str | None = None,
-    ) -> RedirectResponse:
-        destination = SECTION_DESTINATIONS.get(tab, "/settings/connections")
-        query = urlencode(
-            {key: value for key, value in {"message": message, "error": error}.items() if value}
-        )
-        return RedirectResponse(self._url(destination) + ("?" + query if query else ""), status_code=303)

@@ -157,10 +157,10 @@
     const result = document.querySelector("[data-job-result]");
     const cancel = document.querySelector("[data-job-cancel]");
     if (status) {
-      status.textContent = job.status;
+      status.textContent = job.status_label || job.status;
       status.className = `badge status-${job.status}`;
     }
-    if (stage) stage.textContent = job.progress_stage || "—";
+    if (stage) stage.textContent = job.stage_label || job.progress_stage || "—";
     if (error) {
       error.textContent = job.error_summary || "";
       error.hidden = !job.error_summary;

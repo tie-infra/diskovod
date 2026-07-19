@@ -1120,28 +1120,6 @@ class Store:
             result.append(item)
         return result
 
-    async def aagent_diagnostics(
-        self,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        async with self.database.transaction() as connection:
-            runs = await (
-                await connection.execute("SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT 100")
-            ).fetchall()
-            traces = await (
-                await connection.execute("SELECT * FROM agent_trace_events ORDER BY run_id, sequence")
-            ).fetchall()
-        return [dict(row) for row in runs], [dict(row) for row in traces]
-
-    async def acapability_probes(self, limit: int = 100) -> list[dict[str, Any]]:
-        async with self.database.transaction() as connection:
-            rows = await (
-                await connection.execute(
-                    "SELECT * FROM provider_capability_probes ORDER BY completed_at DESC LIMIT ?",
-                    (max(1, min(limit, 500)),),
-                )
-            ).fetchall()
-        return [dict(row) for row in rows]
-
     async def alatest_capability_probe(self, capability: str) -> dict[str, Any] | None:
         async with self.database.transaction() as connection:
             row = await (
@@ -1152,20 +1130,6 @@ class Store:
                 )
             ).fetchone()
         return dict(row) if row else None
-
-    async def aruntime_diagnostics(self) -> dict[str, list[dict[str, Any]]]:
-        queries = {
-            "memories": "SELECT namespace, key, value, updated_at FROM langgraph_store_items ORDER BY updated_at DESC LIMIT 100",
-            "attachments": "SELECT r.channel_id, r.message_id, r.filename, r.object_sha256, o.size, o.media_type, r.created_at FROM attachment_references r JOIN attachment_objects o ON o.sha256=r.object_sha256 ORDER BY r.created_at DESC LIMIT 100",
-            "deliveries": "SELECT run_id, tool_call_id, action, state, request, result, claimed_at, completed_at FROM side_effect_deliveries ORDER BY claimed_at DESC LIMIT 100",
-            "events": "SELECT e.id, e.channel_id, e.sequence, e.kind, e.payload, e.observed_at, q.disposition, q.logical_request_id, q.injection_batch FROM discord_events e LEFT JOIN chat_event_queue q ON q.event_id=e.id ORDER BY e.observed_at DESC LIMIT 100",
-        }
-        result: dict[str, list[dict[str, Any]]] = {}
-        async with self.database.transaction() as connection:
-            for name, query in queries.items():
-                rows = await (await connection.execute(query)).fetchall()
-                result[name] = [dict(row) for row in rows]
-        return result
 
     async def adatabase_tables(self) -> list[dict[str, Any]]:
         result = []

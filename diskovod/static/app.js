@@ -40,6 +40,39 @@
   };
   localizeTimes();
 
+  document.querySelectorAll("details[data-json-url]").forEach((details) => {
+    details.addEventListener("toggle", async () => {
+      if (!details.open || details.dataset.loaded) return;
+      details.dataset.loaded = "loading";
+      const pre = details.querySelector("pre");
+      const code = pre?.querySelector("code");
+      try {
+        const response = await fetch(details.dataset.jsonUrl, {
+          headers: { Accept: "application/json" },
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (code) code.textContent = JSON.stringify(payload, null, 2);
+        if (pre) pre.hidden = false;
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "btn btn-sm btn-outline-secondary mt-2";
+        copy.textContent = body.dataset.copyLabel || "Copy";
+        copy.addEventListener("click", async () => {
+          await navigator.clipboard.writeText(code?.textContent || "");
+          copy.textContent = body.dataset.copiedLabel || "Copied";
+        });
+        details.append(copy);
+        details.dataset.loaded = "true";
+      } catch (_error) {
+        if (code) code.textContent = body.dataset.loadFailedLabel || "Could not load details";
+        if (pre) pre.hidden = false;
+        delete details.dataset.loaded;
+      }
+    });
+  });
+
   const topic = body.dataset.liveTopic || "jobs";
   if (!("ReadableStream" in window) || !("TextDecoderStream" in window)) return;
 

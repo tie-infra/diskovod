@@ -90,6 +90,8 @@ def test_live_updates_use_fetch_readable_stream_not_websockets_or_eventsource():
     assert "application/x-ndjson" in script
     assert "WebSocket" not in script
     assert "EventSource" not in script
+    assert 'details[data-json-url]' in script
+    assert "JSON.stringify(payload, null, 2)" in script
 
 
 def test_admin_assets_are_self_hosted_and_old_dashboard_css_is_removed():
@@ -103,3 +105,15 @@ def test_admin_assets_are_self_hosted_and_old_dashboard_css_is_removed():
     assert ".tab-navigation" not in stylesheet
     assert ".usage-breakdown" not in stylesheet
     assert ".connection-grid" not in stylesheet
+
+
+def test_diagnostic_pages_do_not_eagerly_render_raw_payloads():
+    template_dir = Path(__file__).parents[1] / "diskovod" / "templates"
+    run = (template_dir / "run.html").read_text()
+    diagnostics = (template_dir / "diagnostics.html").read_text()
+
+    assert "payload_pretty" not in run
+    assert "request_pretty" not in run
+    assert "request_payload_json" not in diagnostics
+    assert "data-json-url" in run
+    assert "data-json-url" in diagnostics

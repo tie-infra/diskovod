@@ -66,6 +66,7 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/chats/{channel_id}" in route_paths
     assert "/activity/runs" in route_paths
     assert "/activity/runs/{run_id}" in route_paths
+    assert "/activity/runs/{run_id}/diagnostic.json" in route_paths
     assert "/activity/jobs" in route_paths
     assert "/activity/jobs/{job_id}" in route_paths
     assert "/knowledge/memories" in route_paths
@@ -85,6 +86,9 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/api/runs" in route_paths
     assert "/api/runs/{run_id}" in route_paths
     assert "/api/runs/{run_id}/events" in route_paths
+    assert "/api/runs/{run_id}/events/{sequence}" in route_paths
+    assert "/api/runs/{run_id}/delivery" in route_paths
+    assert "/api/diagnostics/probes/{probe_id}" in route_paths
     assert "/api/jobs" in route_paths
     assert "/api/jobs/{job_id}" in route_paths
     assert "/api/search" in route_paths

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.metadata
 import json
+import platform
 import re
 import secrets
 import time
@@ -14,7 +16,7 @@ from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from .discord import DiscordService
@@ -282,12 +284,40 @@ class WebApp:
             )
 
         @self.app.get("/activity/runs/{run_id}")
-        async def run_detail(request: Request, run_id: str, _: str = Depends(auth)):
-            view = await self.queries.run(run_id)
+        async def run_detail(
+            request: Request,
+            run_id: str,
+            panel: str = "timeline",
+            offset: int = 0,
+            _: str = Depends(auth),
+        ):
+            selected_panel = (
+                panel
+                if panel in {"summary", "timeline", "conversation", "model_io", "state", "raw"}
+                else "timeline"
+            )
+            view = await self.queries.run(run_id, event_offset=offset)
             if view is None:
-                raise HTTPException(404, "Run not found")
+                raise HTTPException(404, self._t("run_not_found"))
             return await self._render(
-                request, "run.html", "activity", "run_detail", run=view, live_topic=f"run:{run_id}"
+                request,
+                "run.html",
+                "activity",
+                "run_detail",
+                run=view,
+                panel=selected_panel,
+                live_topic=f"run:{run_id}",
+            )
+
+        @self.app.get("/activity/runs/{run_id}/diagnostic.json")
+        async def run_diagnostic(run_id: str, _: str = Depends(auth)):
+            payload = await self.queries.run_diagnostic(run_id)
+            if payload is None:
+                raise HTTPException(404, self._t("run_not_found"))
+            return Response(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+                media_type="application/json",
+                headers={"Content-Disposition": 'attachment; filename="diskovod-run-diagnostic.json"'},
             )
 
         @self.app.get("/activity/jobs")
@@ -432,14 +462,20 @@ class WebApp:
             )
 
         @self.app.get("/system/diagnostics")
-        async def diagnostics(request: Request, _: str = Depends(auth)):
+        async def diagnostics(request: Request, offset: int = 0, _: str = Depends(auth)):
             return await self._render(
                 request,
                 "diagnostics.html",
                 "system",
                 "diagnostics",
-                capability_probes=await self._capability_probe_views(),
-                runtime_records=await self._runtime_record_views(),
+                capability_probes=await self.queries.capability_probes(offset=offset),
+                diagnostic_counts=await self.queries.diagnostic_counts(),
+                health={
+                    "discord": self.discord.connected,
+                    "model": self.models.ready,
+                    "chatgpt": self.account.connected,
+                },
+                versions=self._diagnostic_versions(),
             )
 
         @self.app.get("/system/database")
@@ -580,6 +616,24 @@ class WebApp:
                 raise HTTPException(404, self._t("run_not_found"))
             return JSONResponse(result)
 
+        @self.app.get("/api/runs/{run_id}/events/{sequence}")
+        async def run_event_api(run_id: str, sequence: int, _: str = Depends(auth)):
+            result = await self.queries.run_event(run_id, sequence)
+            if result is None:
+                raise HTTPException(404, self._t("run_not_found"))
+            return JSONResponse(result)
+
+        @self.app.get("/api/runs/{run_id}/delivery")
+        async def run_delivery_api(
+            run_id: str,
+            tool_call_id: str,
+            _: str = Depends(auth),
+        ):
+            result = await self.queries.run_delivery(run_id, tool_call_id)
+            if result is None:
+                raise HTTPException(404, self._t("run_not_found"))
+            return JSONResponse(result)
+
         @self.app.get("/api/runs/{run_id}")
         async def run_api(run_id: str, _: str = Depends(auth)):
             result = await self.queries.run(run_id)
@@ -590,6 +644,13 @@ class WebApp:
         @self.app.get("/api/search")
         async def search_api(q: str = "", limit: int = 10, _: str = Depends(auth)):
             return JSONResponse(await self.queries.search(q, limit=limit))
+
+        @self.app.get("/api/diagnostics/probes/{probe_id}")
+        async def capability_probe_api(probe_id: str, _: str = Depends(auth)):
+            result = await self.queries.capability_probe(probe_id)
+            if result is None:
+                raise HTTPException(404, self._t("probe_not_found"))
+            return JSONResponse(result)
 
         @self.app.get("/api/events/stream")
         async def event_stream(request: Request, topics: str = "jobs", _: str = Depends(auth)):
@@ -1437,31 +1498,21 @@ class WebApp:
             captcha_requests=self.discord.captcha_requests(),
         )
 
-    async def _capability_probe_views(self) -> list[dict[str, Any]]:
-        rows = await self.store.acapability_probes()
-        result = []
-        for row in rows:
-            item = dict(row)
-            item["completed_at_label"] = (
-                datetime.fromtimestamp(item["completed_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-            )
-            for field in ("configuration", "request_payload", "response_payload"):
-                value = json.loads(item[field]) if item[field] else None
-                item[f"{field}_json"] = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
-            result.append(item)
-        return result
-
-    async def _runtime_record_views(self) -> dict[str, list[dict[str, Any]]]:
-        records = await self.store.aruntime_diagnostics()
-        result: dict[str, list[dict[str, Any]]] = {}
-        for name, rows in records.items():
-            values = []
-            for row in rows:
-                item = dict(row)
-                item["json"] = json.dumps(item, ensure_ascii=False, indent=2, default=str)
-                values.append(item)
-            result[name] = values
-        return result
+    @staticmethod
+    def _diagnostic_versions() -> dict[str, str]:
+        versions = {"Python": platform.python_version()}
+        for label, distribution in (
+            ("Diskovod", "diskovod"),
+            ("LangChain", "langchain"),
+            ("LangGraph", "langgraph"),
+            ("langchain-openai", "langchain-openai"),
+            ("discord.py-self", "discord.py-self"),
+        ):
+            try:
+                versions[label] = importlib.metadata.version(distribution)
+            except importlib.metadata.PackageNotFoundError:
+                versions[label] = "—"
+        return versions
 
     async def _subscription_web_search_probe_view(self, model: str) -> dict[str, Any] | None:
         report = await self.store.alatest_capability_probe("hosted_web_search")

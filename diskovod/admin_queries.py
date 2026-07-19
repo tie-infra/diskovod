@@ -391,16 +391,42 @@ class AdminQueryService:
                 versions[topic] = hashlib.sha256(repr(values).encode()).hexdigest()[:16]
         return versions
 
-    async def run(self, run_id: str) -> dict[str, Any] | None:
+    async def run(
+        self,
+        run_id: str,
+        *,
+        event_limit: int = 200,
+        event_offset: int = 0,
+    ) -> dict[str, Any] | None:
+        bounded_limit = max(1, min(event_limit, 500))
+        bounded_offset = max(0, event_offset)
         async with self.store.database.transaction() as connection:
             run = await (
-                await connection.execute("SELECT * FROM agent_runs WHERE id=?", (run_id,))
+                await connection.execute(
+                    """
+                    SELECT r.*, v.configuration
+                    FROM agent_runs r
+                    LEFT JOIN agent_configuration_versions v ON v.id=r.configuration_version_id
+                    WHERE r.id=?
+                    """,
+                    (run_id,),
+                )
             ).fetchone()
             if run is None:
                 return None
+            event_count = int(
+                (
+                    await (
+                        await connection.execute(
+                            "SELECT COUNT(*) FROM agent_trace_events WHERE run_id=?", (run_id,)
+                        )
+                    ).fetchone()
+                )[0]
+            )
             traces = await (
                 await connection.execute(
-                    "SELECT * FROM agent_trace_events WHERE run_id=? ORDER BY sequence", (run_id,)
+                    "SELECT * FROM agent_trace_events WHERE run_id=? ORDER BY sequence LIMIT ? OFFSET ?",
+                    (run_id, bounded_limit, bounded_offset),
                 )
             ).fetchall()
             deliveries = await (
@@ -413,11 +439,87 @@ class AdminQueryService:
                     "SELECT * FROM checkpoint_index WHERE run_id=? ORDER BY created_at", (run_id,)
                 )
             ).fetchall()
+            messages = await (
+                await connection.execute(
+                    "SELECT * FROM messages WHERE channel_id=? AND timestamp<=? "
+                    "ORDER BY timestamp DESC, id DESC LIMIT 50",
+                    (run["channel_id"], float(run["started_at"])),
+                )
+            ).fetchall()
+        parsed_traces = [(row, self._payload(row["payload"])) for row in traces]
+        run_summary = self._run_summary(run, include_error=True)
+        run_summary["configuration"] = redact_sensitive(
+            self._payload(run_summary.pop("configuration", None))
+        )
         return {
-            "run": self._run_summary(run, include_error=True),
-            "timeline": [self._trace(row) for row in traces],
+            "run": run_summary,
+            "timeline": [self._trace(row, payload) for row, payload in parsed_traces],
             "deliveries": [self._delivery(row) for row in deliveries],
             "checkpoints": [dict(row) for row in checkpoints],
+            "conversation": [self._message(row) for row in reversed(messages)],
+            "model_exchanges": self._model_exchanges(parsed_traces),
+            "event_count": event_count,
+            "event_offset": bounded_offset,
+            "event_limit": bounded_limit,
+            "previous_event_offset": (
+                max(0, bounded_offset - bounded_limit) if bounded_offset else None
+            ),
+            "next_event_offset": (
+                bounded_offset + bounded_limit
+                if bounded_offset + bounded_limit < event_count
+                else None
+            ),
+        }
+
+    async def run_event(self, run_id: str, sequence: int) -> dict[str, Any] | None:
+        async with self.store.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT * FROM agent_trace_events WHERE run_id=? AND sequence=?",
+                    (run_id, sequence),
+                )
+            ).fetchone()
+        return self._trace(row, self._payload(row["payload"]), include_payload=True) if row else None
+
+    async def run_delivery(self, run_id: str, tool_call_id: str) -> dict[str, Any] | None:
+        async with self.store.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT * FROM side_effect_deliveries WHERE run_id=? AND tool_call_id=?",
+                    (run_id, tool_call_id),
+                )
+            ).fetchone()
+        return self._delivery(row, include_payload=True) if row else None
+
+    async def run_diagnostic(self, run_id: str) -> dict[str, Any] | None:
+        view = await self.run(run_id, event_limit=500)
+        if view is None:
+            return None
+        async with self.store.database.transaction() as connection:
+            event_rows = await (
+                await connection.execute(
+                    "SELECT * FROM agent_trace_events WHERE run_id=? ORDER BY sequence LIMIT 500",
+                    (run_id,),
+                )
+            ).fetchall()
+            delivery_rows = await (
+                await connection.execute(
+                    "SELECT * FROM side_effect_deliveries WHERE run_id=? ORDER BY claimed_at",
+                    (run_id,),
+                )
+            ).fetchall()
+        events = [
+            self._trace(row, self._payload(row["payload"]), include_payload=True)
+            for row in event_rows
+        ]
+        deliveries = [self._delivery(row, include_payload=True) for row in delivery_rows]
+        return {
+            "schema": "diskovod.run-diagnostic.v1",
+            "run": view["run"],
+            "events": events,
+            "deliveries": deliveries,
+            "checkpoints": view["checkpoints"],
+            "truncated": view["event_count"] > 500,
         }
 
     async def inbox(self, *, limit: int = 50, offset: int = 0) -> dict[str, Any]:
@@ -501,6 +603,82 @@ class AdminQueryService:
                 )
             ).fetchall()
         return [self._run_summary(row, include_error=True) for row in rows]
+
+    async def capability_probes(self, *, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        bounded_limit = max(1, min(limit, 100))
+        bounded_offset = max(0, offset)
+        async with self.store.database.transaction() as connection:
+            total = int(
+                (
+                    await (
+                        await connection.execute("SELECT COUNT(*) FROM provider_capability_probes")
+                    ).fetchone()
+                )[0]
+            )
+            rows = await (
+                await connection.execute(
+                    "SELECT id, configuration, capability, status, conclusion, started_at, completed_at "
+                    "FROM provider_capability_probes ORDER BY completed_at DESC LIMIT ? OFFSET ?",
+                    (bounded_limit, bounded_offset),
+                )
+            ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            configuration = self._payload(item.pop("configuration"))
+            item["configuration"] = redact_sensitive(configuration)
+            item["completed_at_label"] = self._time(float(item["completed_at"]))
+            items.append(item)
+        return {
+            "items": items,
+            "total": total,
+            "limit": bounded_limit,
+            "offset": bounded_offset,
+            "previous_offset": max(0, bounded_offset - bounded_limit) if bounded_offset else None,
+            "next_offset": (
+                bounded_offset + bounded_limit
+                if bounded_offset + bounded_limit < total
+                else None
+            ),
+        }
+
+    async def capability_probe(self, probe_id: str) -> dict[str, Any] | None:
+        async with self.store.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT * FROM provider_capability_probes WHERE id=?", (probe_id,)
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        for field in ("configuration", "request_payload", "response_payload"):
+            item[field] = redact_sensitive(self._payload(item[field]))
+        return item
+
+    async def diagnostic_counts(self) -> dict[str, Any]:
+        queries = {
+            "conversations": "SELECT COUNT(*) FROM conversations",
+            "pending_events": "SELECT COUNT(*) FROM chat_event_queue WHERE disposition='pending'",
+            "failed_runs": "SELECT COUNT(*) FROM agent_runs WHERE status='failed'",
+            "active_jobs": (
+                "SELECT COUNT(*) FROM admin_jobs "
+                "WHERE status IN ('queued','running','cancellation_requested')"
+            ),
+            "attachments": "SELECT COUNT(*) FROM attachment_references",
+            "memories": "SELECT COUNT(*) FROM langgraph_store_items",
+        }
+        result: dict[str, Any] = {}
+        async with self.store.database.transaction() as connection:
+            for name, statement in queries.items():
+                result[name] = int((await (await connection.execute(statement)).fetchone())[0])
+            schema = await (
+                await connection.execute("SELECT MAX(version) FROM schema_migrations")
+            ).fetchone()
+            result["schema_version"] = int(schema[0] or 0)
+            sqlite_version = await (await connection.execute("SELECT sqlite_version()")).fetchone()
+            result["sqlite_version"] = str(sqlite_version[0])
+        return result
 
     async def inbox_count(self) -> int:
         async with self.store.database.transaction() as connection:
@@ -642,27 +820,115 @@ class AdminQueryService:
         return item
 
     @classmethod
-    def _trace(cls, row) -> dict[str, Any]:
+    def _trace(
+        cls,
+        row,
+        payload: Any | None = None,
+        *,
+        include_payload: bool = False,
+    ) -> dict[str, Any]:
         item = dict(row)
-        try:
-            payload = json.loads(item["payload"])
-        except (TypeError, json.JSONDecodeError):
-            payload = {"value": str(item["payload"])}
-        payload = redact_sensitive(payload)
+        payload = redact_sensitive(cls._payload(item["payload"]) if payload is None else payload)
         item.pop("payload", None)
-        item["payload_value"] = payload
-        item["payload_pretty"] = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        item.update(cls._trace_summary(str(item["kind"]), payload))
+        if include_payload:
+            item["payload"] = payload
         item["recorded_at_label"] = cls._time(float(item["recorded_at"]))
         return item
 
     @classmethod
-    def _delivery(cls, row) -> dict[str, Any]:
+    def _delivery(cls, row, *, include_payload: bool = False) -> dict[str, Any]:
         item = dict(row)
-        item["request_pretty"] = cls._pretty(item.get("request"), redact=True)
-        item["result_pretty"] = cls._pretty(item.get("result"), redact=True)
+        request = redact_sensitive(cls._payload(item.get("request")))
+        result = redact_sensitive(cls._payload(item.get("result")))
         item.pop("request", None)
         item.pop("result", None)
+        item["summary"] = cls._value_preview(result or request)
+        if include_payload:
+            item["request"] = request
+            item["result"] = result
         return item
+
+    @classmethod
+    def _model_exchanges(cls, traces: list[tuple[Any, Any]]) -> list[dict[str, Any]]:
+        exchanges: list[dict[str, Any]] = []
+        pending: dict[str, Any] | None = None
+        for row, payload in traces:
+            kind = str(row["kind"])
+            if kind == "model_request":
+                if pending is not None:
+                    exchanges.append(pending)
+                pending = {
+                    "request_sequence": int(row["sequence"]),
+                    "model": str(payload.get("model_class") or "—") if isinstance(payload, dict) else "—",
+                    "message_count": len(payload.get("messages") or []) if isinstance(payload, dict) else 0,
+                    "tools": payload.get("tools") or [] if isinstance(payload, dict) else [],
+                    "response_sequence": None,
+                    "response_summary": "",
+                    "failed": False,
+                }
+            elif kind in {"model_response", "model_error"} and pending is not None:
+                pending["response_sequence"] = int(row["sequence"])
+                pending["response_summary"] = cls._value_preview(payload)
+                pending["failed"] = kind == "model_error"
+                exchanges.append(pending)
+                pending = None
+        if pending is not None:
+            exchanges.append(pending)
+        return exchanges
+
+    @classmethod
+    def _trace_summary(cls, kind: str, payload: Any) -> dict[str, Any]:
+        category = (
+            "model"
+            if kind.startswith("model_")
+            else "tool"
+            if kind.startswith("tool_") or kind == "emulated_actions"
+            else "state"
+            if "checkpoint" in kind or "interrupt" in kind
+            else "run"
+        )
+        failed = kind.endswith("error") or kind in {"run_error", "tool_error", "model_error"}
+        if isinstance(payload, dict):
+            if kind == "model_request":
+                summary = f"{len(payload.get('messages') or [])} messages · {len(payload.get('tools') or [])} tools"
+            elif kind == "run_input":
+                summary = f"{len(payload.get('event_ids') or [])} input events"
+            elif kind == "run_output":
+                summary = f"{payload.get('successful_written_sends', 0)} messages sent"
+            elif kind in {"model_error", "tool_error", "run_error", "interrupt_resume_error"}:
+                summary = str(payload.get("detail") or payload.get("type") or "")[:240]
+            elif kind in {"tool_request", "tool_response"}:
+                call = payload.get("tool_call") if isinstance(payload.get("tool_call"), dict) else payload
+                summary = str(call.get("name") or cls._value_preview(payload))[:240]
+            else:
+                summary = cls._value_preview(payload)
+        else:
+            summary = cls._value_preview(payload)
+        return {"category": category, "failed": failed, "summary": summary}
+
+    @staticmethod
+    def _value_preview(value: Any) -> str:
+        if value in (None, "", [], {}):
+            return "—"
+        if isinstance(value, dict):
+            for key in ("detail", "content", "text", "output", "status", "type"):
+                candidate = value.get(key)
+                if isinstance(candidate, (str, int, float, bool)) and str(candidate):
+                    return str(candidate)[:240]
+        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        return rendered[:237] + "…" if len(rendered) > 240 else rendered
+
+    @staticmethod
+    def _payload(value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return {"value": value}
 
     @staticmethod
     def _pretty(value: Any, *, redact: bool = False) -> str:

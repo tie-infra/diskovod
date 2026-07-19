@@ -58,13 +58,19 @@ async def test_run_projection_redacts_nested_credentials_but_preserves_usage_cou
         },
     )
 
-    view = await AdminQueryService(store).run("run")
+    queries = AdminQueryService(store)
+    view = await queries.run("run")
 
     assert "private" not in repr(view)
-    payload = view["timeline"][0]["payload_value"]
+    assert "payload" not in view["timeline"][0]
+    detail = await queries.run_event("run", 1)
+    payload = detail["payload"]
     assert payload["headers"]["Authorization"] == REDACTED
     assert payload["api_key"] == REDACTED
     assert payload["usage"] == {"input_tokens": 12, "output_tokens": 3}
+    diagnostic = await queries.run_diagnostic("run")
+    assert "private" not in repr(diagnostic)
+    assert diagnostic["events"][0]["payload"]["api_key"] == REDACTED
     await store.aclose()
 
 

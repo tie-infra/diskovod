@@ -72,6 +72,7 @@ DATABASE_TABLES = {
 class Store:
     def __init__(self, path: Path, secret: str):
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()

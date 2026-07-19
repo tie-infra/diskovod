@@ -102,6 +102,13 @@ Responses-shaped. Use **Test hosted web search** for the selected model; the res
 model and account and enables search only after the model completes both a real hosted search and a
 terminal function call in the same probe.
 
+The probe distinguishes verified support from request errors and response-contract mismatches.
+**Probe diagnostics** shows the model, stable reasoning-effort value, transport, timestamp, provider
+response ID, and sanitized tool-call counts and statuses. The same metadata is logged for
+correlation. Search results, prompts beyond the fixed public test, credentials, and raw response
+content are not retained. An inconclusive result does not by itself prove that the model lacks web
+search; it can also indicate backend rollout, account access, or an integration issue.
+
 ### OpenAI-compatible provider
 
 In **OpenAI-compatible API**, enter a display name, an API base URL that normally ends in `/v1`,

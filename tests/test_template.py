@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -21,10 +22,19 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
         locales=SUPPORTED_LOCALES,
         t=lambda key, **values: ui_text("en", key, **values),
         public_url="http://localhost:3090",
-        chat_connected=False,
+        chat_connected=True,
         chat_email=None,
         chat_error=None,
-        subscription_web_search=None,
+        subscription_web_search=False,
+        subscription_web_search_probe={
+            "model": "gpt-5.4-mini",
+            "effort": "low",
+            "checked_at_label": "2026-07-19 12:00:00 MSK",
+            "result_label": "Inconclusive: response did not match the probe contract",
+            "response_id": "resp-probe",
+            "observed": "text_output=false; function_calls=0 []; connection_test_ok=false; hosted_calls=0 []",
+            "error": "",
+        },
         model_connected=True,
         automation_ready=True,
         automation_error=None,
@@ -225,6 +235,9 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'value="uk"' in rendered
     assert 'name="history_limit"' in rendered
     assert 'name="max_reply_tokens"' in rendered
+    assert re.search(r'<option\s+value="low"\s+selected', rendered)
+    assert 'value="medium"' in rendered
+    assert 'value="high"' in rendered
     assert "Reply token budget" in rendered
     assert "custom APIs receive a hard token limit" in rendered
     assert 'name="silent_replies"' in rendered
@@ -264,6 +277,10 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "http://localhost:3090/chatgpt/oauth/callback" in rendered
     assert "localhost:1455" in rendered
     assert "keep the complete query string" in rendered
+    assert "Probe diagnostics" in rendered
+    assert "resp-probe" in rendered
+    assert "connection_test_ok=false" in rendered
+    assert "query results and credentials are not stored" in rendered
     assert "Model token usage" in rendered
     assert "1,434" in rendered
     assert "DM reply" in rendered

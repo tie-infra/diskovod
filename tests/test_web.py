@@ -10,7 +10,7 @@ from diskovod.automation import Automation
 from diskovod.chatgpt import ChatGPTClient
 from diskovod.discord import DiscordService
 from diskovod.store import Store
-from diskovod.models import AppSettings
+from diskovod.models import AppSettings, ChatCredentials
 from diskovod.web import (
     PERSONALITY_INSTRUCTIONS,
     WebApp,
@@ -88,6 +88,43 @@ def test_assistant_settings_defaults_preserve_only_admin_appearance():
     reset = assistant_settings_defaults(current)
 
     assert reset == AppSettings(admin_locale="fr", admin_theme="black")
+
+
+def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_chat_credentials(ChatCredentials("access", "refresh", 0, "account", None))
+    store.set_subscription_web_search_capability(
+        "gpt-model",
+        False,
+        {
+            "outcome": "response_mismatch",
+            "effort": "low",
+            "response_id": "resp-1",
+            "response_text_present": False,
+            "function_call_count": 1,
+            "function_call_names": ["connection_test"],
+            "connection_test_ok": True,
+            "hosted_call_count": 1,
+            "hosted_calls": [{"kind": "web_search_call", "status": "failed"}],
+        },
+    )
+    web = WebApp(
+        store,
+        cast(ChatGPTClient, None),
+        cast(DiscordService, None),
+        cast(Automation, None),
+        "a-long-admin-password",
+        "https://diskovod.example",
+    )
+
+    view = web._subscription_web_search_probe_view("gpt-model")
+
+    assert view["result_label"].startswith("Inconclusive")
+    assert view["response_id"] == "resp-1"
+    assert "connection_test_ok=true" in view["observed"]
+    assert "web_search_call:failed" in view["observed"]
+    assert "access" not in str(view)
+    store.close()
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from .localization import normalize_locale
 from .models import (
     ADMIN_THEMES,
     DEFAULT_BASE_INSTRUCTIONS,
+    REASONING_EFFORTS,
     AppSettings,
     ChatCredentials,
     CustomProvider,
@@ -175,6 +176,11 @@ class Store:
             str(saved.get("admin_theme", "system")) if saved.get("admin_theme") in ADMIN_THEMES else "system"
         )
         saved["prompt_locale"] = normalize_locale(str(saved.get("prompt_locale", "en")))
+        saved["reasoning_effort"] = (
+            str(saved.get("reasoning_effort", "low"))
+            if saved.get("reasoning_effort") in REASONING_EFFORTS
+            else "low"
+        )
         defaults = AppSettings().to_dict()
         known = {key: value for key, value in saved.items() if key in defaults}
         return AppSettings(**(defaults | known))
@@ -202,19 +208,23 @@ class Store:
         self._delete("chatgpt.credentials")
         self._delete("chatgpt.web_search_capability")
 
-    def set_subscription_web_search_capability(self, model: str, supported: bool) -> None:
+    def set_subscription_web_search_capability(
+        self,
+        model: str,
+        supported: bool | None,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> None:
         credentials = self.chat_credentials()
-        self._set(
-            "chatgpt.web_search_capability",
-            {
-                "model": model,
-                "account_id": credentials.account_id if credentials else None,
-                "supported": supported,
-                "checked_at": time.time(),
-            },
-        )
+        value = {
+            "model": model,
+            "account_id": credentials.account_id if credentials else None,
+            "supported": supported,
+            "checked_at": time.time(),
+            "diagnostics": diagnostics or {},
+        }
+        self._set("chatgpt.web_search_capability", value)
 
-    def subscription_web_search_capability(self, model: str) -> bool | None:
+    def subscription_web_search_probe(self, model: str) -> dict[str, Any] | None:
         value = self._get("chatgpt.web_search_capability", None)
         credentials = self.chat_credentials()
         if (
@@ -223,6 +233,12 @@ class Store:
             or value.get("model") != model
             or value.get("account_id") != credentials.account_id
         ):
+            return None
+        return value
+
+    def subscription_web_search_capability(self, model: str) -> bool | None:
+        value = self.subscription_web_search_probe(model)
+        if value is None:
             return None
         supported = value.get("supported")
         return supported if isinstance(supported, bool) else None

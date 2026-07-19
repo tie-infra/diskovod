@@ -555,10 +555,75 @@ async def test_subscription_web_search_probe_is_model_scoped_and_requires_termin
 
     assert await client.detect_subscription_web_search("gpt-model", "low") is True
     assert store.subscription_web_search_capability("gpt-model") is True
+    diagnostics = store.subscription_web_search_probe("gpt-model")["diagnostics"]
+    assert diagnostics == {
+        "outcome": "verified",
+        "response_id": "resp-probe",
+        "response_text_present": False,
+        "function_call_count": 1,
+        "function_call_names": ["connection_test"],
+        "connection_test_ok": True,
+        "hosted_call_count": 1,
+        "hosted_calls": [{"kind": "web_search_call", "status": "completed"}],
+        "effort": "low",
+    }
     assert client.hosted_web_search_available is False
     store.set_app_settings(AppSettings(model="gpt-model"))
     assert client.hosted_web_search_available is True
     assert session.last_kwargs["json"]["tools"][0] == WEB_SEARCH_TOOL
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_web_search_probe_records_inconclusive_response_diagnostics(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_chat_credentials(ChatCredentials("access", "refresh", time.time() + 3600, "account", None))
+    completed = {
+        "type": "response.completed",
+        "response": {
+            "id": "resp-mismatch",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "OK"}]}],
+        },
+    }
+    client = ChatGPTClient(store)
+    client.session = cast(
+        aiohttp.ClientSession,
+        FakeSession(FakeResponse(f"data: {json.dumps(completed)}\n\n".encode())),
+    )
+
+    assert await client.detect_subscription_web_search("gpt-model", "medium") is False
+    assert store.subscription_web_search_capability("gpt-model") is False
+    diagnostics = store.subscription_web_search_probe("gpt-model")["diagnostics"]
+    assert diagnostics["outcome"] == "response_mismatch"
+    assert diagnostics["response_id"] == "resp-mismatch"
+    assert diagnostics["response_text_present"] is True
+    assert diagnostics["function_call_count"] == 0
+    assert diagnostics["hosted_call_count"] == 0
+    assert diagnostics["effort"] == "medium"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_web_search_probe_records_request_errors_as_inconclusive(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_chat_credentials(ChatCredentials("access", "refresh", time.time() + 3600, "account", None))
+    event = {"type": "error", "error": {"message": "backend tool unavailable"}}
+    client = ChatGPTClient(store)
+    client.session = cast(
+        aiohttp.ClientSession,
+        FakeSession(FakeResponse(f"data: {json.dumps(event)}\n\n".encode())),
+    )
+
+    with pytest.raises(RuntimeError, match="backend tool unavailable"):
+        await client.detect_subscription_web_search("gpt-model", "high")
+
+    assert store.subscription_web_search_capability("gpt-model") is None
+    diagnostics = store.subscription_web_search_probe("gpt-model")["diagnostics"]
+    assert diagnostics["outcome"] == "request_error"
+    assert diagnostics["effort"] == "high"
+    assert "backend tool unavailable" in diagnostics["error"]
     store.close()
 
 

@@ -69,6 +69,7 @@ TEXT_EXTENSIONS = frozenset(
 
 DEFAULT_BASE_INSTRUCTIONS = prompts_for("en").base
 ADMIN_THEMES = frozenset({"system", "light", "dark", "black"})
+REASONING_EFFORTS = frozenset({"low", "medium", "high"})
 
 
 def _content_type(filename: str, value: object) -> str:

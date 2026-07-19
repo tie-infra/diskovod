@@ -641,26 +641,47 @@ class ChatGPTClient:
     ) -> bool:
         """Probe the private subscription transport without assuming public API parity."""
         text = tool_text(locale)
-        result = await self._complete_subscription(
-            [
-                {
-                    "role": "user",
-                    "content": text["web_test_input"],
-                }
-            ],
-            text["web_test_system"],
+        try:
+            result = await self._complete_subscription(
+                [
+                    {
+                        "role": "user",
+                        "content": text["web_test_input"],
+                    }
+                ],
+                text["web_test_system"],
+                model,
+                effort,
+                "web_search_capability_probe",
+                64,
+                None,
+                locale,
+                [WEB_SEARCH_TOOL, self._connection_test_tool(locale)],
+                "required",
+                None,
+            )
+        except Exception as exc:
+            detail = " ".join(str(exc).split())[:1000]
+            self.store.set_subscription_web_search_capability(
+                model,
+                None,
+                {"outcome": "request_error", "effort": effort, "error": detail},
+            )
+            log.warning("Subscription web-search probe request failed for %s: %s", model, detail)
+            raise
+        diagnostics = self._web_search_probe_diagnostics(result)
+        diagnostics["effort"] = effort
+        supported = diagnostics["outcome"] == "verified"
+        self.store.set_subscription_web_search_capability(model, supported, diagnostics)
+        log.info(
+            "Subscription web-search probe for %s: outcome=%s response_id=%s "
+            "hosted_calls=%s function_calls=%s",
             model,
-            effort,
-            "web_search_capability_probe",
-            64,
-            None,
-            locale,
-            [WEB_SEARCH_TOOL, self._connection_test_tool(locale)],
-            "required",
-            None,
+            diagnostics["outcome"],
+            diagnostics["response_id"] or "none",
+            diagnostics["hosted_calls"],
+            diagnostics["function_call_names"],
         )
-        supported = self._is_successful_web_search_probe(result)
-        self.store.set_subscription_web_search_capability(model, supported)
         return supported
 
     async def _probe_native_function_calls(
@@ -752,17 +773,36 @@ class ChatGPTClient:
 
     @staticmethod
     def _is_successful_web_search_probe(result: ModelResult) -> bool:
-        return (
-            not result.text
-            and len(result.function_calls) == 1
+        return ChatGPTClient._web_search_probe_diagnostics(result)["outcome"] == "verified"
+
+    @staticmethod
+    def _web_search_probe_diagnostics(result: ModelResult) -> dict[str, Any]:
+        terminal_call_valid = (
+            len(result.function_calls) == 1
             and result.function_calls[0].name == "connection_test"
             and result.function_calls[0].parsed_arguments == {"ok": True}
-            and 1 <= len(result.hosted_tool_calls) <= 2
-            and all(
-                call.kind == "web_search_call" and call.status == "completed"
-                for call in result.hosted_tool_calls
-            )
         )
+        hosted_calls_valid = 1 <= len(result.hosted_tool_calls) <= 2 and all(
+            call.kind == "web_search_call" and call.status == "completed" for call in result.hosted_tool_calls
+        )
+        response_text_present = bool(result.text)
+        return {
+            "outcome": (
+                "verified"
+                if not response_text_present and terminal_call_valid and hosted_calls_valid
+                else "response_mismatch"
+            ),
+            "response_id": result.provider_response_id,
+            "response_text_present": response_text_present,
+            "function_call_count": len(result.function_calls),
+            "function_call_names": [call.name[:100] for call in result.function_calls[:5]],
+            "connection_test_ok": terminal_call_valid,
+            "hosted_call_count": len(result.hosted_tool_calls),
+            "hosted_calls": [
+                {"kind": call.kind[:100], "status": call.status[:100]}
+                for call in result.hosted_tool_calls[:5]
+            ],
+        }
 
     @staticmethod
     def _responses_conclusively_unsupported(status: int, detail: str) -> bool:

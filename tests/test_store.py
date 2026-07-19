@@ -82,6 +82,14 @@ def test_localization_settings_round_trip_and_unknown_values_fall_back(tmp_path:
     store.close()
 
 
+def test_invalid_saved_reasoning_effort_falls_back_to_api_default(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store.set_app_settings(AppSettings(reasoning_effort="Низкое"))
+
+    assert store.app_settings().reasoning_effort == "low"
+    store.close()
+
+
 def test_admin_theme_round_trip_and_unknown_value_falls_back(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
 
@@ -176,10 +184,19 @@ def test_custom_provider_capabilities_round_trip(tmp_path: Path):
 def test_subscription_web_search_capability_is_scoped_to_account_and_model(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
     store.set_chat_credentials(ChatCredentials("access", "refresh", 123, "account-1", None))
-    store.set_subscription_web_search_capability("gpt-model", True)
+    store.set_subscription_web_search_capability(
+        "gpt-model",
+        True,
+        {"outcome": "verified", "response_id": "resp-1"},
+    )
 
     assert store.subscription_web_search_capability("gpt-model") is True
+    assert store.subscription_web_search_probe("gpt-model")["diagnostics"] == {
+        "outcome": "verified",
+        "response_id": "resp-1",
+    }
     assert store.subscription_web_search_capability("different-model") is None
+    assert store.subscription_web_search_probe("different-model") is None
 
     store.set_chat_credentials(ChatCredentials("access", "refresh", 123, "account-2", None))
     assert store.subscription_web_search_capability("gpt-model") is None

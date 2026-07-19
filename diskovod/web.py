@@ -31,7 +31,7 @@ from .localization import (
     prompts_for,
     ui_text,
 )
-from .models import ADMIN_THEMES, AppSettings, CustomProvider
+from .models import ADMIN_THEMES, REASONING_EFFORTS, AppSettings, CustomProvider
 from .security import password_matches
 from .store import Store
 
@@ -200,6 +200,9 @@ class WebApp:
                     "chat_email": self.chatgpt.email,
                     "chat_error": self.chatgpt.last_error,
                     "subscription_web_search": self.store.subscription_web_search_capability(
+                        app_settings.model
+                    ),
+                    "subscription_web_search_probe": self._subscription_web_search_probe_view(
                         app_settings.model
                     ),
                     "model_connected": self.chatgpt.connected,
@@ -522,6 +525,8 @@ class WebApp:
                 return self._back(tab="assistant", error=self._t("timezone_invalid"))
             if provider not in PROVIDERS:
                 return self._back(tab="assistant", error=self._t("unknown_model_provider"))
+            if reasoning_effort not in REASONING_EFFORTS:
+                return self._back(tab="assistant", error=self._t("unknown_reasoning_effort"))
             if conversation_default not in {"opt_in", "opt_out"}:
                 return self._back(tab="assistant", error=self._t("conversation_default_invalid"))
             if provider == "custom" and not self.chatgpt.custom_connected:
@@ -774,6 +779,49 @@ class WebApp:
                 max(1, int((until - now + 59) // 60)) if until and until > now else 0
             )
         return result
+
+    def _subscription_web_search_probe_view(self, model: str) -> dict[str, Any] | None:
+        report = self.store.subscription_web_search_probe(model)
+        if report is None:
+            return None
+        diagnostics = report.get("diagnostics")
+        diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+        outcome = diagnostics.get("outcome")
+        if outcome not in {"verified", "response_mismatch", "request_error"}:
+            outcome = "verified" if report.get("supported") is True else "response_mismatch"
+        checked_at = report.get("checked_at")
+        checked_at_label = (
+            datetime.fromtimestamp(float(checked_at)).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            if isinstance(checked_at, (int, float))
+            else "—"
+        )
+        function_names = diagnostics.get("function_call_names")
+        function_names = [str(name) for name in function_names] if isinstance(function_names, list) else []
+        hosted_calls = diagnostics.get("hosted_calls")
+        hosted_labels = []
+        for call in hosted_calls if isinstance(hosted_calls, list) else []:
+            if isinstance(call, dict):
+                hosted_labels.append(f"{call.get('kind', '?')}:{call.get('status', '?')}")
+        observed = "—"
+        if diagnostics and outcome != "request_error":
+            observed = "; ".join(
+                (
+                    f"text_output={str(bool(diagnostics.get('response_text_present'))).lower()}",
+                    f"function_calls={diagnostics.get('function_call_count', 0)}"
+                    f" [{', '.join(function_names)}]",
+                    f"connection_test_ok={str(bool(diagnostics.get('connection_test_ok'))).lower()}",
+                    f"hosted_calls={diagnostics.get('hosted_call_count', 0)} [{', '.join(hosted_labels)}]",
+                )
+            )
+        return {
+            "model": str(report.get("model") or model),
+            "effort": str(diagnostics.get("effort") or "—"),
+            "checked_at_label": checked_at_label,
+            "result_label": self._t(f"web_search_probe_result_{outcome}"),
+            "response_id": str(diagnostics.get("response_id") or "—"),
+            "observed": observed,
+            "error": str(diagnostics.get("error") or ""),
+        }
 
     def _personality_view(self) -> dict[str, Any] | None:
         personality = self.store.personality()

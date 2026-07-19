@@ -126,6 +126,33 @@
                 {% endif %}
               </small>
             </form>
+            {% if subscription_web_search_probe %}
+              <details>
+                <summary>{{ t("web_search_probe_details") }}</summary>
+                <p class="field-help">{{ t("web_search_probe_method") }}</p>
+                <dl class="captcha-details">
+                  <dt>{{ t("web_search_probe_result") }}</dt>
+                  <dd>{{ subscription_web_search_probe.result_label }}</dd>
+                  <dt>{{ t("model") }}</dt>
+                  <dd><code>{{ subscription_web_search_probe.model }}</code></dd>
+                  <dt>{{ t("reasoning") }}</dt>
+                  <dd><code>{{ subscription_web_search_probe.effort }}</code></dd>
+                  <dt>{{ t("web_search_probe_transport") }}</dt>
+                  <dd><code>ChatGPT Subscription /responses (streaming)</code></dd>
+                  <dt>{{ t("web_search_probe_checked_at") }}</dt>
+                  <dd>{{ subscription_web_search_probe.checked_at_label }}</dd>
+                  <dt>{{ t("web_search_probe_response_id") }}</dt>
+                  <dd><code>{{ subscription_web_search_probe.response_id }}</code></dd>
+                  <dt>{{ t("web_search_probe_observed") }}</dt>
+                  <dd><code>{{ subscription_web_search_probe.observed }}</code></dd>
+                  {% if subscription_web_search_probe.error %}
+                    <dt>{{ t("errors") }}</dt>
+                    <dd><code>{{ subscription_web_search_probe.error }}</code></dd>
+                  {% endif %}
+                </dl>
+                <p class="field-help">{{ t("web_search_probe_interpretation") }}</p>
+              </details>
+            {% endif %}
           {% endif %}
 
           {% if chat_connected and active_provider != "chatgpt" %}
@@ -575,7 +602,10 @@
                 {{ t("reasoning") }}
                 <select name="reasoning_effort">
                   {% for effort in ["low", "medium", "high"] %}
-                    <option {% if effort == app_settings.reasoning_effort %}selected{% endif %}>
+                    <option
+                      value="{{ effort }}"
+                      {% if effort == app_settings.reasoning_effort %}selected{% endif %}
+                    >
                       {{ t(effort) }}
                     </option>
                   {% endfor %}

@@ -17,7 +17,7 @@ def _access_record(status_code: int) -> logging.LogRecord:
         __file__,
         1,
         '%s - "%s %s HTTP/%s" %d',
-        ("127.0.0.1", "GET", "/", "1.1", status_code),
+        ("[::1]", "GET", "/", "1.1", status_code),
         None,
     )
 
@@ -46,7 +46,7 @@ def test_info_access_handler_suppresses_success_after_filtering() -> None:
     logger.handle(_access_record(200))
     logger.handle(_access_record(401))
 
-    assert output.getvalue().splitlines() == ['127.0.0.1 - "GET / HTTP/1.1" 401']
+    assert output.getvalue().splitlines() == ['[::1] - "GET / HTTP/1.1" 401']
 
 
 @pytest.mark.asyncio

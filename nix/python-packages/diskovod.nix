@@ -12,6 +12,7 @@
   langgraph-checkpoint-sqlite,
   pytest,
   pytest-asyncio,
+  pydantic,
   python-multipart,
   setuptools,
   uvicorn,
@@ -36,6 +37,7 @@ buildPythonPackage {
     langchain-openai
     langgraph
     langgraph-checkpoint-sqlite
+    pydantic
     python-multipart
     uvicorn
   ];

@@ -1,0 +1,121 @@
+import json
+from datetime import datetime
+from typing import Annotated, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from langchain.tools import ToolRuntime
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.types import Command
+from pydantic import Field, StringConstraints
+
+from .agent_actions import AgentActionGateway
+from .agent_types import AgentRuntimeContext, DiskovodAgentState
+from .calculation import evaluate_expression
+from .localization import tool_text
+
+
+MessageText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+ExpressionText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+
+
+def localized_agent_tools(locale: str, gateway: AgentActionGateway) -> list[BaseTool]:
+    text = tool_text(locale)
+    invalid = lambda _: text["invalid_arguments"]  # noqa: E731
+
+    async def get_current_datetime(
+        timezone: Annotated[str | None, Field(description=text["timezone"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> dict[str, Any]:
+        zone_name = timezone or runtime.context.owner_timezone
+        try:
+            zone = ZoneInfo(zone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            return {"ok": False, "error": text["unknown_timezone"]}
+        current = datetime.now(zone)
+        offset = current.strftime("%z")
+        return {
+            "ok": True,
+            "iso": current.isoformat(timespec="seconds"),
+            "date": current.date().isoformat(),
+            "time": current.time().isoformat(timespec="seconds"),
+            "weekday": text["weekdays"][current.weekday()],
+            "utc_offset": offset[:3] + ":" + offset[3:],
+            "timezone": zone_name,
+        }
+
+    async def calculate(
+        expression: Annotated[ExpressionText, Field(description=text["expression"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> dict[str, Any]:
+        del runtime
+        try:
+            value = evaluate_expression(expression)
+        except (SyntaxError, TypeError, ValueError, ZeroDivisionError, OverflowError):
+            return {"ok": False, "error": text["invalid_expression"]}
+        return {"ok": True, "result": value}
+
+    async def send_messages(
+        messages: Annotated[
+            list[MessageText],
+            Field(min_length=1, max_length=5, description=text["messages"]),
+        ],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+        continue_after_sending: Annotated[
+            bool,
+            Field(description=text["continue_after_sending"]),
+        ] = True,
+    ) -> Command:
+        call_id = runtime.tool_call_id or "missing-tool-call-id"
+        deliveries = await gateway.send_messages(
+            runtime.context,
+            tuple(messages),
+            tool_call_id=call_id,
+        )
+        accepted = len(deliveries) == len(messages) and all(item.accepted for item in deliveries)
+        latest = runtime.state.get("messages", [])[-1] if runtime.state.get("messages") else None
+        calls = latest.tool_calls if isinstance(latest, AIMessage) else []
+        sole_pending_call = len(calls) == 1 and calls[0].get("id") == call_id
+        terminate = not continue_after_sending and accepted and sole_pending_call
+        result = {
+            "ok": accepted,
+            "deliveries": [item.to_dict() for item in deliveries],
+            "continue_after_sending": not terminate,
+            "termination_requested": not continue_after_sending,
+            "termination_honored": terminate,
+        }
+        update: dict[str, Any] = {
+            "messages": [
+                ToolMessage(
+                    content=json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+                    tool_call_id=call_id,
+                    name="send_messages",
+                )
+            ]
+        }
+        if accepted:
+            update["successful_written_sends"] = 1
+        if terminate:
+            update["terminate_after_send"] = True
+        return Command(update=update)
+
+    return [
+        StructuredTool.from_function(
+            coroutine=get_current_datetime,
+            name="get_current_datetime",
+            description=text["current_datetime"],
+            handle_validation_error=invalid,
+        ),
+        StructuredTool.from_function(
+            coroutine=calculate,
+            name="calculate",
+            description=text["calculate"],
+            handle_validation_error=invalid,
+        ),
+        StructuredTool.from_function(
+            coroutine=send_messages,
+            name="send_messages",
+            description=text["send_messages"],
+            handle_validation_error=invalid,
+        ),
+    ]

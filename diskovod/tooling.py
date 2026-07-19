@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import ast
 import json
-import math
-import operator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .localization import inline_tool_text, tool_text
+from .calculation import evaluate_expression
 from .models import FunctionCall
 
 ALLOWED_REACTIONS = frozenset(
@@ -220,7 +218,7 @@ def execute_read_only_tool(
         if not isinstance(expression, str) or not 1 <= len(expression) <= 200:
             return {"ok": False, "error": text["expression_length"]}
         try:
-            value = _evaluate_expression(expression)
+            value = evaluate_expression(expression)
         except (SyntaxError, TypeError, ValueError, ZeroDivisionError, OverflowError):
             return {"ok": False, "error": text["invalid_expression"]}
         return {"ok": True, "result": value}
@@ -299,45 +297,3 @@ def validate_hosted_web_search_calls(
     if not enabled or len(calls) > MAX_HOSTED_WEB_SEARCH_CALLS:
         return False
     return all(call.kind == "web_search_call" and call.status == "completed" for call in calls)
-
-
-_BINARY_OPERATORS = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.FloorDiv: operator.floordiv,
-    ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
-}
-_UNARY_OPERATORS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
-
-
-def _evaluate_expression(expression: str) -> int | float:
-    tree = ast.parse(expression, mode="eval")
-    count = 0
-
-    def evaluate(node: ast.AST, depth: int = 0) -> int | float:
-        nonlocal count
-        count += 1
-        if count > 50 or depth > 12:
-            raise ValueError("expression is too complex")
-        if isinstance(node, ast.Expression):
-            return evaluate(node.body, depth + 1)
-        if isinstance(node, ast.Constant) and type(node.value) in {int, float}:
-            value = node.value
-        elif isinstance(node, ast.BinOp) and type(node.op) in _BINARY_OPERATORS:
-            left = evaluate(node.left, depth + 1)
-            right = evaluate(node.right, depth + 1)
-            if isinstance(node.op, ast.Pow) and abs(right) > 12:
-                raise ValueError("exponent is too large")
-            value = _BINARY_OPERATORS[type(node.op)](left, right)
-        elif isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPERATORS:
-            value = _UNARY_OPERATORS[type(node.op)](evaluate(node.operand, depth + 1))
-        else:
-            raise ValueError("unsupported expression")
-        if not isinstance(value, (int, float)) or not math.isfinite(value) or abs(value) > 10**100:
-            raise OverflowError("result is too large")
-        return value
-
-    return evaluate(tree)

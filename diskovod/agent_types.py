@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, NotRequired
+from operator import add
+from typing import Annotated, Any, NotRequired
 
 from langchain.agents import AgentState
 
@@ -46,6 +47,7 @@ class DiskovodAgentState(AgentState):
 
     logical_request_id: NotRequired[str]
     claimed_event_ids: NotRequired[list[str]]
-    successful_written_sends: NotRequired[int]
+    successful_written_sends: NotRequired[Annotated[int, add]]
+    terminate_after_send: NotRequired[bool]
     live_injection_batches: NotRequired[int]
     summary_metadata: NotRequired[dict[str, Any]]

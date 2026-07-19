@@ -25,7 +25,13 @@ from .localization import (
     prompts_for,
     ui_text,
 )
-from .models import ADMIN_THEMES, REASONING_EFFORTS, AppSettings, CustomProvider
+from .models import (
+    ADMIN_THEMES,
+    REASONING_EFFORTS,
+    AssistantProfile,
+    AutomationSettings,
+    CustomProvider,
+)
 from .oauth import ChatGPTAccount
 from .providers import (
     ModelConfiguration,
@@ -69,13 +75,8 @@ def localized_base_instructions(previous_locale: str, new_locale: str, submitted
     return submitted
 
 
-def assistant_settings_defaults(current: AppSettings) -> AppSettings:
-    """Reset assistant behavior without changing admin appearance preferences."""
-    return replace(
-        AppSettings(),
-        admin_locale=current.admin_locale,
-        admin_theme=current.admin_theme,
-    )
+def assistant_settings_defaults() -> AssistantProfile:
+    return AssistantProfile()
 
 
 class WebApp:
@@ -165,7 +166,9 @@ class WebApp:
             _: str = Depends(auth),
         ):
             custom_provider = self.store.custom_provider()
-            app_settings = self.store.app_settings()
+            interface_settings = self.store.interface_settings()
+            assistant_profile = self.store.assistant_profile()
+            automation_settings = self.store.automation_settings()
             model_view = self._model_view()
             active_tab = tab if tab in ADMIN_TABS else "connections"
             draft = self._provider_draft(provider_draft)
@@ -201,17 +204,19 @@ class WebApp:
                 request,
                 "index.html",
                 {
-                    "app_settings": app_settings,
+                    "interface_settings": interface_settings,
+                    "assistant_profile": assistant_profile,
+                    "automation_settings": automation_settings,
                     "model_view": model_view,
                     "active_tab": active_tab,
                     "assistant_display_name": assistant_name_for(
-                        app_settings.prompt_locale,
-                        app_settings.assistant_name,
+                        assistant_profile.prompt_locale,
+                        assistant_profile.assistant_name,
                     ),
-                    "default_assistant_name": assistant_name_for(app_settings.prompt_locale),
-                    "locale": app_settings.admin_locale,
+                    "default_assistant_name": assistant_name_for(assistant_profile.prompt_locale),
+                    "locale": interface_settings.locale,
                     "locales": SUPPORTED_LOCALES,
-                    "t": lambda key, **values: ui_text(app_settings.admin_locale, key, **values),
+                    "t": lambda key, **values: ui_text(interface_settings.locale, key, **values),
                     "public_url": self.public_url,
                     "chat_connected": self.account.connected,
                     "chat_email": self.account.email,
@@ -260,8 +265,8 @@ class WebApp:
         ):
             if admin_theme not in ADMIN_THEMES:
                 return self._back(tab=tab, error=self._t("unknown_theme"))
-            current = self.store.app_settings()
-            await self.store.aset_app_settings(replace(current, admin_theme=admin_theme))
+            current = self.store.interface_settings()
+            await self.store.aset_interface_settings(replace(current, theme=admin_theme))
             return self._back(tab=tab, message=self._t("theme_saved"))
 
         @self.app.post("/chatgpt/connect")
@@ -369,7 +374,7 @@ class WebApp:
                 "output_token_limit": output_token_limit is not None,
                 "hosted_web_search": hosted_web_search is not None and protocol == "responses",
             }
-            if self.store.app_settings().enabled and not capabilities["native_function_calls"]:
+            if self.store.automation_settings().enabled and not capabilities["native_function_calls"]:
                 return self._back(error=self._t("disable_automation_for_provider"))
             saved_provider = CustomProvider(name, base_url, api_key, protocol, capabilities)
             await self.store.aset_custom_provider(saved_provider)
@@ -507,7 +512,7 @@ class WebApp:
             custom = self.store.custom_provider()
             if (
                 provider == "custom"
-                and self.store.app_settings().enabled
+                and self.store.automation_settings().enabled
                 and custom
                 and not custom.supports("native_function_calls")
             ):
@@ -614,22 +619,26 @@ class WebApp:
                 or min_human_quiet_minutes > max_human_quiet_minutes
             ):
                 return self._back(tab="assistant", error=self._t("minimum_exceeds_maximum"))
-            previous = self.store.app_settings()
+            previous_interface = self.store.interface_settings()
+            previous_profile = self.store.assistant_profile()
             normalized_prompt_locale = normalize_locale(prompt_locale)
             base_instructions = localized_base_instructions(
-                previous.prompt_locale,
+                previous_profile.prompt_locale,
                 normalized_prompt_locale,
                 base_instructions,
             )
-            value = AppSettings(
-                enabled=enabled is not None,
-                silent_replies=silent_replies is not None,
-                robot_prefix=robot_prefix is not None,
-                admin_locale=normalize_locale(admin_locale),
-                admin_theme=previous.admin_theme,
+            interface_value = replace(previous_interface, locale=normalize_locale(admin_locale))
+            profile_value = AssistantProfile(
                 prompt_locale=normalized_prompt_locale,
                 assistant_name=assistant_name,
                 owner_timezone=owner_timezone,
+                owner_details=owner_details,
+                base_instructions=base_instructions,
+            )
+            automation_value = AutomationSettings(
+                enabled=enabled is not None,
+                silent_replies=silent_replies is not None,
+                robot_prefix=robot_prefix is not None,
                 min_message_gap_seconds=max(0.0, min(min_message_gap_seconds, 30.0)),
                 max_message_gap_seconds=max(0.0, min(max_message_gap_seconds, 30.0)),
                 default_conversation_enabled=conversation_default == "opt_in",
@@ -640,10 +649,10 @@ class WebApp:
                 max_typing_cps=max_typing_cps,
                 min_human_quiet_minutes=max(0.0, min_human_quiet_minutes),
                 max_human_quiet_minutes=max(0.0, max_human_quiet_minutes),
-                owner_details=owner_details,
-                base_instructions=base_instructions,
             )
-            await self.store.aset_app_settings(value)
+            await self.store.aset_interface_settings(interface_value)
+            await self.store.aset_assistant_profile(profile_value)
+            await self.store.aset_automation_settings(automation_value)
             await self._save_provider_selection(
                 provider,
                 model=model,
@@ -652,7 +661,7 @@ class WebApp:
             )
             return self._back(
                 tab="assistant",
-                message=ui_text(value.admin_locale, "settings_saved"),
+                message=ui_text(interface_value.locale, "settings_saved"),
             )
 
         @self.app.post("/settings/reset")
@@ -660,18 +669,18 @@ class WebApp:
             confirm: str = Form(""),
             _: str = Depends(auth),
         ):
-            current = self.store.app_settings()
+            interface = self.store.interface_settings()
             if confirm != "reset":
                 return self._back(
                     tab="assistant",
-                    error=ui_text(current.admin_locale, "assistant_settings_reset_confirm"),
+                    error=ui_text(interface.locale, "assistant_settings_reset_confirm"),
                 )
-            value = assistant_settings_defaults(current)
-            await self.store.aset_app_settings(value)
+            await self.store.aset_assistant_profile(assistant_settings_defaults())
+            await self.store.aset_automation_settings(AutomationSettings())
             await self.models.arefresh_prompt_cache_identity()
             return self._back(
                 tab="assistant",
-                message=ui_text(value.admin_locale, "assistant_settings_reset"),
+                message=ui_text(interface.locale, "assistant_settings_reset"),
             )
 
         @self.app.post("/personality/infer")
@@ -972,7 +981,7 @@ class WebApp:
             escalation["delivery_error"] = None
             escalation["requested_at"] = escalation["created_at"]
             escalation["reason_label"] = ui_text(
-                self.store.app_settings().admin_locale,
+                self.store.interface_settings().locale,
                 f"reason_{escalation['reason']}",
             )
             escalation["requested_at_label"] = (
@@ -984,7 +993,7 @@ class WebApp:
 
     async def _database_view(self, table: str, page: int, query: str) -> dict:
         tables = await self.store.adatabase_tables()
-        locale = self.store.app_settings().admin_locale
+        locale = self.store.interface_settings().locale
         for item in tables:
             item["label"] = ui_text(locale, f"table_{item['name']}")
         table_names = {item["name"] for item in tables}
@@ -1090,7 +1099,7 @@ class WebApp:
         return configuration.capabilities.hosted_web_search if configuration else None
 
     async def _infer_personality(self, samples: str, *, source: str) -> RedirectResponse:
-        cfg = self.store.app_settings()
+        cfg = self.store.assistant_profile()
         source_hash = personality_source_hash(samples, cfg.prompt_locale)
         cached = self.store.personality()
         if cached and cached["source_hash"] == source_hash:
@@ -1113,7 +1122,7 @@ class WebApp:
         return self.public_url + "/" + path.lstrip("/")
 
     def _t(self, key: str, **values: object) -> str:
-        locale = self.store.app_settings().admin_locale if self.store is not None else "en"
+        locale = self.store.interface_settings().locale if self.store is not None else "en"
         return ui_text(locale, key, **values)
 
     def _localized_known_error(self, error: Exception) -> str:

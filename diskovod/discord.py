@@ -322,7 +322,7 @@ class DiscordService:
         messages: tuple[str, ...],
     ) -> list[DeliveryRecord]:
         channel = self._channel(context.channel_id)
-        settings = self.store.app_settings()
+        settings = self.store.automation_settings()
         conversation = await self.store.aconversation(context.channel_id)
         inline = bool(conversation and conversation["mode"] == "inline")
         records: list[DeliveryRecord] = []

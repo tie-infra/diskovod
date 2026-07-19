@@ -62,7 +62,7 @@ class ProviderSetup:
         configuration: ModelConfiguration,
         credentials: ProviderCredentials,
     ) -> CapabilityProbe:
-        text = tool_text(self.store.app_settings().prompt_locale)
+        text = tool_text(self.store.assistant_profile().prompt_locale)
 
         @tool("diskovod_setup_probe", description=text["connection_test_tool"])
         def diskovod_setup_probe(value: str) -> str:
@@ -121,7 +121,7 @@ class ProviderSetup:
         credentials: ProviderCredentials,
     ) -> CapabilityProbe:
         model = self.models.build_configuration(configuration, credentials)
-        text = tool_text(self.store.app_settings().prompt_locale)
+        text = tool_text(self.store.assistant_profile().prompt_locale)
         prompt = f"{text['web_test_system']} {text['web_test_input']}"
         request = {
             "messages": [{"role": "user", "content": prompt}],

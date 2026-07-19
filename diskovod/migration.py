@@ -319,7 +319,7 @@ class LegacyMigrator:
         rendered = "\n".join(f"[{item['id']} {self._role(item)}] {item['content']}" for item in messages)[
             :100_000
         ]
-        locale = self.store.app_settings().prompt_locale
+        locale = self.store.assistant_profile().prompt_locale
         if self.runtime.models.ready:
             try:
                 response = await self.runtime.models.build_model().ainvoke(
@@ -399,8 +399,9 @@ class LegacyMigrator:
                 if exists
                 else []
             )
-        settings = self.store.app_settings()
-        localized = runtime_context_text(settings.prompt_locale)
+        interface = self.store.interface_settings()
+        profile = self.store.assistant_profile()
+        localized = runtime_context_text(profile.prompt_locale)
         for row in rows:
             channel_id = str(row["channel_id"])
             account_id = await self.runtime._account_id(channel_id)
@@ -416,9 +417,9 @@ class LegacyMigrator:
                 channel_id=channel_id,
                 participant_ids=(),
                 owner_id=account_id,
-                ui_locale=settings.admin_locale,
-                prompt_locale=settings.prompt_locale,
-                assistant_name=assistant_name_for(settings.prompt_locale, settings.assistant_name),
+                ui_locale=interface.locale,
+                prompt_locale=profile.prompt_locale,
+                assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
                 automation_mode="automatic",
                 force_reply=False,
                 provider_id="migration",
@@ -427,7 +428,7 @@ class LegacyMigrator:
                 capabilities=CapabilityProfile(),
                 trace_id=trace_id,
                 thread_id=thread_id,
-                owner_timezone=settings.owner_timezone,
+                owner_timezone=profile.owner_timezone,
                 trigger_message_id=str(row["trigger_message_id"]),
                 permissions=frozenset({"owner_escalation"}),
             )
@@ -445,9 +446,9 @@ class LegacyMigrator:
                 model,
                 _MigrationEscalationGateway(self.runtime, str(row["trigger_message_id"])),
                 AgentPrompt(
-                    settings.prompt_locale,
+                    profile.prompt_locale,
                     context.assistant_name,
-                    settings.base_instructions,
+                    profile.base_instructions,
                 ),
                 self.runtime.http,
                 checkpointer=self.runtime.checkpointer,
@@ -478,7 +479,7 @@ class LegacyMigrator:
                 await self.store.aset_interrupt_state(escalation_id, "claimed")
 
     async def _migrate_owner_details(self) -> None:
-        details = self.store.app_settings().owner_details.strip()
+        details = self.store.assistant_profile().owner_details.strip()
         if details:
             await self.runtime.memory.aput(
                 ("account", await self.runtime._account_id("migration"), "preferences"),

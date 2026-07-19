@@ -4,7 +4,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from diskovod.localization import SUPPORTED_LOCALES, ui_text
-from diskovod.models import AppSettings
+from diskovod.models import AssistantProfile, AutomationSettings, InterfaceSettings
 
 
 def test_admin_template_is_script_free_and_contains_human_quiet_controls():
@@ -15,7 +15,9 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     )
     template = environment.get_template("index.html")
     context = dict(
-        app_settings=AppSettings(),
+        interface_settings=InterfaceSettings(),
+        assistant_profile=AssistantProfile(),
+        automation_settings=AutomationSettings(),
         model_view={
             "model": "gpt-5.4-mini",
             "reasoning_effort": "low",

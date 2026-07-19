@@ -182,7 +182,7 @@ class ModelService:
         """One-time transformer for installations created before configuration versions."""
         if self.configuration is not None:
             return None
-        raw = self.store._get("app.settings", {})
+        raw = self.store._get("legacy.model_selection", {})
         provider_id = str(raw.get("provider") or "chatgpt")
         model_id = str(raw.get("model") or "gpt-5.4-mini")
         effort = str(raw.get("reasoning_effort") or "low")
@@ -196,23 +196,27 @@ class ModelService:
             provider = self.store.custom_provider()
             if provider is None:
                 return None
-            return await self.asave_custom_openai(
+            version_id = await self.asave_custom_openai(
                 provider,
                 model_id=model_id,
                 reasoning_effort=effort,
                 max_output_tokens=max_output_tokens,
             )
+            await self.store._adelete("legacy.model_selection")
+            return version_id
         if self.account.connected:
             capabilities = ProviderCapabilities(
                 native_tools=True,
                 hosted_web_search=False,
             )
-            return await self.asave_subscription(
+            version_id = await self.asave_subscription(
                 model_id=model_id,
                 reasoning_effort=effort,
                 max_output_tokens=max_output_tokens,
                 capabilities=capabilities,
             )
+            await self.store._adelete("legacy.model_selection")
+            return version_id
         return None
 
     async def arefresh_prompt_cache_identity(self) -> int | None:
@@ -245,14 +249,14 @@ class ModelService:
         )
 
     def _prompt_cache_key(self, **model_identity: str) -> str:
-        settings = self.store.app_settings()
+        profile = self.store.assistant_profile()
         personality = self.store.personality() or {}
         identity = {
             **model_identity,
-            "locale": settings.prompt_locale,
-            "assistant_name": settings.assistant_name,
-            "base_instructions": settings.base_instructions,
-            "owner_details": settings.owner_details,
+            "locale": profile.prompt_locale,
+            "assistant_name": profile.assistant_name,
+            "base_instructions": profile.base_instructions,
+            "owner_details": profile.owner_details,
             "personality_hash": personality.get("source_hash"),
             "tool_schema": "langgraph-v1",
         }

@@ -10,7 +10,7 @@ from starlette.requests import Request
 
 from diskovod.discord import DiscordService
 from diskovod.store import Store
-from diskovod.models import AppSettings
+from diskovod.models import AssistantProfile
 from diskovod.web import (
     PERSONALITY_INSTRUCTIONS,
     WebApp,
@@ -74,20 +74,10 @@ def test_auth_callbacks_and_redirects_use_public_url():
     )
 
 
-def test_assistant_settings_defaults_preserve_only_admin_appearance():
-    current = AppSettings(
-        enabled=True,
-        admin_locale="fr",
-        admin_theme="black",
-        prompt_locale="ja",
-        assistant_name="Helper",
-        owner_details="Private details",
-        base_instructions="Custom instructions",
-    )
+def test_assistant_settings_defaults_reset_the_assistant_domain():
+    reset = assistant_settings_defaults()
 
-    reset = assistant_settings_defaults(current)
-
-    assert reset == AppSettings(admin_locale="fr", admin_theme="black")
+    assert reset == AssistantProfile()
 
 
 async def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path):

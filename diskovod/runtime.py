@@ -131,7 +131,7 @@ class AgentService:
         conversation = await self.store.aconversation(channel_id)
         if conversation and conversation["mode"] == "inline" and not conversation["paused"]:
             return time.time(), False
-        settings = self.store.app_settings()
+        settings = self.store.automation_settings()
         quiet_minutes = random.uniform(
             settings.min_human_quiet_minutes,
             settings.max_human_quiet_minutes,
@@ -190,7 +190,7 @@ class AgentService:
     ) -> tuple[bool, bool]:
         mode = await self._mode(channel_id)
         automate = force or (
-            self.store.app_settings().enabled
+            self.store.automation_settings().enabled
             and await self.store.acan_automate(channel_id)
             and (participant_role == "peer" or mode == "inline")
         )
@@ -248,7 +248,7 @@ class AgentService:
         account_id: str,
         observed_at: float | None,
     ) -> tuple[bool, bool]:
-        automate = self.store.app_settings().enabled and await self.store.acan_automate(channel_id)
+        automate = self.store.automation_settings().enabled and await self.store.acan_automate(channel_id)
         timestamp = observed_at or time.time()
         inserted = await self.events.ingest(
             f"discord:delete:{message_id}:{int(timestamp * 1_000_000)}",
@@ -327,7 +327,8 @@ class AgentService:
         channel_id = str(thread["channel_id"])
         configuration = self.models.configuration
         assert configuration is not None
-        settings = self.store.app_settings()
+        interface = self.store.interface_settings()
+        profile = self.store.assistant_profile()
         conversation = await self.store.aconversation(channel_id)
         replay_id = str(uuid.uuid4())
         trace_id = f"replay:{replay_id}"
@@ -336,9 +337,9 @@ class AgentService:
             channel_id=channel_id,
             participant_ids=(str(conversation["peer_id"]),) if conversation else (),
             owner_id=str(thread["account_id"]),
-            ui_locale=settings.admin_locale,
-            prompt_locale=settings.prompt_locale,
-            assistant_name=assistant_name_for(settings.prompt_locale, settings.assistant_name),
+            ui_locale=interface.locale,
+            prompt_locale=profile.prompt_locale,
+            assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
             automation_mode=str(conversation["mode"] if conversation else "automatic"),
             force_reply=False,
             provider_id=configuration.provider_id,
@@ -347,7 +348,7 @@ class AgentService:
             capabilities=self._capabilities(configuration),
             trace_id=trace_id,
             thread_id=f"replay:{thread_id}:{checkpoint_id}",
-            owner_timezone=settings.owner_timezone,
+            owner_timezone=profile.owner_timezone,
             trigger_message_id="historical-replay",
             permissions=frozenset({"send_messages", "reactions", "owner_escalation"}),
         )
@@ -357,11 +358,11 @@ class AgentService:
             self.models.build_model(),
             gateway,
             AgentPrompt(
-                settings.prompt_locale,
+                profile.prompt_locale,
                 context.assistant_name,
-                settings.base_instructions,
+                profile.base_instructions,
                 str(personality.get("profile") or ""),
-                settings.owner_details,
+                profile.owner_details,
             ),
             self.http,
             checkpointer=InMemorySaver(),
@@ -452,7 +453,7 @@ class AgentService:
         messages = snapshot.checkpoint.get("channel_values", {}).get("messages", [])
         if not messages:
             return False
-        locale = self.store.app_settings().prompt_locale
+        locale = self.store.assistant_profile().prompt_locale
         rendered = "\n".join(
             f"[{getattr(message, 'type', 'message')} {getattr(message, 'id', '')}] {message.text}"
             for message in messages
@@ -538,7 +539,8 @@ class AgentService:
             raise RuntimeError("The interrupted agent run cannot be found")
         channel_id = str(escalation["channel_id"])
         thread_id = str(escalation["thread_id"])
-        settings = self.store.app_settings()
+        interface = self.store.interface_settings()
+        profile = self.store.assistant_profile()
         configuration = self.models.configuration
         assert configuration is not None
         conversation = await self.store.aconversation(channel_id)
@@ -548,9 +550,9 @@ class AgentService:
             channel_id=channel_id,
             participant_ids=(str(conversation["peer_id"]),) if conversation else (),
             owner_id=account_id,
-            ui_locale=settings.admin_locale,
-            prompt_locale=settings.prompt_locale,
-            assistant_name=assistant_name_for(settings.prompt_locale, settings.assistant_name),
+            ui_locale=interface.locale,
+            prompt_locale=profile.prompt_locale,
+            assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
             automation_mode=str(conversation["mode"] if conversation else "automatic"),
             force_reply=False,
             provider_id=configuration.provider_id,
@@ -559,7 +561,7 @@ class AgentService:
             capabilities=self._capabilities(configuration),
             trace_id=trace_id,
             thread_id=thread_id,
-            owner_timezone=settings.owner_timezone,
+            owner_timezone=profile.owner_timezone,
             trigger_message_id=str(payload.get("trigger_message_id") or ""),
             permissions=frozenset({"send_messages", "reactions", "owner_escalation"}),
         )
@@ -568,16 +570,16 @@ class AgentService:
             self.models.build_model(),
             self.gateway,
             AgentPrompt(
-                settings.prompt_locale,
+                profile.prompt_locale,
                 context.assistant_name,
-                settings.base_instructions,
+                profile.base_instructions,
                 str(personality.get("profile") or ""),
-                settings.owner_details,
+                profile.owner_details,
             ),
             self.http,
             checkpointer=self.checkpointer,
             store=self.memory,
-            extra_middleware=(LiveConversationMiddleware(self.events, settings.prompt_locale),),
+            extra_middleware=(LiveConversationMiddleware(self.events, profile.prompt_locale),),
             attachments=self.attachments,
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
@@ -608,7 +610,7 @@ class AgentService:
                                 "diskovod_participant": {
                                     "id": owner_author_id or account_id,
                                     "name": owner_author_name
-                                    or runtime_context_text(settings.prompt_locale)["account_owner"],
+                                    or runtime_context_text(profile.prompt_locale)["account_owner"],
                                     "role": "owner",
                                     "discord_event_id": (
                                         f"discord:message:{owner_message_id}" if owner_message_id else ""
@@ -704,9 +706,11 @@ class AgentService:
     async def _run(self, channel_id: str, *, force: bool) -> None:
         if self.checkpointer is None or not self.models.ready:
             return
-        settings = self.store.app_settings()
+        automation = self.store.automation_settings()
+        interface = self.store.interface_settings()
+        profile = self.store.assistant_profile()
         if not force:
-            await asyncio.sleep(settings.debounce_seconds)
+            await asyncio.sleep(automation.debounce_seconds)
         account_id = await self._account_id(channel_id)
         thread_id = await self.events.thread_id(account_id, channel_id)
         run_id = str(uuid.uuid4())
@@ -736,9 +740,9 @@ class AgentService:
             channel_id=channel_id,
             participant_ids=participant_ids,
             owner_id=account_id,
-            ui_locale=settings.admin_locale,
-            prompt_locale=settings.prompt_locale,
-            assistant_name=assistant_name_for(settings.prompt_locale, settings.assistant_name),
+            ui_locale=interface.locale,
+            prompt_locale=profile.prompt_locale,
+            assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
             automation_mode=str(conversation["mode"] if conversation else "automatic"),
             force_reply=force,
             provider_id=configuration.provider_id,
@@ -747,17 +751,17 @@ class AgentService:
             capabilities=self._capabilities(configuration),
             trace_id=trace_id,
             thread_id=thread_id,
-            owner_timezone=settings.owner_timezone,
+            owner_timezone=profile.owner_timezone,
             trigger_message_id=trigger_message_id,
             permissions=frozenset({"send_messages", "reactions", "owner_escalation"}),
         )
         personality = self.store.personality() or {}
         prompt = AgentPrompt(
-            settings.prompt_locale,
+            profile.prompt_locale,
             context.assistant_name,
-            settings.base_instructions,
+            profile.base_instructions,
             str(personality.get("profile") or ""),
-            settings.owner_details,
+            profile.owner_details,
         )
         agent = build_agent(
             self.models.build_model(),
@@ -766,7 +770,7 @@ class AgentService:
             self.http,
             checkpointer=self.checkpointer,
             store=self.memory,
-            extra_middleware=(LiveConversationMiddleware(self.events, settings.prompt_locale),),
+            extra_middleware=(LiveConversationMiddleware(self.events, profile.prompt_locale),),
             attachments=self.attachments,
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
@@ -843,7 +847,7 @@ class AgentService:
             return RemoveMessage(id=str(event.payload["message_id"]))
         content = str(event.payload.get("content") or "")
         attachments = event.payload.get("attachments") or []
-        text_bundle = runtime_context_text(self.store.app_settings().prompt_locale)
+        text_bundle = runtime_context_text(self.store.assistant_profile().prompt_locale)
         if attachments:
             notes = []
             for attachment in attachments:

@@ -14,18 +14,18 @@
   </head>
 
   <body
-    {% if app_settings.admin_theme != "system" %}
-      data-bs-theme="{{ 'dark' if app_settings.admin_theme == 'black' else app_settings.admin_theme }}"
+    {% if interface_settings.theme != "system" %}
+      data-bs-theme="{{ 'dark' if interface_settings.theme == 'black' else interface_settings.theme }}"
     {% endif %}
-    data-admin-theme="{{ app_settings.admin_theme }}"
+    data-admin-theme="{{ interface_settings.theme }}"
   >
     <a class="visually-hidden-focusable skip-link" href="#main-content">{{ t("skip") }}</a>
     <nav class="navbar sticky-top border-bottom bg-body-tertiary" aria-label="{{ t('admin_navigation') }}">
       <div class="container-xl navbar-shell">
         <a class="navbar-brand" href="/?tab=connections">Diskovod</a>
         <div class="navbar-actions">
-          <span class="badge rounded-pill {{ 'text-bg-success' if app_settings.enabled else 'text-bg-secondary' }}">
-            {{ t("automation_enabled") if app_settings.enabled else t("automation_disabled") }}
+          <span class="badge rounded-pill {{ 'text-bg-success' if automation_settings.enabled else 'text-bg-secondary' }}">
+            {{ t("automation_enabled") if automation_settings.enabled else t("automation_disabled") }}
           </span>
           <form method="post" action="/settings/theme" class="theme-form">
             <input type="hidden" name="tab" value="{{ active_tab }}">
@@ -37,7 +37,7 @@
                 ("dark", t("theme_dark")),
                 ("black", t("theme_black"))
               ] %}
-                <option value="{{ theme }}" {% if app_settings.admin_theme == theme %}selected{% endif %}>
+                <option value="{{ theme }}" {% if interface_settings.theme == theme %}selected{% endif %}>
                   {{ label }}
                 </option>
               {% endfor %}
@@ -505,7 +505,7 @@
                 {{ t("admin_language") }}
                 <select name="admin_locale">
                   {% for code, name in locales.items() %}
-                    <option value="{{ code }}" {% if code == app_settings.admin_locale %}selected{% endif %}>
+                    <option value="{{ code }}" {% if code == interface_settings.locale %}selected{% endif %}>
                       {{ name }}
                     </option>
                   {% endfor %}
@@ -515,7 +515,7 @@
               {{ t("prompt_language") }}
                 <select name="prompt_locale">
                   {% for code, name in locales.items() %}
-                    <option value="{{ code }}" {% if code == app_settings.prompt_locale %}selected{% endif %}>
+                    <option value="{{ code }}" {% if code == assistant_profile.prompt_locale %}selected{% endif %}>
                       {{ name }}
                     </option>
                   {% endfor %}
@@ -528,7 +528,7 @@
               {{ t("assistant_name") }}
               <input
                 name="assistant_name"
-                value="{{ app_settings.assistant_name }}"
+                value="{{ assistant_profile.assistant_name }}"
                 maxlength="80"
                 placeholder="{{ default_assistant_name }}"
               >
@@ -536,12 +536,12 @@
             </label>
 
             <label class="toggle">
-              <input type="checkbox" name="enabled" {% if app_settings.enabled %}checked{% endif %}>
+              <input type="checkbox" name="enabled" {% if automation_settings.enabled %}checked{% endif %}>
               {{ t("enable_replies") }}
             </label>
             <label>
               {{ t("owner_timezone") }}
-              <input name="owner_timezone" value="{{ app_settings.owner_timezone }}" required>
+              <input name="owner_timezone" value="{{ assistant_profile.owner_timezone }}" required>
               <small>{{ t("owner_timezone_help") }}</small>
             </label>
 
@@ -549,7 +549,7 @@
               <input
                 type="checkbox"
                 name="silent_replies"
-                {% if app_settings.silent_replies %}checked{% endif %}
+                {% if automation_settings.silent_replies %}checked{% endif %}
               >
               {{ t("silent_replies") }}
             </label>
@@ -559,7 +559,7 @@
               <input
                 type="checkbox"
                 name="robot_prefix"
-                {% if app_settings.robot_prefix %}checked{% endif %}
+                {% if automation_settings.robot_prefix %}checked{% endif %}
               >
               {{ t("robot_prefix") }}
             </label>
@@ -572,13 +572,13 @@
                 <select name="conversation_default">
                   <option
                     value="opt_in"
-                    {% if app_settings.default_conversation_enabled %}selected{% endif %}
+                    {% if automation_settings.default_conversation_enabled %}selected{% endif %}
                   >
                     {{ t("opt_in") }}
                   </option>
                   <option
                     value="opt_out"
-                    {% if not app_settings.default_conversation_enabled %}selected{% endif %}
+                    {% if not automation_settings.default_conversation_enabled %}selected{% endif %}
                   >
                     {{ t("opt_out") }}
                   </option>
@@ -648,7 +648,7 @@
                     min="0"
                     max="30"
                     name="min_message_gap_seconds"
-                    value="{{ app_settings.min_message_gap_seconds }}"
+                    value="{{ automation_settings.min_message_gap_seconds }}"
                   >
                 </label>
                 <label>
@@ -659,7 +659,7 @@
                     min="0"
                     max="30"
                     name="max_message_gap_seconds"
-                    value="{{ app_settings.max_message_gap_seconds }}"
+                    value="{{ automation_settings.max_message_gap_seconds }}"
                   >
                 </label>
               </div>
@@ -675,7 +675,7 @@
                     step="0.1"
                     min="0"
                     name="debounce_seconds"
-                    value="{{ app_settings.debounce_seconds }}"
+                    value="{{ automation_settings.debounce_seconds }}"
                   >
                 </label>
                 <label>
@@ -685,7 +685,7 @@
                     step="0.1"
                     min="0"
                     name="min_delay_seconds"
-                    value="{{ app_settings.min_delay_seconds }}"
+                    value="{{ automation_settings.min_delay_seconds }}"
                   >
                 </label>
                 <label>
@@ -695,7 +695,7 @@
                     step="0.1"
                     min="0"
                     name="max_delay_seconds"
-                    value="{{ app_settings.max_delay_seconds }}"
+                    value="{{ automation_settings.max_delay_seconds }}"
                   >
                 </label>
               </div>
@@ -712,7 +712,7 @@
                     step="0.5"
                     min="0"
                     name="min_human_quiet_minutes"
-                    value="{{ app_settings.min_human_quiet_minutes }}"
+                    value="{{ automation_settings.min_human_quiet_minutes }}"
                   >
                 </label>
                 <label>
@@ -722,7 +722,7 @@
                     step="0.5"
                     min="0"
                     name="max_human_quiet_minutes"
-                    value="{{ app_settings.max_human_quiet_minutes }}"
+                    value="{{ automation_settings.max_human_quiet_minutes }}"
                   >
                 </label>
               </div>
@@ -736,7 +736,7 @@
                   step="0.1"
                   min="1"
                   name="min_typing_cps"
-                  value="{{ app_settings.min_typing_cps }}"
+                  value="{{ automation_settings.min_typing_cps }}"
                 >
               </label>
               <label>
@@ -746,7 +746,7 @@
                   step="0.1"
                   min="1"
                   name="max_typing_cps"
-                  value="{{ app_settings.max_typing_cps }}"
+                  value="{{ automation_settings.max_typing_cps }}"
                 >
               </label>
             </div>
@@ -758,13 +758,13 @@
                 rows="7"
                 maxlength="20000"
                 placeholder="{{ t('owner_details_placeholder') }}"
-              >{{ app_settings.owner_details }}</textarea>
+              >{{ assistant_profile.owner_details }}</textarea>
             </label>
             <p class="field-help">{{ t("owner_details_help") }}</p>
 
             <label>
               {{ t("base_instructions") }}
-              <textarea name="base_instructions" rows="7">{{ app_settings.base_instructions }}</textarea>
+              <textarea name="base_instructions" rows="7">{{ assistant_profile.base_instructions }}</textarea>
             </label>
 
             <button>{{ t("save_behavior") }}</button>

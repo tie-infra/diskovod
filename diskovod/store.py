@@ -14,11 +14,14 @@ import aiosqlite
 
 from .localization import normalize_locale
 from .models import (
+    ADMIN_DENSITIES,
     ADMIN_THEMES,
     DEFAULT_BASE_INSTRUCTIONS,
-    AppSettings,
+    AssistantProfile,
+    AutomationSettings,
     ChatCredentials,
     CustomProvider,
+    InterfaceSettings,
 )
 from .persistence import AsyncSQLite, initialize_target_schema
 from .security import SecretBox
@@ -171,8 +174,69 @@ class Store:
                 return
             async with self.database.transaction() as connection:
                 await initialize_target_schema(connection)
+                await self._migrate_app_settings(connection)
                 await self._load(connection)
             self._started = True
+
+    async def _migrate_app_settings(self, connection: aiosqlite.Connection) -> None:
+        """Atomically split the former mixed settings object into owned domains."""
+        row = await (
+            await connection.execute("SELECT value, secret FROM config WHERE key='app.settings'")
+        ).fetchone()
+        if row is None:
+            return
+        saved = self._decode_config(str(row["value"]), bool(row["secret"]))
+        if not isinstance(saved, dict):
+            saved = {}
+
+        base_instructions = saved.get("base_instructions")
+        if (
+            isinstance(base_instructions, str)
+            and hashlib.sha256(base_instructions.encode()).hexdigest() == LEGACY_BASE_INSTRUCTIONS_SHA256
+        ):
+            base_instructions = DEFAULT_BASE_INSTRUCTIONS
+
+        interface = InterfaceSettings(
+            locale=normalize_locale(str(saved.get("admin_locale", "en"))),
+            theme=(
+                str(saved.get("admin_theme", "system"))
+                if saved.get("admin_theme") in ADMIN_THEMES
+                else "system"
+            ),
+        )
+        assistant = AssistantProfile(
+            prompt_locale=normalize_locale(str(saved.get("prompt_locale", "en"))),
+            assistant_name=str(saved.get("assistant_name", "")),
+            owner_timezone=str(saved.get("owner_timezone", "UTC")),
+            owner_details=str(saved.get("owner_details", "")),
+            base_instructions=(
+                base_instructions if isinstance(base_instructions, str) else DEFAULT_BASE_INSTRUCTIONS
+            ),
+        )
+        automation_defaults = AutomationSettings().to_dict()
+        automation = AutomationSettings(
+            **{key: saved.get(key, default) for key, default in automation_defaults.items()}
+        )
+        now = time.time()
+        for key, value in (
+            ("admin.interface", interface.to_dict()),
+            ("assistant.profile", assistant.to_dict()),
+            ("automation.settings", automation.to_dict()),
+            (
+                "legacy.model_selection",
+                {
+                    field: saved[field]
+                    for field in ("provider", "model", "reasoning_effort", "max_reply_tokens")
+                    if field in saved
+                },
+            ),
+        ):
+            await connection.execute(
+                "INSERT INTO config(key, value, secret, updated_at) VALUES(?, ?, 0, ?) "
+                "ON CONFLICT(key) DO NOTHING",
+                (key, json.dumps(value), now),
+            )
+        await connection.execute("DELETE FROM config WHERE key='app.settings'")
 
     async def _load(self, connection: aiosqlite.Connection) -> None:
         message_columns = {
@@ -234,22 +298,43 @@ class Store:
         with self._cache_lock:
             return deepcopy(self._config.get(key, default))
 
-    def app_settings(self) -> AppSettings:
-        saved = self._get("app.settings", {})
+    def interface_settings(self) -> InterfaceSettings:
+        saved = self._get("admin.interface", {})
+        if not isinstance(saved, dict):
+            saved = {}
+        saved["locale"] = normalize_locale(str(saved.get("locale", "en")))
+        saved["theme"] = str(saved.get("theme", "system")) if saved.get("theme") in ADMIN_THEMES else "system"
+        saved["density"] = (
+            str(saved.get("density", "comfortable"))
+            if saved.get("density") in ADMIN_DENSITIES
+            else "comfortable"
+        )
+        defaults = InterfaceSettings().to_dict()
+        known = {key: value for key, value in saved.items() if key in defaults}
+        return InterfaceSettings(**(defaults | known))
+
+    def assistant_profile(self) -> AssistantProfile:
+        saved = self._get("assistant.profile", {})
+        if not isinstance(saved, dict):
+            saved = {}
         base_instructions = saved.get("base_instructions")
         if (
             isinstance(base_instructions, str)
             and hashlib.sha256(base_instructions.encode()).hexdigest() == LEGACY_BASE_INSTRUCTIONS_SHA256
         ):
             saved["base_instructions"] = DEFAULT_BASE_INSTRUCTIONS
-        saved["admin_locale"] = normalize_locale(str(saved.get("admin_locale", "en")))
-        saved["admin_theme"] = (
-            str(saved.get("admin_theme", "system")) if saved.get("admin_theme") in ADMIN_THEMES else "system"
-        )
         saved["prompt_locale"] = normalize_locale(str(saved.get("prompt_locale", "en")))
-        defaults = AppSettings().to_dict()
+        defaults = AssistantProfile().to_dict()
         known = {key: value for key, value in saved.items() if key in defaults}
-        return AppSettings(**(defaults | known))
+        return AssistantProfile(**(defaults | known))
+
+    def automation_settings(self) -> AutomationSettings:
+        saved = self._get("automation.settings", {})
+        if not isinstance(saved, dict):
+            saved = {}
+        defaults = AutomationSettings().to_dict()
+        known = {key: value for key, value in saved.items() if key in defaults}
+        return AutomationSettings(**(defaults | known))
 
     def discord_token(self) -> str | None:
         return self._get("discord.token", None)
@@ -304,8 +389,14 @@ class Store:
         item["attachments"] = attachments if isinstance(attachments, list) else []
         return item
 
-    async def aset_app_settings(self, value: AppSettings) -> None:
-        await self._aset("app.settings", value.to_dict())
+    async def aset_interface_settings(self, value: InterfaceSettings) -> None:
+        await self._aset("admin.interface", value.to_dict())
+
+    async def aset_assistant_profile(self, value: AssistantProfile) -> None:
+        await self._aset("assistant.profile", value.to_dict())
+
+    async def aset_automation_settings(self, value: AutomationSettings) -> None:
+        await self._aset("automation.settings", value.to_dict())
 
     async def aset_discord_token(self, value: str) -> None:
         await self._aset("discord.token", value, secret=True)
@@ -525,7 +616,7 @@ class Store:
 
     async def aupsert_conversation(self, channel_id: str, peer_id: str, peer_name: str) -> None:
         now = time.time()
-        default_paused = not self.app_settings().default_conversation_enabled
+        default_paused = not self.automation_settings().default_conversation_enabled
         async with self.database.transaction() as connection:
             await connection.execute(
                 """INSERT INTO conversations

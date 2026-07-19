@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -279,6 +280,18 @@ async def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with
     first = models.configuration.options["prompt_cache_key"]
     assert models.configuration.options["max_completion_tokens"] == 256
     assert models.configuration.capabilities.output_token_limit is True
+    await store.aset_interface_settings(replace(store.interface_settings(), theme="black", locale="fr"))
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=9)
+    )
+    assert (
+        models._prompt_cache_key(
+            provider_id="custom_openai",
+            model_id="local-model",
+            transport_profile="responses",
+        )
+        == first
+    )
     await store.aset_personality("A durable style profile", "personality-v2")
     assert await models.arefresh_prompt_cache_identity() is not None
     second = models.configuration.options["prompt_cache_key"]

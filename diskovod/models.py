@@ -65,6 +65,7 @@ TEXT_EXTENSIONS = frozenset(
 
 DEFAULT_BASE_INSTRUCTIONS = prompts_for("en").base
 ADMIN_THEMES = frozenset({"system", "light", "dark", "black"})
+ADMIN_DENSITIES = frozenset({"comfortable", "compact"})
 REASONING_EFFORTS = frozenset({"low", "medium", "high"})
 
 
@@ -117,15 +118,34 @@ def discord_attachment_metadata(values: Iterable[Any]) -> list[dict[str, Any]]:
 
 
 @dataclass(slots=True)
-class AppSettings:
-    enabled: bool = False
-    silent_replies: bool = False
-    robot_prefix: bool = False
-    admin_locale: str = "en"
-    admin_theme: str = "system"
+class InterfaceSettings:
+    locale: str = "en"
+    theme: str = "system"
+    density: str = "comfortable"
+    display_timezone: str = "browser"
+    show_advanced_ids: bool = False
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class AssistantProfile:
     prompt_locale: str = "en"
     assistant_name: str = ""
     owner_timezone: str = "UTC"
+    owner_details: str = ""
+    base_instructions: str = DEFAULT_BASE_INSTRUCTIONS
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class AutomationSettings:
+    enabled: bool = False
+    silent_replies: bool = False
+    robot_prefix: bool = False
     default_conversation_enabled: bool = True
     debounce_seconds: float = 1.8
     min_delay_seconds: float = 2.2
@@ -136,8 +156,6 @@ class AppSettings:
     max_human_quiet_minutes: float = 30.0
     min_message_gap_seconds: float = 0.7
     max_message_gap_seconds: float = 2.0
-    owner_details: str = ""
-    base_instructions: str = DEFAULT_BASE_INSTRUCTIONS
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import aiosqlite
@@ -5,9 +6,11 @@ import pytest
 
 from diskovod.models import (
     DEFAULT_BASE_INSTRUCTIONS,
-    AppSettings,
+    AssistantProfile,
+    AutomationSettings,
     ChatCredentials,
     CustomProvider,
+    InterfaceSettings,
 )
 from diskovod.store import Store
 
@@ -24,82 +27,130 @@ LEGACY_BASE_INSTRUCTIONS = (
 )
 
 
-async def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
+async def test_owned_settings_domains_persist_independently(tmp_path: Path):
     store = await Store.open(tmp_path / "state.sqlite3", SECRET)
 
-    assert store.app_settings().silent_replies is False
-    assert store.app_settings().robot_prefix is False
-    assert store.app_settings().assistant_name == ""
-    assert store.app_settings().owner_details == ""
-    assert store.app_settings().owner_timezone == "UTC"
-    await store.aset_app_settings(
-        AppSettings(
+    assert store.automation_settings().silent_replies is False
+    assert store.automation_settings().robot_prefix is False
+    assert store.assistant_profile().assistant_name == ""
+    assert store.assistant_profile().owner_details == ""
+    assert store.assistant_profile().owner_timezone == "UTC"
+    await store.aset_automation_settings(
+        AutomationSettings(
             silent_replies=True,
             robot_prefix=True,
-            assistant_name="Helper",
             min_message_gap_seconds=1,
             max_message_gap_seconds=3,
+        )
+    )
+    await store.aset_assistant_profile(
+        AssistantProfile(
+            assistant_name="Helper",
             owner_details="My name is Alex and I live in Berlin.",
             owner_timezone="Europe/Berlin",
         )
     )
     await store.aclose()
     store = await Store.open(tmp_path / "state.sqlite3", SECRET)
-    assert store.app_settings().silent_replies is True
-    assert store.app_settings().robot_prefix is True
-    assert store.app_settings().assistant_name == "Helper"
-    assert store.app_settings().min_message_gap_seconds == 1
-    assert store.app_settings().max_message_gap_seconds == 3
-    assert store.app_settings().owner_details == "My name is Alex and I live in Berlin."
-    assert store.app_settings().owner_timezone == "Europe/Berlin"
+    assert store.automation_settings().silent_replies is True
+    assert store.automation_settings().robot_prefix is True
+    assert store.assistant_profile().assistant_name == "Helper"
+    assert store.automation_settings().min_message_gap_seconds == 1
+    assert store.automation_settings().max_message_gap_seconds == 3
+    assert store.assistant_profile().owner_details == "My name is Alex and I live in Berlin."
+    assert store.assistant_profile().owner_timezone == "Europe/Berlin"
+    await store.aclose()
+
+
+async def test_legacy_mixed_settings_are_atomically_split(tmp_path: Path):
+    path = tmp_path / "state.sqlite3"
+    store = await Store.open(path, SECRET)
+    await store.aclose()
+    legacy = {
+        "admin_locale": "fr",
+        "admin_theme": "black",
+        "prompt_locale": "ja",
+        "assistant_name": "Helper",
+        "enabled": True,
+        "silent_replies": True,
+        "model": "legacy-model",
+        "reasoning_effort": "high",
+    }
+    async with aiosqlite.connect(path) as connection:
+        await connection.execute(
+            "DELETE FROM config WHERE key IN "
+            "('admin.interface','assistant.profile','automation.settings','legacy.model_selection')"
+        )
+        await connection.execute(
+            "INSERT INTO config(key, value, secret, updated_at) VALUES('app.settings', ?, 0, 1)",
+            (json.dumps(legacy),),
+        )
+        await connection.commit()
+
+    store = await Store.open(path, SECRET)
+    assert store.interface_settings() == InterfaceSettings(locale="fr", theme="black")
+    assert store.assistant_profile().prompt_locale == "ja"
+    assert store.assistant_profile().assistant_name == "Helper"
+    assert store.automation_settings().enabled is True
+    assert store.automation_settings().silent_replies is True
+    assert store._get("legacy.model_selection", {}) == {
+        "model": "legacy-model",
+        "reasoning_effort": "high",
+    }
+    async with store.database.transaction() as connection:
+        old = await (await connection.execute("SELECT 1 FROM config WHERE key='app.settings'")).fetchone()
+    assert old is None
     await store.aclose()
 
 
 async def test_removed_settings_are_ignored_when_loading_older_configuration(tmp_path: Path):
     store = await Store.open(tmp_path / "state.sqlite3", SECRET)
-    await store._aset("app.settings", {"multi_message_chance": 25, "max_reply_messages": 4})
+    await store._aset("automation.settings", {"multi_message_chance": 25, "max_reply_messages": 4})
 
-    assert "max_reply_messages" not in store.app_settings().to_dict()
-    assert "multi_message_chance" not in store.app_settings().to_dict()
+    assert "max_reply_messages" not in store.automation_settings().to_dict()
+    assert "multi_message_chance" not in store.automation_settings().to_dict()
     await store.aclose()
 
 
 async def test_localization_settings_round_trip_and_unknown_values_fall_back(tmp_path: Path):
     store = await Store.open(tmp_path / "state.sqlite3", SECRET)
-    settings = AppSettings(admin_locale="fr", prompt_locale="uk")
-    await store.aset_app_settings(settings)
+    interface = InterfaceSettings(locale="fr")
+    profile = AssistantProfile(prompt_locale="uk")
+    await store.aset_interface_settings(interface)
+    await store.aset_assistant_profile(profile)
 
-    assert store.app_settings().admin_locale == "fr"
-    assert store.app_settings().prompt_locale == "uk"
+    assert store.interface_settings().locale == "fr"
+    assert store.assistant_profile().prompt_locale == "uk"
 
-    settings.admin_locale = "invalid"
-    settings.prompt_locale = "invalid"
-    await store.aset_app_settings(settings)
-    assert store.app_settings().admin_locale == "en"
-    assert store.app_settings().prompt_locale == "en"
+    interface.locale = "invalid"
+    profile.prompt_locale = "invalid"
+    await store.aset_interface_settings(interface)
+    await store.aset_assistant_profile(profile)
+    assert store.interface_settings().locale == "en"
+    assert store.assistant_profile().prompt_locale == "en"
     await store.aclose()
 
 
 async def test_admin_theme_round_trip_and_unknown_value_falls_back(tmp_path: Path):
     store = await Store.open(tmp_path / "state.sqlite3", SECRET)
 
-    assert store.app_settings().admin_theme == "system"
-    await store.aset_app_settings(AppSettings(admin_theme="black"))
-    assert store.app_settings().admin_theme == "black"
+    assert store.interface_settings().theme == "system"
+    await store.aset_interface_settings(InterfaceSettings(theme="black"))
+    assert store.interface_settings().theme == "black"
 
-    await store.aset_app_settings(AppSettings(admin_theme="neon"))
-    assert store.app_settings().admin_theme == "system"
+    await store.aset_interface_settings(InterfaceSettings(theme="neon"))
+    assert store.interface_settings().theme == "system"
     await store.aclose()
 
 
 async def test_legacy_impersonation_prompt_is_replaced_but_custom_prompt_is_preserved(tmp_path: Path):
     store = await Store.open(tmp_path / "state.sqlite3", SECRET)
-    await store._aset("app.settings", {"base_instructions": LEGACY_BASE_INSTRUCTIONS})
+    await store._aset("assistant.profile", {"base_instructions": LEGACY_BASE_INSTRUCTIONS})
 
-    assert store.app_settings().base_instructions == DEFAULT_BASE_INSTRUCTIONS
+    assert store.assistant_profile().base_instructions == DEFAULT_BASE_INSTRUCTIONS
 
-    await store._aset("app.settings", {"base_instructions": "My custom instructions"})
-    assert store.app_settings().base_instructions == "My custom instructions"
+    await store._aset("assistant.profile", {"base_instructions": "My custom instructions"})
+    assert store.assistant_profile().base_instructions == "My custom instructions"
     await store.aclose()
 
 
@@ -108,7 +159,7 @@ async def test_new_conversations_follow_default_without_changing_existing_enroll
     await store.aupsert_conversation("existing", "peer-1", "Existing")
     assert await store.acan_automate("existing") is True
 
-    await store.aset_app_settings(AppSettings(default_conversation_enabled=False))
+    await store.aset_automation_settings(AutomationSettings(default_conversation_enabled=False))
     await store.aupsert_conversation("existing", "peer-1", "Existing renamed")
     await store.aupsert_conversation("new", "peer-2", "New")
 

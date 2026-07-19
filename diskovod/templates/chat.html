@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block breadcrumbs %}<a href="/chats">{{ t("chats") }}</a> / {{ chat.conversation.peer_name }}{% endblock %}
+{% block title %}{{ chat.conversation.peer_name }}{% endblock %}
+{% block subtitle %}<p class="text-body-secondary">{{ t("channel", id=chat.conversation.channel_id) }}</p>{% endblock %}
+{% block content %}
+<div class="chat-layout">
+  <section class="card transcript" aria-label="{{ t('conversation_transcript') }}">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>{{ t("conversation_transcript") }}</span>
+      <span class="live-indicator" data-live-status>{{ t("live") }}</span>
+    </div>
+    <div class="messages">
+      {% for message in chat.messages %}
+      <article class="message {{ 'message-out' if message.direction == 'out' }} {{ 'is-deleted' if message.deleted_at }}">
+        <div class="message-meta"><strong>{{ message.author_name }}</strong><span>{{ message.timestamp|int }}</span>{% if message.edited_at %}<span>{{ t("edited") }}</span>{% endif %}</div>
+        <div class="message-bubble">{{ t("deleted_message") if message.deleted_at else message.content }}</div>
+        {% for attachment in message.attachments %}<span class="attachment-chip">📎 {{ attachment.filename }}</span>{% endfor %}
+      </article>
+      {% else %}<div class="empty-state">{{ t("no_messages") }}</div>{% endfor %}
+    </div>
+  </section>
+  <aside class="inspector vstack gap-3">
+    <section class="card"><div class="card-body">
+      <h2 class="h6">{{ t("conversation_mode") }}</h2>
+      <form method="post" action="/chats/{{ chat.conversation.channel_id }}/mode" class="vstack gap-2">
+        <select class="form-select" name="mode">{% for mode in ("automatic", "inline", "paused") %}<option value="{{ mode }}" {{ 'selected' if chat.conversation.mode == mode }}>{{ t("mode_" ~ mode) }}</option>{% endfor %}</select>
+        <button class="btn btn-primary">{{ t("save") }}</button>
+      </form>
+      <form class="mt-2" method="post" action="/chats/{{ chat.conversation.channel_id }}/force-reply"><button class="btn btn-outline-primary w-100">{{ t("force_reply") }}</button></form>
+    </div></section>
+    <section class="card"><div class="card-body">
+      <h2 class="h6">{{ t("generations") }}</h2>
+      <div class="list-group list-group-flush">{% for generation in chat.generations %}<a class="list-group-item" href="/chats/{{ chat.conversation.channel_id }}/generations/{{ generation.generation }}">g{{ generation.generation }}{% if generation.close_reason %}<small class="d-block text-body-secondary">{{ generation.close_reason }}</small>{% endif %}</a>{% else %}<p class="text-body-secondary">{{ t("no_checkpoint_history") }}</p>{% endfor %}</div>
+    </div></section>
+    <section class="card"><div class="card-body">
+      <h2 class="h6">{{ t("recent_runs") }}</h2>
+      {% for run in chat.runs %}<a class="d-flex justify-content-between py-1" href="/activity/runs/{{ run.id }}"><span>{{ run.status }}</span><span>{{ run.duration_ms }} ms</span></a>{% else %}<p class="text-body-secondary">{{ t("no_agent_runs") }}</p>{% endfor %}
+    </div></section>
+    <section class="card"><div class="card-body">
+      <h2 class="h6">{{ t("checkpoint_history_title") }}</h2>
+      {% for checkpoint in chat.checkpoints %}<details><summary>{{ checkpoint.message_count }} · {{ checkpoint.source or '—' }}</summary><code>{{ checkpoint.checkpoint_id }}</code><form class="mt-2" method="post" action="/activity/checkpoints/{{ checkpoint.thread_id }}/{{ checkpoint.checkpoint_id }}/replay"><input type="hidden" name="confirm" value="emulate"><button class="btn btn-sm btn-outline-primary">{{ t("replay_safely") }}</button></form></details>{% else %}<p class="text-body-secondary">{{ t("no_checkpoint_history") }}</p>{% endfor %}
+    </div></section>
+  </aside>
+</div>
+{% endblock %}

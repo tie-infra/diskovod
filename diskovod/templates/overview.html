@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block subtitle %}<p class="text-body-secondary">{{ t("overview_help") }}</p>{% endblock %}
+{% block content %}
+<div class="metric-grid mb-4">
+  <a class="metric-card" href="/chats"><span>{{ t("chats") }}</span><strong>{{ overview.chats }}</strong></a>
+  <a class="metric-card" href="/inbox"><span>{{ t("inbox") }}</span><strong>{{ overview.pending_escalations }}</strong></a>
+  <a class="metric-card" href="/activity/runs?run_status=failed"><span>{{ t("failed_runs") }}</span><strong>{{ overview.failed_runs }}</strong></a>
+  <a class="metric-card" href="/activity/jobs"><span>{{ t("active_jobs") }}</span><strong>{{ overview.active_jobs }}</strong></a>
+</div>
+<section class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h2 class="h5 mb-0">{{ t("recent_runs") }}</h2><a href="/activity/runs">{{ t("view_all") }}</a>
+  </div>
+  <div class="list-group list-group-flush">
+    {% for run in overview.recent_runs %}
+      <a class="list-group-item list-group-item-action d-flex justify-content-between" href="/activity/runs/{{ run.id }}">
+        <span><strong>{{ run.channel_id }}</strong><small class="d-block text-body-secondary">{{ run.started_at_label }}</small></span>
+        <span class="badge status-{{ run.status }}">{{ run.status }}</span>
+      </a>
+    {% else %}<div class="empty-state">{{ t("no_agent_runs") }}</div>{% endfor %}
+  </div>
+</section>
+{% endblock %}

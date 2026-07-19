@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="subnav nav nav-pills"><a class="nav-link" href="/activity/runs">{{ t("runs") }}</a><a class="nav-link active" href="/activity/jobs">{{ t("jobs") }}</a></nav>
+<div class="card"><div class="list-group list-group-flush">
+{% for job in jobs %}<a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" href="/activity/jobs/{{ job.id }}"><span><strong>{{ job.type }}</strong><small class="d-block text-body-secondary">{{ job.progress_stage or job.requested_at }}</small></span><span class="badge status-{{ job.status }}">{{ job.status }}</span></a>{% else %}<div class="empty-state">{{ t("no_jobs") }}</div>{% endfor %}
+</div></div>
+{% endblock %}

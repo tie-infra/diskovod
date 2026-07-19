@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="subnav nav nav-pills"><a class="nav-link" href="/knowledge/memories">{{ t("memories_title") }}</a><a class="nav-link active" href="/knowledge/attachments">{{ t("attachments_diagnostics_title") }}</a></nav>
+<div class="card table-responsive"><table class="table align-middle mb-0"><thead><tr><th>{{ t("conversation") }}</th><th>{{ t("attachment") }}</th><th>{{ t("type") }}</th><th>{{ t("size") }}</th></tr></thead><tbody>{% for item in attachments %}<tr><td><a href="/chats/{{ item.channel_id }}">{{ item.channel_id }}</a></td><td>{{ item.filename }}</td><td>{{ item.media_type }}</td><td>{{ item.size }}</td></tr>{% else %}<tr><td colspan="4" class="empty-state">{{ t("no_runtime_records") }}</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

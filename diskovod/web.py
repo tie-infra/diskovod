@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,17 +13,17 @@ from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .discord import DiscordService
 from .admin_jobs import AdminJobService, AdminJobWorker
+from .admin_queries import AdminQueryService
 from .localization import (
     SUPPORTED_LOCALES,
     assistant_name_for,
-    normalize_locale,
     prompts_for,
     ui_text,
 )
@@ -32,13 +33,13 @@ from .models import (
     AssistantProfile,
     AutomationSettings,
     CustomProvider,
+    InterfaceSettings,
 )
 from .oauth import ChatGPTAccount
 from .providers import (
     ModelConfiguration,
     ModelService,
     ProviderCapabilities,
-    ProviderCredentials,
     ProviderSetup,
     normalize_custom_base_url,
 )
@@ -48,7 +49,13 @@ from .store import Store
 
 PERSONALITY_PROMPT_VERSION = "style-base-rates-examples-and-sequences-v4"
 PERSONALITY_INSTRUCTIONS = prompts_for("en").personality
-ADMIN_TABS = frozenset({"connections", "assistant", "conversations", "usage", "database"})
+SECTION_DESTINATIONS = {
+    "connections": "/settings/connections",
+    "assistant": "/settings/assistant",
+    "conversations": "/chats",
+    "usage": "/activity/runs",
+    "database": "/system/database",
+}
 PROVIDERS = frozenset({"chatgpt", "custom"})
 CUSTOM_PROTOCOLS = frozenset({"responses", "chat_completions"})
 
@@ -105,8 +112,8 @@ class WebApp:
         self.public_origin = self._normalized_origin(self.public_url)
         self.jobs = jobs
         self.job_worker = job_worker
+        self.queries = AdminQueryService(store) if store is not None else None
         self.security = HTTPBasic()
-        self.provider_drafts: dict[str, ProviderDraft] = {}
         base = Path(__file__).parent
         self.templates = Jinja2Templates(directory=base / "templates")
         self.app = FastAPI(title="Diskovod", docs_url=None, redoc_url=None, openapi_url=None)
@@ -118,7 +125,7 @@ class WebApp:
         async def headers(request: Request, call_next):
             response = await call_next(request)
             response.headers["Content-Security-Policy"] = (
-                "default-src 'none'; style-src 'self' https://cdn.jsdelivr.net; "
+                "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; "
                 "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
             )
             response.headers["X-Content-Type-Options"] = "nosniff"
@@ -161,118 +168,393 @@ class WebApp:
         auth = self.require_admin
 
         @self.app.get("/")
-        async def dashboard(
+        async def overview(request: Request, _: str = Depends(auth)):
+            return await self._render(
+                request,
+                "overview.html",
+                "overview",
+                "overview",
+                overview=await self.queries.overview(),
+            )
+
+        @self.app.get("/inbox")
+        async def inbox(request: Request, _: str = Depends(auth)):
+            return await self._render(
+                request, "inbox.html", "inbox", "inbox", escalations=await self.queries.inbox()
+            )
+
+        @self.app.get("/chats")
+        async def chats(
             request: Request,
-            tab: str = "connections",
-            db_table: str = "messages",
-            db_page: int = 1,
-            db_query: str = "",
-            provider_draft: str = "",
+            q: str = "",
+            mode: str = "",
+            offset: int = 0,
             _: str = Depends(auth),
         ):
-            custom_provider = self.store.custom_provider()
-            interface_settings = self.store.interface_settings()
-            assistant_profile = self.store.assistant_profile()
-            automation_settings = self.store.automation_settings()
-            model_view = self._model_view()
-            active_tab = tab if tab in ADMIN_TABS else "connections"
-            draft = self._provider_draft(provider_draft)
-            provider_view = (
-                {
-                    "name": draft.name,
-                    "base_url": draft.base_url,
-                    "protocol": draft.protocol,
-                    "capabilities": draft.capabilities,
-                    "probe_model": draft.probe_model,
-                    "has_api_key": bool(draft.api_key),
-                    "draft_token": provider_draft,
-                }
-                if draft
-                else (
-                    {
-                        "name": custom_provider.name,
-                        "base_url": custom_provider.base_url,
-                        "protocol": custom_provider.protocol,
-                        "capabilities": {
-                            **custom_provider.capabilities,
-                            "output_token_limit": custom_provider.supports("output_token_limit"),
-                        },
-                        "probe_model": model_view["model"],
-                        "has_api_key": bool(custom_provider.api_key),
-                        "draft_token": "",
-                    }
-                    if custom_provider
-                    else None
-                )
-            )
-            return self.templates.TemplateResponse(
+            return await self._render(
                 request,
-                "index.html",
-                {
-                    "interface_settings": interface_settings,
-                    "assistant_profile": assistant_profile,
-                    "automation_settings": automation_settings,
-                    "model_view": model_view,
-                    "active_tab": active_tab,
-                    "assistant_display_name": assistant_name_for(
-                        assistant_profile.prompt_locale,
-                        assistant_profile.assistant_name,
-                    ),
-                    "default_assistant_name": assistant_name_for(assistant_profile.prompt_locale),
-                    "locale": interface_settings.locale,
-                    "locales": SUPPORTED_LOCALES,
-                    "t": lambda key, **values: ui_text(interface_settings.locale, key, **values),
-                    "public_url": self.public_url,
-                    "chat_connected": self.account.connected,
-                    "chat_email": self.account.email,
-                    "chat_error": self.account.last_error,
-                    "subscription_web_search": self._hosted_search_capability(),
-                    "subscription_web_search_probe": await self._subscription_web_search_probe_view(
-                        model_view["model"]
-                    ),
-                    "model_connected": self.models.ready,
-                    "automation_ready": self.runtime.ready,
-                    "automation_error": None,
-                    "active_provider": self._active_provider(),
-                    "provider_label": self.models.provider_label,
-                    "custom_provider": provider_view,
-                    "discord_connected": self.discord.connected,
-                    "discord_identity": self.discord.identity,
-                    "discord_error": self.discord.error,
-                    "has_discord_token": self.store.discord_token() is not None,
-                    "captcha_requests": self.discord.captcha_requests(),
-                    "personality": self._personality_view(),
-                    "escalations": await self._escalation_views(),
-                    "conversations": await self._conversation_views(),
-                    "agent_runs": await self._agent_run_views() if active_tab == "usage" else [],
-                    "capability_probes": (
-                        await self._capability_probe_views() if active_tab == "usage" else []
-                    ),
-                    "checkpoint_threads": (
-                        await self.runtime.checkpoint_views() if active_tab == "usage" else []
-                    ),
-                    "runtime_records": (await self._runtime_record_views() if active_tab == "usage" else {}),
-                    "database": await self._database_view(db_table, db_page, db_query),
-                    "message": request.query_params.get("message"),
-                    "error": request.query_params.get("error"),
-                },
+                "chats.html",
+                "chats",
+                "chats",
+                chats=await self.queries.chats(query=q, mode=mode, offset=offset),
+            )
+
+        @self.app.get("/chats/{channel_id}")
+        async def chat(request: Request, channel_id: str, _: str = Depends(auth)):
+            view = await self.queries.chat(channel_id)
+            if view is None:
+                raise HTTPException(404, self._t("conversation_not_found"))
+            return await self._render(
+                request, "chat.html", "chats", "chat", chat=view, live_topic=f"chat:{channel_id}"
+            )
+
+        @self.app.get("/chats/{channel_id}/generations/{generation}")
+        async def chat_generation(request: Request, channel_id: str, generation: int, _: str = Depends(auth)):
+            view = await self.queries.chat(channel_id, generation=generation)
+            if view is None:
+                raise HTTPException(404, self._t("conversation_not_found"))
+            return await self._render(request, "chat.html", "chats", "chat", chat=view)
+
+        @self.app.get("/activity/runs")
+        async def runs(
+            request: Request,
+            run_status: str = "",
+            channel_id: str = "",
+            offset: int = 0,
+            _: str = Depends(auth),
+        ):
+            return await self._render(
+                request,
+                "runs.html",
+                "activity",
+                "activity",
+                runs=await self.queries.runs(status=run_status, channel_id=channel_id, offset=offset),
+            )
+
+        @self.app.get("/activity/runs/{run_id}")
+        async def run_detail(request: Request, run_id: str, _: str = Depends(auth)):
+            view = await self.queries.run(run_id)
+            if view is None:
+                raise HTTPException(404, "Run not found")
+            return await self._render(
+                request, "run.html", "activity", "run_detail", run=view, live_topic=f"run:{run_id}"
+            )
+
+        @self.app.get("/activity/jobs")
+        async def jobs(request: Request, job_status: str = "", _: str = Depends(auth)):
+            items = await self.jobs.repository.list(status=job_status or None) if self.jobs else []
+            return await self._render(
+                request, "jobs.html", "activity", "jobs", jobs=items, job_status=job_status
+            )
+
+        @self.app.get("/activity/jobs/{job_id}")
+        async def job_detail(request: Request, job_id: str, _: str = Depends(auth)):
+            job = await self.jobs.get(job_id) if self.jobs else None
+            if job is None:
+                raise HTTPException(404, "Job not found")
+            events = await self.jobs.repository.events(job_id)
+            return await self._render(
+                request,
+                "job.html",
+                "activity",
+                "job_detail",
+                job=job,
+                job_events=events,
+                live_topic=f"job:{job_id}",
+            )
+
+        @self.app.get("/knowledge/memories")
+        async def memories(request: Request, _: str = Depends(auth)):
+            return await self._render(
+                request,
+                "memories.html",
+                "knowledge",
+                "memories",
+                memories=await self.queries.memories(),
+            )
+
+        @self.app.get("/knowledge/attachments")
+        async def attachments(request: Request, _: str = Depends(auth)):
+            return await self._render(
+                request,
+                "attachments.html",
+                "knowledge",
+                "attachments",
+                attachments=await self.queries.attachments(),
+            )
+
+        @self.app.get("/settings/connections")
+        async def connections(request: Request, provider_draft: str = "", _: str = Depends(auth)):
+            return await self._render_connections(request, provider_draft)
+
+        @self.app.get("/settings/model")
+        async def model_settings(request: Request, _: str = Depends(auth)):
+            return await self._render(
+                request,
+                "settings_model.html",
+                "settings",
+                "model_settings",
+                model_view=self._model_view(),
+                active_provider=self._active_provider(),
+                provider_label=self.models.provider_label,
+                subscription_web_search=self._hosted_search_capability(),
+                latest_probe=await self._subscription_web_search_probe_view(self._model_view()["model"]),
+            )
+
+        @self.app.get("/settings/assistant")
+        async def assistant_settings(request: Request, _: str = Depends(auth)):
+            profile = self.store.assistant_profile()
+            return await self._render(
+                request,
+                "settings_assistant.html",
+                "settings",
+                "assistant_settings",
+                assistant_profile=profile,
+                personality=self._personality_view(),
+                assistant_display_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
+                default_assistant_name=assistant_name_for(profile.prompt_locale),
+            )
+
+        @self.app.get("/settings/automation")
+        async def automation_settings(request: Request, _: str = Depends(auth)):
+            return await self._render(
+                request,
+                "settings_automation.html",
+                "settings",
+                "automation_settings",
+                automation_settings=self.store.automation_settings(),
+            )
+
+        @self.app.get("/settings/interface")
+        async def interface_settings(request: Request, _: str = Depends(auth)):
+            return await self._render(
+                request,
+                "settings_interface.html",
+                "settings",
+                "interface_settings",
+                interface_settings=self.store.interface_settings(),
+            )
+
+        @self.app.get("/system/diagnostics")
+        async def diagnostics(request: Request, _: str = Depends(auth)):
+            return await self._render(
+                request,
+                "diagnostics.html",
+                "system",
+                "diagnostics",
+                capability_probes=await self._capability_probe_views(),
+                runtime_records=await self._runtime_record_views(),
+            )
+
+        @self.app.get("/system/database")
+        async def database(
+            request: Request,
+            table: str = "messages",
+            page: int = 1,
+            q: str = "",
+            _: str = Depends(auth),
+        ):
+            return await self._render(
+                request,
+                "database.html",
+                "system",
+                "database",
+                database=await self._database_view(table, page, q),
             )
 
         @self.app.get("/static/style.css")
         async def css():
             return FileResponse(Path(__file__).parent / "static" / "style.css", media_type="text/css")
 
-        @self.app.post("/settings/theme")
-        async def theme_save(
-            admin_theme: str = Form(...),
-            tab: str = Form("connections"),
+        @self.app.get("/static/bootstrap.min.css")
+        async def bootstrap_css():
+            return FileResponse(Path(__file__).parent / "static" / "bootstrap.min.css", media_type="text/css")
+
+        @self.app.get("/static/app.js")
+        async def javascript():
+            return FileResponse(Path(__file__).parent / "static" / "app.js", media_type="text/javascript")
+
+        @self.app.get("/api/jobs/{job_id}")
+        async def job_api(job_id: str, _: str = Depends(auth)):
+            job = await self.jobs.get(job_id) if self.jobs else None
+            if job is None:
+                raise HTTPException(404, "Job not found")
+            return JSONResponse(job)
+
+        @self.app.get("/api/events/stream")
+        async def event_stream(request: Request, topics: str = "jobs", _: str = Depends(auth)):
+            selected = {value for value in topics.split(",") if value}
+
+            async def records():
+                previous = ""
+                deadline = time.monotonic() + 25
+                while time.monotonic() < deadline and not await request.is_disconnected():
+                    payload: dict[str, Any] = {"kind": "snapshot", "topics": sorted(selected)}
+                    if self.jobs and ("jobs" in selected or any(x.startswith("job:") for x in selected)):
+                        payload["jobs"] = await self.jobs.repository.list(limit=20)
+                        payload["active_job_count"] = await self.jobs.repository.active_count()
+                    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                    if encoded != previous:
+                        previous = encoded
+                        yield encoded + "\n"
+                    await asyncio.sleep(1)
+
+            return StreamingResponse(
+                records(),
+                media_type="application/x-ndjson",
+                headers={"X-Accel-Buffering": "no"},
+            )
+
+        @self.app.post("/activity/jobs/{job_id}/cancel")
+        async def cancel_job(job_id: str, _: str = Depends(auth)):
+            job = await self.jobs.cancel(job_id) if self.jobs else None
+            if job is None:
+                raise HTTPException(404, "Job not found")
+            return RedirectResponse(self._url(f"/activity/jobs/{job_id}"), status_code=303)
+
+        @self.app.post("/settings/interface")
+        async def interface_save(
+            locale: str = Form("en"),
+            theme: str = Form("system"),
+            density: str = Form("comfortable"),
+            display_timezone: str = Form("browser"),
+            show_advanced_ids: str | None = Form(None),
             _: str = Depends(auth),
         ):
-            if admin_theme not in ADMIN_THEMES:
-                return self._back(tab=tab, error=self._t("unknown_theme"))
-            current = self.store.interface_settings()
-            await self.store.aset_interface_settings(replace(current, theme=admin_theme))
-            return self._back(tab=tab, message=self._t("theme_saved"))
+            if locale not in SUPPORTED_LOCALES:
+                return self._redirect("/settings/interface", error=self._t("unknown_locale"))
+            if theme not in ADMIN_THEMES:
+                return self._redirect("/settings/interface", error=self._t("unknown_theme"))
+            if density not in {"comfortable", "compact"}:
+                return self._redirect("/settings/interface", error="Unknown display density")
+            if display_timezone != "browser":
+                try:
+                    ZoneInfo(display_timezone)
+                except (KeyError, ValueError):
+                    return self._redirect("/settings/interface", error=self._t("timezone_invalid"))
+            await self.store.aset_interface_settings(
+                InterfaceSettings(
+                    locale=locale,
+                    theme=theme,
+                    density=density,
+                    display_timezone=display_timezone,
+                    show_advanced_ids=show_advanced_ids is not None,
+                )
+            )
+            return self._redirect("/settings/interface", message=ui_text(locale, "settings_saved"))
+
+        @self.app.post("/settings/assistant")
+        async def assistant_save(
+            prompt_locale: str = Form("en"),
+            assistant_name: str = Form(""),
+            owner_timezone: str = Form("UTC"),
+            owner_details: str = Form(""),
+            base_instructions: str = Form(...),
+            _: str = Depends(auth),
+        ):
+            if prompt_locale not in SUPPORTED_LOCALES:
+                return self._redirect("/settings/assistant", error=self._t("unknown_locale"))
+            try:
+                ZoneInfo(owner_timezone)
+            except (KeyError, ValueError):
+                return self._redirect("/settings/assistant", error=self._t("timezone_invalid"))
+            assistant_name = assistant_name.strip()
+            owner_details = owner_details.strip()
+            if len(assistant_name) > 80 or not all(character.isprintable() for character in assistant_name):
+                return self._redirect("/settings/assistant", error=self._t("assistant_name_invalid"))
+            if len(owner_details) > 20_000:
+                return self._redirect("/settings/assistant", error=self._t("owner_details_too_long"))
+            previous = self.store.assistant_profile()
+            await self.store.aset_assistant_profile(
+                AssistantProfile(
+                    prompt_locale=prompt_locale,
+                    assistant_name=assistant_name,
+                    owner_timezone=owner_timezone,
+                    owner_details=owner_details,
+                    base_instructions=localized_base_instructions(
+                        previous.prompt_locale, prompt_locale, base_instructions
+                    ),
+                )
+            )
+            await self.models.arefresh_prompt_cache_identity()
+            return self._redirect("/settings/assistant", message=self._t("settings_saved"))
+
+        @self.app.post("/settings/automation")
+        async def automation_save(
+            enabled: str | None = Form(None),
+            silent_replies: str | None = Form(None),
+            robot_prefix: str | None = Form(None),
+            default_conversation_enabled: str | None = Form(None),
+            debounce_seconds: float = Form(1.8),
+            min_delay_seconds: float = Form(2.2),
+            max_delay_seconds: float = Form(6.5),
+            min_typing_cps: float = Form(18),
+            max_typing_cps: float = Form(32),
+            min_human_quiet_minutes: float = Form(15),
+            max_human_quiet_minutes: float = Form(30),
+            min_message_gap_seconds: float = Form(0.7),
+            max_message_gap_seconds: float = Form(2),
+            _: str = Depends(auth),
+        ):
+            if (
+                min_delay_seconds > max_delay_seconds
+                or min_typing_cps > max_typing_cps
+                or min_human_quiet_minutes > max_human_quiet_minutes
+                or min_message_gap_seconds > max_message_gap_seconds
+            ):
+                return self._redirect("/settings/automation", error=self._t("minimum_exceeds_maximum"))
+            custom = self.store.custom_provider()
+            if (
+                enabled is not None
+                and self._active_provider() == "custom"
+                and (custom is None or not custom.supports("native_function_calls"))
+            ):
+                return self._redirect(
+                    "/settings/automation", error=self._t("detect_native_calls_before_enable")
+                )
+            await self.store.aset_automation_settings(
+                AutomationSettings(
+                    enabled=enabled is not None,
+                    silent_replies=silent_replies is not None,
+                    robot_prefix=robot_prefix is not None,
+                    default_conversation_enabled=default_conversation_enabled is not None,
+                    debounce_seconds=max(0, debounce_seconds),
+                    min_delay_seconds=max(0, min_delay_seconds),
+                    max_delay_seconds=max(0, max_delay_seconds),
+                    min_typing_cps=max(1, min_typing_cps),
+                    max_typing_cps=max(1, max_typing_cps),
+                    min_human_quiet_minutes=max(0, min_human_quiet_minutes),
+                    max_human_quiet_minutes=max(0, max_human_quiet_minutes),
+                    min_message_gap_seconds=max(0, min_message_gap_seconds),
+                    max_message_gap_seconds=max(0, max_message_gap_seconds),
+                )
+            )
+            return self._redirect("/settings/automation", message=self._t("settings_saved"))
+
+        @self.app.post("/settings/model")
+        async def model_save(
+            provider: str = Form("chatgpt"),
+            model: str = Form(...),
+            reasoning_effort: str = Form("low"),
+            max_reply_tokens: int = Form(256),
+            _: str = Depends(auth),
+        ):
+            if provider not in PROVIDERS:
+                return self._redirect("/settings/model", error=self._t("unknown_model_provider"))
+            if reasoning_effort not in REASONING_EFFORTS:
+                return self._redirect("/settings/model", error=self._t("unknown_reasoning_effort"))
+            if not model.strip():
+                return self._redirect("/settings/model", error=self._t("model_name_required"))
+            try:
+                await self._save_provider_selection(
+                    provider,
+                    model=model.strip(),
+                    reasoning_effort=reasoning_effort,
+                    max_output_tokens=max(32, min(max_reply_tokens, 2048)),
+                )
+            except (RuntimeError, ValueError) as error:
+                return self._redirect("/settings/model", error=str(error))
+            return self._redirect("/settings/model", message=self._t("settings_saved"))
 
         @self.app.post("/chatgpt/connect")
         async def chat_connect(_: str = Depends(auth)):
@@ -315,26 +597,25 @@ class WebApp:
                 configuration = self.models.configuration
                 if configuration is None or configuration.provider_id != "chatgpt_subscription":
                     raise RuntimeError("ChatGPT Subscription is not the selected model provider")
-                probe = await self.provider_setup.probe_hosted_web_search(
-                    configuration,
-                    self.models.credentials_for(configuration),
+                configuration_id = await self.store.aactive_configuration_id()
+                if configuration_id is None or self.jobs is None:
+                    raise RuntimeError("Administrative job service is not ready")
+                job, _ = await self.jobs.enqueue(
+                    "provider.capability_probe",
+                    {
+                        "configuration_id": configuration_id,
+                        "capability": "hosted_web_search",
+                        "apply_result": True,
+                    },
+                    idempotency_key=f"provider-capability:{configuration_id}:hosted_web_search",
+                    target_kind="model_configuration",
+                    target_id=str(configuration_id),
                 )
             except Exception as exc:
-                return self._back(error=self._t("web_search_probe_failed", detail=exc))
-            await self.store.asave_agent_configuration(
-                self.provider_setup.configuration_with_capability(
-                    configuration,
-                    "hosted_web_search",
-                    probe.supported,
-                    probe.id,
-                ),
-            )
-            return self._back(
-                message=(
-                    self._t("web_search_probe_available")
-                    if probe.supported
-                    else self._t("web_search_probe_unavailable")
-                )
+                return self._redirect("/settings/model", error=self._t("web_search_probe_failed", detail=exc))
+            return RedirectResponse(
+                self._url(f"/activity/jobs/{job['id']}"),
+                status_code=303,
             )
 
         @self.app.post("/provider/custom")
@@ -363,7 +644,7 @@ class WebApp:
             if protocol not in CUSTOM_PROTOCOLS:
                 return self._back(error=self._t("unknown_api_protocol"))
             existing = self.store.custom_provider()
-            draft = self._provider_draft(draft_token)
+            draft = await self._provider_draft(draft_token)
             api_key = api_key.strip()
             if clear_api_key is not None:
                 api_key = ""
@@ -384,7 +665,7 @@ class WebApp:
             saved_provider = CustomProvider(name, base_url, api_key, protocol, capabilities)
             await self.store.aset_custom_provider(saved_provider)
             if draft_token:
-                self.provider_drafts.pop(draft_token, None)
+                await self.store.adelete_provider_setup_draft(draft_token)
             selected = self._model_view()
             try:
                 await self._save_provider_selection(
@@ -427,7 +708,7 @@ class WebApp:
             if protocol not in CUSTOM_PROTOCOLS:
                 protocol = "responses"
             existing = self.store.custom_provider()
-            previous_draft = self._provider_draft(draft_token)
+            previous_draft = await self._provider_draft(draft_token)
             api_key = api_key.strip()
             if clear_api_key is not None:
                 api_key = ""
@@ -436,24 +717,9 @@ class WebApp:
             elif not api_key and existing:
                 api_key = existing.api_key
             token = secrets.token_urlsafe(24)
-            draft = ProviderDraft(
-                name,
-                base_url,
-                api_key,
-                protocol,
-                {
-                    "native_function_calls": native_function_calls is not None,
-                    "strict_function_schemas": strict_function_schemas is not None,
-                    "parallel_tool_control": parallel_tool_control is not None,
-                    "prompt_cache_key": prompt_cache_key is not None,
-                    "output_token_limit": output_token_limit is not None,
-                    "hosted_web_search": hosted_web_search is not None and protocol == "responses",
-                },
-                probe_model,
-                time.time() + 15 * 60,
-            )
-            self.provider_drafts[token] = draft
             try:
+                if self.jobs is None:
+                    raise RuntimeError("Administrative job service is not ready")
                 configuration = ModelConfiguration(
                     provider_id="custom_openai",
                     model_id=probe_model,
@@ -462,42 +728,66 @@ class WebApp:
                     endpoint=base_url,
                     capabilities=ProviderCapabilities(),
                 )
-                native_probe = await self.provider_setup.probe_client_tools(
-                    configuration,
-                    ProviderCredentials(api_key=api_key),
+                capabilities = {
+                    "native_tools": native_function_calls is not None,
+                    "strict_function_schemas": strict_function_schemas is not None,
+                    "parallel_tool_control": parallel_tool_control is not None,
+                    "prompt_cache_key": prompt_cache_key is not None,
+                    "output_token_limit": output_token_limit is not None,
+                    "hosted_web_search": hosted_web_search is not None and protocol == "responses",
+                }
+                expires_at = time.time() + 15 * 60
+                fingerprint = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "name": name,
+                            "base_url": base_url,
+                            "protocol": protocol,
+                            "model": probe_model,
+                        },
+                        sort_keys=True,
+                    ).encode()
+                ).hexdigest()
+                await self.store.acreate_provider_setup_draft(
+                    token,
+                    {
+                        "name": name,
+                        "base_url": base_url,
+                        "api_key": api_key,
+                        "protocol": protocol,
+                        "probe_model": probe_model,
+                        "capabilities": capabilities,
+                        "configuration": configuration.to_dict(),
+                        "credentials": {"api_key": api_key},
+                    },
+                    fingerprint,
+                    expires_at=expires_at,
                 )
-                draft.capabilities["native_function_calls"] = native_probe.supported
-                draft.capabilities["strict_function_schemas"] = False
-                draft.capabilities["parallel_tool_control"] = native_probe.supported
+                native_job, native_created = await self.jobs.enqueue(
+                    "provider.setup_draft_probe",
+                    {"draft_id": token, "capability": "native_tools"},
+                    idempotency_key=f"provider-draft:{fingerprint}:native_tools",
+                    target_kind="provider_setup_draft",
+                    target_id=token,
+                )
+                if not native_created and native_job.get("target_id"):
+                    existing_token = str(native_job["target_id"])
+                    if existing_token != token:
+                        await self.store.adelete_provider_setup_draft(token)
+                        token = existing_token
                 if protocol == "responses":
-                    web_probe = await self.provider_setup.probe_hosted_web_search(
-                        configuration,
-                        ProviderCredentials(api_key=api_key),
+                    await self.jobs.enqueue(
+                        "provider.setup_draft_probe",
+                        {"draft_id": token, "capability": "hosted_web_search"},
+                        idempotency_key=f"provider-draft:{fingerprint}:hosted_web_search",
+                        target_kind="provider_setup_draft",
+                        target_id=token,
                     )
-                    draft.capabilities["hosted_web_search"] = web_probe.supported
-                else:
-                    draft.capabilities["hosted_web_search"] = False
             except Exception as exc:
                 return self._provider_draft_back(token, error=str(exc))
-            label = "Responses" if draft.protocol == "responses" else "Chat Completions"
-            native_label = (
-                self._t("native_calls_available")
-                if draft.capabilities["native_function_calls"]
-                else self._t("native_calls_unavailable")
-            )
-            web_label = (
-                self._t("hosted_search_available")
-                if draft.capabilities["hosted_web_search"]
-                else self._t("hosted_search_unavailable")
-            )
             return self._provider_draft_back(
                 token,
-                message=self._t(
-                    "provider_detection_result",
-                    protocol=label,
-                    native=native_label,
-                    web=web_label,
-                ),
+                message=self._t("connecting"),
             )
 
         @self.app.post("/provider/custom/remove")
@@ -560,115 +850,6 @@ class WebApp:
                 return self._back(error=self._t("captcha_expired"))
             return self._back(message=self._t("captcha_submitted"))
 
-        @self.app.post("/settings")
-        async def settings(
-            enabled: str | None = Form(None),
-            silent_replies: str | None = Form(None),
-            robot_prefix: str | None = Form(None),
-            admin_locale: str = Form("en"),
-            prompt_locale: str = Form("en"),
-            assistant_name: str = Form(""),
-            owner_timezone: str = Form("UTC"),
-            min_message_gap_seconds: float = Form(0.7),
-            max_message_gap_seconds: float = Form(2.0),
-            conversation_default: str = Form("opt_in"),
-            provider: str = Form("chatgpt"),
-            model: str = Form(...),
-            reasoning_effort: str = Form("low"),
-            max_reply_tokens: int = Form(256),
-            debounce_seconds: float = Form(...),
-            min_delay_seconds: float = Form(...),
-            max_delay_seconds: float = Form(...),
-            min_typing_cps: float = Form(...),
-            max_typing_cps: float = Form(...),
-            min_human_quiet_minutes: float = Form(...),
-            max_human_quiet_minutes: float = Form(...),
-            owner_details: str = Form(""),
-            base_instructions: str = Form(...),
-            _: str = Depends(auth),
-        ):
-            if admin_locale not in SUPPORTED_LOCALES or prompt_locale not in SUPPORTED_LOCALES:
-                return self._back(tab="assistant", error=ui_text(admin_locale, "unknown_locale"))
-            try:
-                ZoneInfo(owner_timezone)
-            except (KeyError, ValueError):
-                return self._back(tab="assistant", error=self._t("timezone_invalid"))
-            if provider not in PROVIDERS:
-                return self._back(tab="assistant", error=self._t("unknown_model_provider"))
-            if reasoning_effort not in REASONING_EFFORTS:
-                return self._back(tab="assistant", error=self._t("unknown_reasoning_effort"))
-            if conversation_default not in {"opt_in", "opt_out"}:
-                return self._back(tab="assistant", error=self._t("conversation_default_invalid"))
-            if provider == "custom" and self.store.custom_provider() is None:
-                return self._back(tab="assistant", error=self._t("configure_custom_provider_first"))
-            custom = self.store.custom_provider()
-            if (
-                enabled is not None
-                and provider == "custom"
-                and (not custom or not custom.supports("native_function_calls"))
-            ):
-                return self._back(tab="assistant", error=self._t("detect_native_calls_before_enable"))
-            model = model.strip()
-            if not model:
-                return self._back(tab="assistant", error=self._t("model_name_required"))
-            assistant_name = assistant_name.strip()
-            if len(assistant_name) > 80 or not all(character.isprintable() for character in assistant_name):
-                return self._back(tab="assistant", error=self._t("assistant_name_invalid"))
-            owner_details = owner_details.strip()
-            if len(owner_details) > 20_000:
-                return self._back(tab="assistant", error=self._t("owner_details_too_long"))
-            if (
-                min_delay_seconds > max_delay_seconds
-                or min_message_gap_seconds > max_message_gap_seconds
-                or min_typing_cps > max_typing_cps
-                or min_human_quiet_minutes > max_human_quiet_minutes
-            ):
-                return self._back(tab="assistant", error=self._t("minimum_exceeds_maximum"))
-            previous_interface = self.store.interface_settings()
-            previous_profile = self.store.assistant_profile()
-            normalized_prompt_locale = normalize_locale(prompt_locale)
-            base_instructions = localized_base_instructions(
-                previous_profile.prompt_locale,
-                normalized_prompt_locale,
-                base_instructions,
-            )
-            interface_value = replace(previous_interface, locale=normalize_locale(admin_locale))
-            profile_value = AssistantProfile(
-                prompt_locale=normalized_prompt_locale,
-                assistant_name=assistant_name,
-                owner_timezone=owner_timezone,
-                owner_details=owner_details,
-                base_instructions=base_instructions,
-            )
-            automation_value = AutomationSettings(
-                enabled=enabled is not None,
-                silent_replies=silent_replies is not None,
-                robot_prefix=robot_prefix is not None,
-                min_message_gap_seconds=max(0.0, min(min_message_gap_seconds, 30.0)),
-                max_message_gap_seconds=max(0.0, min(max_message_gap_seconds, 30.0)),
-                default_conversation_enabled=conversation_default == "opt_in",
-                debounce_seconds=debounce_seconds,
-                min_delay_seconds=min_delay_seconds,
-                max_delay_seconds=max_delay_seconds,
-                min_typing_cps=min_typing_cps,
-                max_typing_cps=max_typing_cps,
-                min_human_quiet_minutes=max(0.0, min_human_quiet_minutes),
-                max_human_quiet_minutes=max(0.0, max_human_quiet_minutes),
-            )
-            await self.store.aset_interface_settings(interface_value)
-            await self.store.aset_assistant_profile(profile_value)
-            await self.store.aset_automation_settings(automation_value)
-            await self._save_provider_selection(
-                provider,
-                model=model,
-                reasoning_effort=reasoning_effort,
-                max_output_tokens=max(32, min(max_reply_tokens, 2048)),
-            )
-            return self._back(
-                tab="assistant",
-                message=ui_text(interface_value.locale, "settings_saved"),
-            )
-
         @self.app.post("/settings/reset")
         async def settings_reset(
             confirm: str = Form(""),
@@ -723,12 +904,12 @@ class WebApp:
             await self.models.arefresh_prompt_cache_identity()
             return self._back(tab="assistant", message=self._t("personality_updated"))
 
-        @self.app.post("/conversations/{channel_id}/pause")
+        @self.app.post("/chats/{channel_id}/pause")
         async def pause(channel_id: str, _: str = Depends(auth)):
             await self.runtime.permanently_pause(channel_id)
             return self._back(tab="conversations", message=self._t("conversation_paused"))
 
-        @self.app.post("/conversations/{channel_id}/resume")
+        @self.app.post("/chats/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
             self.runtime.cancel(channel_id)
             escalation = await self.store.aactive_interrupt_for_channel(channel_id)
@@ -738,7 +919,7 @@ class WebApp:
             await self.store.aclear_snooze(channel_id)
             return self._back(tab="conversations", message=self._t("conversation_resumed"))
 
-        @self.app.post("/conversations/{channel_id}/mode")
+        @self.app.post("/chats/{channel_id}/mode")
         async def conversation_mode(
             channel_id: str,
             mode: str = Form(...),
@@ -760,7 +941,7 @@ class WebApp:
                 message=self._t("conversation_mode_saved"),
             )
 
-        @self.app.post("/conversations/{channel_id}/force-reply")
+        @self.app.post("/chats/{channel_id}/force-reply")
         async def force_reply(channel_id: str, _: str = Depends(auth)):
             if not self.runtime.ready:
                 return self._back(
@@ -773,7 +954,7 @@ class WebApp:
                 return self._back(tab="conversations", error=self._localized_known_error(exc))
             return self._back(tab="conversations", message=self._t("forced_reply_scheduled"))
 
-        @self.app.post("/conversations/{channel_id}/steering")
+        @self.app.post("/chats/{channel_id}/steering")
         async def live_steering(
             channel_id: str,
             enabled: str | None = Form(None),
@@ -784,13 +965,13 @@ class WebApp:
             await self.runtime.set_live_steering(channel_id, enabled is not None)
             return self._back(tab="conversations", message=self._t("settings_saved"))
 
-        @self.app.post("/escalations/{escalation_id}/claim")
+        @self.app.post("/inbox/escalations/{escalation_id}/claim")
         async def escalation_claim(escalation_id: str, _: str = Depends(auth)):
             if not await self.runtime.claim_escalation(escalation_id):
                 return self._back(tab="conversations", error=self._t("escalation_not_found"))
             return self._back(tab="conversations", message=self._t("escalation_claimed"))
 
-        @self.app.post("/escalations/{escalation_id}/resolve")
+        @self.app.post("/inbox/escalations/{escalation_id}/resolve")
         async def escalation_resolve(
             escalation_id: str,
             resume: str | None = Form(None),
@@ -810,7 +991,7 @@ class WebApp:
                 + (self._t("automation_resumed_suffix") if resume is not None else ""),
             )
 
-        @self.app.post("/escalations/{escalation_id}/dismiss")
+        @self.app.post("/inbox/escalations/{escalation_id}/dismiss")
         async def escalation_dismiss(
             escalation_id: str,
             resume: str | None = Form(None),
@@ -824,7 +1005,7 @@ class WebApp:
                 + (self._t("automation_resumed_suffix") if resume is not None else ""),
             )
 
-        @self.app.post("/database/delete")
+        @self.app.post("/system/database/delete")
         async def database_delete(
             table: str = Form(...),
             row_key: str = Form(...),
@@ -855,10 +1036,10 @@ class WebApp:
                 message=self._t("database_row_deleted", row=repr(row_key), table=table),
             )
 
-        @self.app.post("/diagnostics/replay")
+        @self.app.post("/activity/checkpoints/{thread_id}/{checkpoint_id}/replay")
         async def diagnostics_replay(
-            thread_id: str = Form(...),
-            checkpoint_id: str = Form(...),
+            thread_id: str,
+            checkpoint_id: str,
             confirm: str = Form(""),
             _: str = Depends(auth),
         ):
@@ -870,7 +1051,7 @@ class WebApp:
                 return self._back(tab="usage", error=str(error))
             return self._back(tab="usage", message=self._t("replay_completed", id=run_id))
 
-        @self.app.post("/memories/delete")
+        @self.app.post("/knowledge/memories/delete")
         async def memory_delete(
             namespace: str = Form(...),
             key: str = Form(...),
@@ -887,6 +1068,81 @@ class WebApp:
             except (TypeError, ValueError, json.JSONDecodeError):
                 return self._back(tab="usage", error=self._t("memory_identity_invalid"))
             return self._back(tab="usage", message=self._t("memory_deleted"))
+
+    async def _render(
+        self,
+        request: Request,
+        template: str,
+        active_section: str,
+        title_key: str,
+        **context: Any,
+    ):
+        interface = self.store.interface_settings()
+        jobs = await self.jobs.repository.list(limit=5) if self.jobs else []
+        active_jobs = await self.jobs.repository.active_count() if self.jobs else 0
+        base = {
+            "active_section": active_section,
+            "page_title": ui_text(interface.locale, title_key),
+            "interface_settings": interface,
+            "automation_settings": self.store.automation_settings(),
+            "locale": interface.locale,
+            "locales": SUPPORTED_LOCALES,
+            "t": lambda key, **values: ui_text(interface.locale, key, **values),
+            "public_url": self.public_url,
+            "message": request.query_params.get("message"),
+            "error": request.query_params.get("error"),
+            "active_job_count": active_jobs,
+            "recent_jobs": jobs,
+            "inbox_count": len(await self.store.aactive_interrupts()),
+        }
+        return self.templates.TemplateResponse(request, template, base | context)
+
+    async def _render_connections(self, request: Request, provider_draft: str = ""):
+        custom_provider = self.store.custom_provider()
+        model_view = self._model_view()
+        draft = await self._provider_draft(provider_draft)
+        provider_view = (
+            {
+                "name": draft.name,
+                "base_url": draft.base_url,
+                "protocol": draft.protocol,
+                "capabilities": draft.capabilities,
+                "probe_model": draft.probe_model,
+                "has_api_key": bool(draft.api_key),
+                "draft_token": provider_draft,
+            }
+            if draft
+            else (
+                {
+                    "name": custom_provider.name,
+                    "base_url": custom_provider.base_url,
+                    "protocol": custom_provider.protocol,
+                    "capabilities": custom_provider.capabilities,
+                    "probe_model": model_view["model"],
+                    "has_api_key": bool(custom_provider.api_key),
+                    "draft_token": "",
+                }
+                if custom_provider
+                else None
+            )
+        )
+        return await self._render(
+            request,
+            "settings_connections.html",
+            "settings",
+            "connections",
+            chat_connected=self.account.connected,
+            chat_email=self.account.email,
+            chat_error=self.account.last_error,
+            active_provider=self._active_provider(),
+            provider_label=self.models.provider_label,
+            custom_provider=provider_view,
+            discord_connected=self.discord.connected,
+            discord_identity=self.discord.identity,
+            discord_error=self.discord.error,
+            has_discord_token=self.store.discord_token() is not None,
+            captcha_requests=self.discord.captcha_requests(),
+        )
 
     async def _conversation_views(self) -> list[dict]:
         now = time.time()
@@ -1142,10 +1398,10 @@ class WebApp:
         return self._t(key) if key else str(error)
 
     def _database_url(self, table: str, page: int, query: str) -> str:
-        parameters = {"tab": "database", "db_table": table, "db_page": max(1, page)}
+        parameters = {"table": table, "page": max(1, page)}
         if query:
-            parameters["db_query"] = query
-        return self._url("/") + "?" + urlencode(parameters)
+            parameters["q"] = query
+        return self._url("/system/database") + "?" + urlencode(parameters)
 
     def _database_back(
         self,
@@ -1155,24 +1411,36 @@ class WebApp:
         message: str | None = None,
         error: str | None = None,
     ) -> RedirectResponse:
-        parameters = {"tab": "database", "db_table": table, "db_page": 1}
+        parameters = {"table": table, "page": 1}
         if query:
-            parameters["db_query"] = query
+            parameters["q"] = query
         if message:
             parameters["message"] = message
         if error:
             parameters["error"] = error
         return RedirectResponse(
-            self._url("/") + "?" + urlencode(parameters),
+            self._url("/system/database") + "?" + urlencode(parameters),
             status_code=303,
         )
 
-    def _provider_draft(self, token: str) -> ProviderDraft | None:
-        now = time.time()
-        for key, value in list(self.provider_drafts.items()):
-            if value.expires_at <= now:
-                self.provider_drafts.pop(key, None)
-        return self.provider_drafts.get(token)
+    async def _provider_draft(self, token: str) -> ProviderDraft | None:
+        if not token:
+            return None
+        stored = await self.store.aprovider_setup_draft(token)
+        if stored is None:
+            return None
+        value = stored["payload"]
+        capabilities = dict(value.get("capabilities") or {})
+        capabilities["native_function_calls"] = bool(capabilities.pop("native_tools", False))
+        return ProviderDraft(
+            name=str(value.get("name") or ""),
+            base_url=str(value.get("base_url") or ""),
+            api_key=str(value.get("api_key") or ""),
+            protocol=str(value.get("protocol") or "responses"),
+            capabilities=capabilities,
+            probe_model=str(value.get("probe_model") or ""),
+            expires_at=float(stored["expires_at"]),
+        )
 
     def _provider_draft_back(
         self,
@@ -1182,13 +1450,24 @@ class WebApp:
         error: str | None = None,
     ) -> RedirectResponse:
         values = {
-            "tab": "connections",
             "provider_draft": token,
             "message": message,
             "error": error,
         }
         query = urlencode({key: value for key, value in values.items() if value})
-        return RedirectResponse(self._url("/") + "?" + query, status_code=303)
+        return RedirectResponse(self._url("/settings/connections") + "?" + query, status_code=303)
+
+    def _redirect(
+        self,
+        path: str,
+        *,
+        message: str | None = None,
+        error: str | None = None,
+    ) -> RedirectResponse:
+        query = urlencode(
+            {key: value for key, value in {"message": message, "error": error}.items() if value}
+        )
+        return RedirectResponse(self._url(path) + ("?" + query if query else ""), status_code=303)
 
     def _back(
         self,
@@ -1197,12 +1476,8 @@ class WebApp:
         message: str | None = None,
         error: str | None = None,
     ) -> RedirectResponse:
-        selected_tab = tab if tab in ADMIN_TABS else "connections"
+        destination = SECTION_DESTINATIONS.get(tab, "/settings/connections")
         query = urlencode(
-            {
-                key: value
-                for key, value in {"tab": selected_tab, "message": message, "error": error}.items()
-                if value
-            }
+            {key: value for key, value in {"message": message, "error": error}.items() if value}
         )
-        return RedirectResponse(self._url("/") + ("?" + query if query else ""), status_code=303)
+        return RedirectResponse(self._url(destination) + ("?" + query if query else ""), status_code=303)

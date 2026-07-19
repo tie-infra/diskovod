@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<form class="filter-bar" method="get">
+  <input class="form-control" type="search" name="q" value="{{ chats.query }}" placeholder="{{ t('search') }}">
+  <select class="form-select" name="mode">
+    <option value="">{{ t("all") }}</option>
+    {% for mode in ("automatic", "inline", "paused") %}<option value="{{ mode }}" {{ 'selected' if chats.mode == mode }}>{{ t("mode_" ~ mode) }}</option>{% endfor %}
+  </select>
+  <button class="btn btn-primary">{{ t("search") }}</button>
+</form>
+<div class="chat-list card">
+  {% for chat in chats.items %}
+  <a class="chat-row" href="/chats/{{ chat.channel_id }}">
+    <span class="avatar">{{ (chat.peer_name or '?')[:1]|upper }}</span>
+    <span class="chat-copy"><strong>{{ chat.peer_name }}</strong><small>{{ chat.latest_content or t("no_messages") }}</small></span>
+    <span class="text-end"><span class="badge text-bg-secondary">{{ t("mode_" ~ chat.mode) }}</span>{% if chat.escalation_count %}<span class="badge text-bg-danger">!</span>{% endif %}</span>
+  </a>
+  {% else %}<div class="empty-state">{{ t("no_dms") }}</div>{% endfor %}
+</div>
+{% endblock %}

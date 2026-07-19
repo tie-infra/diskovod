@@ -327,6 +327,16 @@ class AdminJobRepository:
             ).fetchall()
         return [self._event(row) for row in rows]
 
+    async def active_count(self) -> int:
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT COUNT(*) FROM admin_jobs "
+                    "WHERE status IN ('queued','running','cancellation_requested')"
+                )
+            ).fetchone()
+        return int(row[0])
+
     async def cancellation_requested(self, job_id: str, owner: str) -> bool:
         async with self.database.transaction() as connection:
             row = await (

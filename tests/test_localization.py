@@ -234,10 +234,17 @@ def test_every_tool_string_supports_every_locale():
 
 
 def test_every_literal_admin_template_key_exists_in_the_catalog():
-    template = (Path(__file__).parents[1] / "diskovod" / "templates" / "index.html").read_text()
-    referenced = set(re.findall(r"""\bt\(["']([^"']+)["']""", template))
+    templates = Path(__file__).parents[1] / "diskovod" / "templates"
+    referenced = {
+        key
+        for template in templates.glob("*.html")
+        for key in re.findall(r"""\bt\(["']([^"']+)["']""", template.read_text())
+    }
 
-    assert referenced <= set(UI_TEXT)
+    dynamic_prefixes = {key for key in referenced if key.endswith("_")}
+    assert referenced - dynamic_prefixes <= set(UI_TEXT)
+    for prefix in dynamic_prefixes:
+        assert any(key.startswith(prefix) for key in UI_TEXT), prefix
 
 
 def test_strings_live_in_the_machine_editable_json_catalog():

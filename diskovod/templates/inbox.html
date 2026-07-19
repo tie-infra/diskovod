@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block subtitle %}<p class="text-body-secondary">{{ t("escalation_help") }}</p>{% endblock %}
+{% block content %}
+<div class="vstack gap-3">
+  {% for escalation in escalations %}
+  <article class="card">
+    <div class="card-body">
+      <div class="d-flex justify-content-between"><h2 class="h5">{{ escalation.channel_id }}</h2><span class="badge text-bg-warning">{{ escalation.state }}</span></div>
+      <p>{{ t("reason_" ~ escalation.reason) }}</p>
+      {% if escalation.acknowledgement %}<blockquote class="blockquote fs-6">{{ escalation.acknowledgement }}</blockquote>{% endif %}
+      <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-outline-primary" href="/chats/{{ escalation.channel_id }}">{{ t("open_chat") }}</a>
+        <form method="post" action="/inbox/escalations/{{ escalation.id }}/resolve"><button class="btn btn-primary">{{ t("resolve_keep_paused") }}</button></form>
+        <form method="post" action="/inbox/escalations/{{ escalation.id }}/dismiss"><button class="btn btn-outline-secondary">{{ t("dismiss_keep_paused") }}</button></form>
+      </div>
+    </div>
+  </article>
+  {% else %}<div class="empty-state card">{{ t("no_escalations") }}</div>{% endfor %}
+</div>
+{% endblock %}

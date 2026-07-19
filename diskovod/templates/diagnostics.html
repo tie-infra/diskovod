@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_system_nav.html" %}
+<section class="card mb-4"><div class="card-header"><h2 class="h5 mb-0">{{ t("capability_probes_title") }}</h2></div><div class="list-group list-group-flush">{% for probe in capability_probes %}<article class="list-group-item"><div class="d-flex justify-content-between"><strong>{{ probe.capability }}</strong><span class="badge status-{{ probe.status }}">{{ probe.status }}</span></div><p class="mb-0">{{ probe.conclusion }}</p><details><summary>{{ t("details") }}</summary><pre><code>{{ probe.request_payload_json }}</code></pre><pre><code>{{ probe.response_payload_json }}</code></pre></details></article>{% else %}<div class="empty-state">{{ t("no_capability_probes") }}</div>{% endfor %}</div></section>
+<section class="card"><div class="card-header"><h2 class="h5 mb-0">{{ t("runtime_health") }}</h2></div><div class="card-body"><div class="summary-grid">{% for name, rows in runtime_records.items() %}<div><span>{{ name }}</span><strong>{{ rows|length }}</strong></div>{% endfor %}</div></div></section>
+{% endblock %}

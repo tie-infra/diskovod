@@ -57,20 +57,41 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/provider/custom/remove" in route_paths
     assert "/provider/select" in route_paths
     assert "/discord/connect" in route_paths
-    assert "/settings/theme" in route_paths
+    assert "/settings/theme" not in route_paths
     assert "/settings/reset" in route_paths
+    assert "/inbox" in route_paths
+    assert "/chats" in route_paths
+    assert "/chats/{channel_id}" in route_paths
+    assert "/activity/runs" in route_paths
+    assert "/activity/runs/{run_id}" in route_paths
+    assert "/activity/jobs" in route_paths
+    assert "/activity/jobs/{job_id}" in route_paths
+    assert "/knowledge/memories" in route_paths
+    assert "/knowledge/attachments" in route_paths
+    assert "/settings/connections" in route_paths
+    assert "/settings/model" in route_paths
+    assert "/settings/assistant" in route_paths
+    assert "/settings/automation" in route_paths
+    assert "/settings/interface" in route_paths
+    assert "/system/diagnostics" in route_paths
+    assert "/system/database" in route_paths
+    assert "/api/events/stream" in route_paths
     assert "/discord/settings" not in route_paths
     assert "/discord/captcha/{request_id}" in route_paths
-    assert "/database/delete" in route_paths
-    assert "/conversations/{channel_id}/force-reply" in route_paths
-    assert "/conversations/{channel_id}/mode" in route_paths
-    assert "/escalations/{escalation_id}/claim" in route_paths
-    assert "/escalations/{escalation_id}/resolve" in route_paths
-    assert "/escalations/{escalation_id}/dismiss" in route_paths
+    assert "/system/database/delete" in route_paths
+    assert "/chats/{channel_id}/force-reply" in route_paths
+    assert "/chats/{channel_id}/mode" in route_paths
+    assert "/inbox/escalations/{escalation_id}/claim" in route_paths
+    assert "/inbox/escalations/{escalation_id}/resolve" in route_paths
+    assert "/inbox/escalations/{escalation_id}/dismiss" in route_paths
     assert web._url("/chatgpt/oauth/callback") == ("https://diskovod.example/base/chatgpt/oauth/callback")
-    assert web._back(message="connected").headers["location"].startswith("https://diskovod.example/base/")
+    assert (
+        web._back(message="connected")
+        .headers["location"]
+        .startswith("https://diskovod.example/base/settings/connections")
+    )
     assert web._database_url("messages", 2, "hello world") == (
-        "https://diskovod.example/base/?tab=database&db_table=messages&db_page=2&db_query=hello+world"
+        "https://diskovod.example/base/system/database?table=messages&page=2&q=hello+world"
     )
 
 
@@ -143,7 +164,7 @@ async def test_security_policy_allows_only_the_pinned_bootstrap_stylesheet_origi
             "raw_path": b"/static/style.css",
             "query_string": b"",
             "headers": [],
-            "client": ("127.0.0.1", 1234),
+            "client": ("::1", 1234),
             "server": ("diskovod.example", 443),
         },
         receive,
@@ -153,8 +174,9 @@ async def test_security_policy_allows_only_the_pinned_bootstrap_stylesheet_origi
     response_start = next(message for message in sent if message["type"] == "http.response.start")
     headers = {name.decode(): value.decode() for name, value in response_start["headers"]}
     assert response_start["status"] == 200
-    assert "style-src 'self' https://cdn.jsdelivr.net" in headers["content-security-policy"]
-    assert "script-src" not in headers["content-security-policy"]
+    assert "style-src 'self'" in headers["content-security-policy"]
+    assert "script-src 'self'" in headers["content-security-policy"]
+    assert "cdn.jsdelivr.net" not in headers["content-security-policy"]
 
 
 def test_public_origin_is_accepted_behind_reverse_proxy():

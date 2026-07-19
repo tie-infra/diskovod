@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="subnav nav nav-pills"><a class="nav-link active" href="/knowledge/memories">{{ t("memories_title") }}</a><a class="nav-link" href="/knowledge/attachments">{{ t("attachments_diagnostics_title") }}</a></nav>
+<div class="card"><div class="list-group list-group-flush">{% for memory in memories %}<article class="list-group-item"><div class="d-flex justify-content-between"><strong>{{ memory.key }}</strong><code>{{ memory.namespace }}</code></div><pre class="mt-2"><code>{{ memory.value_pretty }}</code></pre><form method="post" action="/knowledge/memories/delete"><input type="hidden" name="namespace" value="{{ memory.namespace }}"><input type="hidden" name="key" value="{{ memory.key }}"><input type="hidden" name="confirm" value="delete"><button class="btn btn-sm btn-outline-danger">{{ t("delete_row") }}</button></form></article>{% else %}<div class="empty-state">{{ t("no_runtime_records") }}</div>{% endfor %}</div></div>
+{% endblock %}

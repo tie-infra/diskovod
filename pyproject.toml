@@ -32,7 +32,7 @@ diskovod = "diskovod.main:main"
 include = ["diskovod*"]
 
 [tool.setuptools.package-data]
-diskovod = ["templates/*.html", "static/*.css", "localization.json"]
+diskovod = ["templates/*.html", "static/*.css", "static/*.js", "localization.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

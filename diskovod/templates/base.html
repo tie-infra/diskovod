@@ -1,0 +1,81 @@
+<!doctype html>
+<html
+  lang="{{ locale }}"
+  data-admin-theme="{{ interface_settings.theme }}"
+  data-density="{{ interface_settings.density }}"
+  {% if interface_settings.theme != "system" %}
+    data-bs-theme="{{ 'dark' if interface_settings.theme == 'black' else interface_settings.theme }}"
+  {% endif %}
+>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ page_title }} · Diskovod</title>
+    <link rel="stylesheet" href="/static/bootstrap.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body data-live-topic="{{ live_topic|default('jobs') }}">
+    <a class="visually-hidden-focusable" href="#main-content">{{ t("skip") }}</a>
+    <div class="admin-layout">
+      <aside class="sidebar" id="admin-sidebar" aria-label="{{ t('admin_navigation') }}">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">◉</span>
+          <span>Diskovod</span>
+        </div>
+        <nav class="nav nav-pills flex-column gap-1">
+          <a class="nav-link {{ 'active' if active_section == 'overview' }}" href="/">
+            <span aria-hidden="true">⌂</span> {{ t("overview") }}
+          </a>
+          <a class="nav-link {{ 'active' if active_section == 'inbox' }}" href="/inbox">
+            <span aria-hidden="true">◎</span> {{ t("inbox") }}
+            {% if inbox_count %}<span class="badge text-bg-danger ms-auto">{{ inbox_count }}</span>{% endif %}
+          </a>
+          <a class="nav-link {{ 'active' if active_section == 'chats' }}" href="/chats">
+            <span aria-hidden="true">◌</span> {{ t("chats") }}
+          </a>
+          <a class="nav-link {{ 'active' if active_section == 'activity' }}" href="/activity/runs">
+            <span aria-hidden="true">⌁</span> {{ t("activity") }}
+          </a>
+          <a class="nav-link {{ 'active' if active_section == 'knowledge' }}" href="/knowledge/memories">
+            <span aria-hidden="true">◇</span> {{ t("knowledge") }}
+          </a>
+          <div class="nav-heading">{{ t("settings") }}</div>
+          <a class="nav-link {{ 'active' if active_section == 'settings' }}" href="/settings/connections">
+            <span aria-hidden="true">⚙</span> {{ t("settings") }}
+          </a>
+          <div class="nav-heading">{{ t("system") }}</div>
+          <a class="nav-link {{ 'active' if active_section == 'system' }}" href="/system/diagnostics">
+            <span aria-hidden="true">⋯</span> {{ t("system") }}
+          </a>
+        </nav>
+      </aside>
+      <div class="content-column">
+        <header class="topbar">
+          <button class="btn btn-outline-secondary sidebar-toggle" type="button" aria-controls="admin-sidebar" aria-expanded="false">
+            <span aria-hidden="true">☰</span><span class="visually-hidden">{{ t("admin_navigation") }}</span>
+          </button>
+          <div class="ms-auto d-flex align-items-center gap-2">
+            <a class="btn btn-sm btn-outline-secondary" href="/activity/jobs" data-job-indicator>
+              {{ t("jobs") }} <span class="badge text-bg-primary">{{ active_job_count }}</span>
+            </a>
+            <span class="status-dot {{ 'is-on' if automation_settings.enabled }}" aria-hidden="true"></span>
+            <span class="small text-body-secondary">
+              {{ t("automation_enabled") if automation_settings.enabled else t("automation_disabled") }}
+            </span>
+          </div>
+        </header>
+        <main id="main-content" class="main-content" tabindex="-1">
+          <div class="page-heading">
+            {% block breadcrumbs %}{% endblock %}
+            <h1>{% block title %}{{ page_title }}{% endblock %}</h1>
+            {% block subtitle %}{% endblock %}
+          </div>
+          {% if message %}<div class="alert alert-success" role="status">{{ message }}</div>{% endif %}
+          {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+          {% block content %}{% endblock %}
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

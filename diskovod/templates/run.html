@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block breadcrumbs %}<a href="/activity/runs">{{ t("runs") }}</a> / {{ run.run.id }}{% endblock %}
+{% block title %}{{ t("run_detail") }}{% endblock %}
+{% block content %}
+<div class="summary-grid mb-4">
+  <div><span>{{ t("model_request_status") }}</span><strong class="badge status-{{ run.run.status }}">{{ run.run.status }}</strong></div>
+  <div><span>{{ t("conversation") }}</span><a href="/chats/{{ run.run.channel_id }}">{{ run.run.channel_id }}</a></div>
+  <div><span>{{ t("duration") }}</span><strong>{{ run.run.duration_ms }} ms</strong></div>
+  <div><span>{{ t("configuration") }}</span><strong>{{ run.run.configuration_version_id or '—' }}</strong></div>
+</div>
+{% if run.run.error %}<div class="alert alert-danger"><strong>{{ run.run.error }}</strong></div>{% endif %}
+<section class="card mb-4"><div class="card-header"><h2 class="h5 mb-0">{{ t("timeline") }}</h2></div><div class="timeline">
+{% for event in run.timeline %}<article class="timeline-event"><div class="timeline-marker"></div><div><div class="d-flex gap-2"><strong>{{ event.kind }}</strong><small class="text-body-secondary">{{ event.recorded_at_label }}</small></div><details><summary>{{ t("details") }}</summary><pre><code>{{ event.payload_pretty }}</code></pre></details></div></article>{% else %}<div class="empty-state">{{ t("no_runtime_records") }}</div>{% endfor %}
+</div></section>
+{% if run.deliveries %}<section class="card"><div class="card-header"><h2 class="h5 mb-0">{{ t("deliveries_title") }}</h2></div><div class="card-body">{% for delivery in run.deliveries %}<details><summary>{{ delivery.action }} · {{ delivery.state }} · {{ delivery.tool_call_id }}</summary><pre><code>{{ delivery.request_pretty }}</code></pre><pre><code>{{ delivery.result_pretty }}</code></pre></details>{% endfor %}</div></section>{% endif %}
+{% endblock %}

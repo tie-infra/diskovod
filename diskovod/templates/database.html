@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_system_nav.html" %}
+<div class="database-layout">
+  <aside class="card database-tables"><div class="list-group list-group-flush">{% for table in database.tables %}<a class="list-group-item list-group-item-action d-flex justify-content-between {{ 'active' if table.selected }}" href="{{ table.url }}"><span>{{ table.label }}</span><span class="badge text-bg-secondary">{{ table.count }}</span></a>{% endfor %}</div></aside>
+  <section><form class="filter-bar" method="get"><input type="hidden" name="table" value="{{ database.name }}"><input class="form-control" type="search" name="q" value="{{ database.query }}" placeholder="{{ t('search_columns') }}"><button class="btn btn-primary">{{ t("search") }}</button></form><div class="card table-responsive"><table class="table table-sm mb-0"><thead><tr>{% for column in database.columns %}<th>{{ column }}</th>{% endfor %}{% if not database.read_only %}<th></th>{% endif %}</tr></thead><tbody>{% for row in database.rows %}<tr>{% for cell in row.cells %}<td><code>{{ cell }}</code></td>{% endfor %}{% if not database.read_only %}<td><form method="post" action="/system/database/delete"><input type="hidden" name="table" value="{{ database.name }}"><input type="hidden" name="row_key" value="{{ row.key }}"><input type="hidden" name="confirm" value="delete"><button class="btn btn-sm btn-outline-danger">{{ t("delete_row") }}</button></form></td>{% endif %}</tr>{% else %}<tr><td class="empty-state" colspan="{{ database.columns|length + 1 }}">{{ t("no_matching_rows") }}</td></tr>{% endfor %}</tbody></table></div></section>
+</div>
+{% endblock %}

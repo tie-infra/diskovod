@@ -15,15 +15,8 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
+from langchain_core.messages import HumanMessage, SystemMessage
 
-from .automation import Automation
-from .chatgpt import (
-    CUSTOM_PROTOCOLS,
-    PROVIDERS,
-    ChatGPTClient,
-    make_prompt_cache_key,
-    normalize_custom_base_url,
-)
 from .discord import DiscordService
 from .localization import (
     SUPPORTED_LOCALES,
@@ -33,13 +26,24 @@ from .localization import (
     ui_text,
 )
 from .models import ADMIN_THEMES, REASONING_EFFORTS, AppSettings, CustomProvider
+from .oauth import ChatGPTAccount
+from .providers import (
+    ModelConfiguration,
+    ModelService,
+    ProviderCapabilities,
+    ProviderCredentials,
+    ProviderSetup,
+    normalize_custom_base_url,
+)
+from .runtime import AgentService
 from .security import password_matches
 from .store import Store
 
 PERSONALITY_PROMPT_VERSION = "style-base-rates-examples-and-sequences-v4"
-PERSONALITY_MAX_OUTPUT_TOKENS = 2000
 PERSONALITY_INSTRUCTIONS = prompts_for("en").personality
 ADMIN_TABS = frozenset({"connections", "assistant", "conversations", "usage", "database"})
+PROVIDERS = frozenset({"chatgpt", "custom"})
+CUSTOM_PROTOCOLS = frozenset({"responses", "chat_completions"})
 
 
 @dataclass(slots=True)
@@ -78,13 +82,20 @@ class WebApp:
     def __init__(
         self,
         store: Store,
-        chatgpt: ChatGPTClient,
+        account: ChatGPTAccount,
+        models: ModelService,
+        provider_setup: ProviderSetup,
         discord: DiscordService,
-        automation: Automation,
+        runtime: AgentService,
         admin_password: str,
         public_url: str,
     ):
-        self.store, self.chatgpt, self.discord, self.automation = store, chatgpt, discord, automation
+        self.store = store
+        self.account = account
+        self.models = models
+        self.provider_setup = provider_setup
+        self.discord = discord
+        self.runtime = runtime
         self.admin_password = admin_password
         self.public_url = public_url.rstrip("/")
         self.public_origin = self._normalized_origin(self.public_url)
@@ -197,24 +208,18 @@ class WebApp:
                     "locales": SUPPORTED_LOCALES,
                     "t": lambda key, **values: ui_text(app_settings.admin_locale, key, **values),
                     "public_url": self.public_url,
-                    "chat_connected": self.chatgpt.subscription_connected,
-                    "chat_email": self.chatgpt.email,
-                    "chat_error": self.chatgpt.last_error,
-                    "subscription_web_search": self.store.subscription_web_search_capability(
-                        app_settings.model
-                    ),
+                    "chat_connected": self.account.connected,
+                    "chat_email": self.account.email,
+                    "chat_error": self.account.last_error,
+                    "subscription_web_search": self._hosted_search_capability(),
                     "subscription_web_search_probe": self._subscription_web_search_probe_view(
                         app_settings.model
                     ),
-                    "model_connected": self.chatgpt.connected,
-                    "automation_ready": self.chatgpt.automation_ready,
-                    "automation_error": (
-                        ui_text(app_settings.admin_locale, "custom_provider_native_required")
-                        if self.chatgpt.automation_error
-                        else None
-                    ),
-                    "active_provider": self.chatgpt.active_provider,
-                    "provider_label": self.chatgpt.provider_label,
+                    "model_connected": self.models.ready,
+                    "automation_ready": self.runtime.ready,
+                    "automation_error": None,
+                    "active_provider": self._active_provider(),
+                    "provider_label": self.models.provider_label,
                     "custom_provider": provider_view,
                     "discord_connected": self.discord.connected,
                     "discord_identity": self.discord.identity,
@@ -251,7 +256,7 @@ class WebApp:
         @self.app.post("/chatgpt/connect")
         async def chat_connect(_: str = Depends(auth)):
             try:
-                return RedirectResponse(await self.chatgpt.begin_oauth(), status_code=303)
+                return RedirectResponse(await self.account.begin_oauth(), status_code=303)
             except Exception as exc:
                 return self._back(error=str(exc))
 
@@ -262,33 +267,47 @@ class WebApp:
             error: str | None = None,
         ):
             try:
-                await self.chatgpt.finish_oauth(code=code, state=state, error=error)
+                await self.account.finish_oauth(code=code, state=state, error=error)
             except Exception as exc:
                 return self._back(error=str(exc))
-            self._set_provider("chatgpt")
+            settings = self.store.app_settings()
+            self.models.save_subscription(
+                model_id=settings.model,
+                reasoning_effort=settings.reasoning_effort,
+                max_output_tokens=settings.max_reply_tokens,
+            )
             return self._back(message=self._t("chatgpt_connected"))
 
         @self.app.post("/chatgpt/disconnect")
         async def chat_disconnect(_: str = Depends(auth)):
             self.store.clear_chat_credentials()
-            self.chatgpt.last_error = None
+            self.account.last_error = None
             return self._back(message=self._t("chatgpt_disconnected"))
 
         @self.app.post("/chatgpt/web-search/detect")
         async def chat_web_search_detect(_: str = Depends(auth)):
-            settings = self.store.app_settings()
             try:
-                supported = await self.chatgpt.detect_subscription_web_search(
-                    settings.model,
-                    settings.reasoning_effort,
-                    settings.prompt_locale,
+                configuration = self.models.configuration
+                if configuration is None or configuration.provider_id != "chatgpt_subscription":
+                    raise RuntimeError("ChatGPT Subscription is not the selected model provider")
+                probe = await self.provider_setup.probe_hosted_web_search(
+                    configuration,
+                    self.models.credentials_for(configuration),
                 )
             except Exception as exc:
                 return self._back(error=self._t("web_search_probe_failed", detail=exc))
+            self.store.save_agent_configuration(
+                self.provider_setup.configuration_with_capability(
+                    configuration,
+                    "hosted_web_search",
+                    probe.supported,
+                    probe.id,
+                )
+            )
             return self._back(
                 message=(
                     self._t("web_search_probe_available")
-                    if supported
+                    if probe.supported
                     else self._t("web_search_probe_unavailable")
                 )
             )
@@ -335,11 +354,17 @@ class WebApp:
             }
             if self.store.app_settings().enabled and not capabilities["native_function_calls"]:
                 return self._back(error=self._t("disable_automation_for_provider"))
-            self.store.set_custom_provider(CustomProvider(name, base_url, api_key, protocol, capabilities))
+            saved_provider = CustomProvider(name, base_url, api_key, protocol, capabilities)
+            self.store.set_custom_provider(saved_provider)
             if draft_token:
                 self.provider_drafts.pop(draft_token, None)
-            self._set_provider("custom")
-            self.chatgpt.last_error = None
+            settings = self.store.app_settings()
+            self.models.save_custom_openai(
+                saved_provider,
+                model_id=settings.model,
+                reasoning_effort=settings.reasoning_effort,
+                max_output_tokens=settings.max_reply_tokens,
+            )
             return self._back(message=self._t("provider_saved", name=name))
 
         @self.app.post("/provider/custom/detect")
@@ -397,18 +422,29 @@ class WebApp:
             )
             self.provider_drafts[token] = draft
             try:
-                detection = await self.chatgpt.detect_custom_protocol(
-                    name=name,
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=probe_model,
-                    locale=self.store.app_settings().prompt_locale,
+                configuration = ModelConfiguration(
+                    provider_id="custom_openai",
+                    model_id=probe_model,
+                    transport_profile=protocol,
+                    credential_profile="setup_probe",
+                    endpoint=base_url,
+                    capabilities=ProviderCapabilities(),
                 )
-                draft.protocol = detection.protocol
-                draft.capabilities["native_function_calls"] = detection.native_function_calls
-                draft.capabilities["strict_function_schemas"] = detection.native_function_calls
-                draft.capabilities["parallel_tool_control"] = detection.native_function_calls
-                draft.capabilities["hosted_web_search"] = detection.hosted_web_search
+                native_probe = await self.provider_setup.probe_client_tools(
+                    configuration,
+                    ProviderCredentials(api_key=api_key),
+                )
+                draft.capabilities["native_function_calls"] = native_probe.supported
+                draft.capabilities["strict_function_schemas"] = False
+                draft.capabilities["parallel_tool_control"] = native_probe.supported
+                if protocol == "responses":
+                    web_probe = await self.provider_setup.probe_hosted_web_search(
+                        configuration,
+                        ProviderCredentials(api_key=api_key),
+                    )
+                    draft.capabilities["hosted_web_search"] = web_probe.supported
+                else:
+                    draft.capabilities["hosted_web_search"] = False
             except Exception as exc:
                 return self._provider_draft_back(token, error=str(exc))
             label = "Responses" if draft.protocol == "responses" else "Chat Completions"
@@ -435,18 +471,16 @@ class WebApp:
         @self.app.post("/provider/custom/remove")
         async def custom_provider_remove(_: str = Depends(auth)):
             self.store.clear_custom_provider()
-            if self.chatgpt.active_provider == "custom":
-                self._set_provider("chatgpt")
-            self.chatgpt.last_error = None
+            self.store.clear_provider_credentials("custom_openai_default")
             return self._back(message=self._t("custom_provider_removed"))
 
         @self.app.post("/provider/select")
         async def provider_select(provider: str = Form(...), _: str = Depends(auth)):
             if provider not in PROVIDERS:
                 return self._back(error=self._t("unknown_model_provider"))
-            if provider == "chatgpt" and not self.chatgpt.subscription_connected:
+            if provider == "chatgpt" and not self.account.connected:
                 return self._back(error=self._t("connect_chatgpt_first"))
-            if provider == "custom" and not self.chatgpt.custom_connected:
+            if provider == "custom" and self.store.custom_provider() is None:
                 return self._back(error=self._t("configure_custom_provider_first"))
             custom = self.store.custom_provider()
             if (
@@ -456,9 +490,8 @@ class WebApp:
                 and not custom.supports("native_function_calls")
             ):
                 return self._back(error=self._t("detect_native_calls_before_select"))
-            self._set_provider(provider)
-            self.chatgpt.last_error = None
-            return self._back(message=self._t("provider_selected", name=self.chatgpt.provider_label))
+            self._save_provider_selection(provider, self.store.app_settings())
+            return self._back(message=self._t("provider_selected", name=self.models.provider_label))
 
         @self.app.post("/discord/connect")
         async def discord_connect(token: str = Form(...), _: str = Depends(auth)):
@@ -531,7 +564,7 @@ class WebApp:
                 return self._back(tab="assistant", error=self._t("unknown_reasoning_effort"))
             if conversation_default not in {"opt_in", "opt_out"}:
                 return self._back(tab="assistant", error=self._t("conversation_default_invalid"))
-            if provider == "custom" and not self.chatgpt.custom_connected:
+            if provider == "custom" and self.store.custom_provider() is None:
                 return self._back(tab="assistant", error=self._t("configure_custom_provider_first"))
             custom = self.store.custom_provider()
             if (
@@ -593,6 +626,7 @@ class WebApp:
                 base_instructions=base_instructions,
             )
             self.store.set_app_settings(value)
+            self._save_provider_selection(provider, value)
             return self._back(
                 tab="assistant",
                 message=ui_text(value.admin_locale, "settings_saved"),
@@ -648,12 +682,12 @@ class WebApp:
 
         @self.app.post("/conversations/{channel_id}/pause")
         async def pause(channel_id: str, _: str = Depends(auth)):
-            self.automation.permanently_pause(channel_id)
+            self.runtime.permanently_pause(channel_id)
             return self._back(tab="conversations", message=self._t("conversation_paused"))
 
         @self.app.post("/conversations/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
-            self.automation.cancel(channel_id)
+            self.runtime.cancel(channel_id)
             self.store.resolve_escalation_on_owner_reply(channel_id)
             self.store.set_permanent_pause(channel_id, False)
             self.store.clear_snooze(channel_id)
@@ -675,7 +709,7 @@ class WebApp:
                     tab="conversations",
                     error=self._t("conversation_not_found"),
                 )
-            self.automation.cancel(channel_id)
+            self.runtime.cancel(channel_id)
             return self._back(
                 tab="conversations",
                 message=self._t("conversation_mode_saved"),
@@ -683,14 +717,10 @@ class WebApp:
 
         @self.app.post("/conversations/{channel_id}/force-reply")
         async def force_reply(channel_id: str, _: str = Depends(auth)):
-            if not self.chatgpt.automation_ready:
+            if not self.runtime.ready:
                 return self._back(
                     tab="conversations",
-                    error=(
-                        self._t("custom_provider_native_required")
-                        if self.chatgpt.automation_error
-                        else self._t("connect_provider_before_force")
-                    ),
+                    error=self._t("connect_provider_before_force"),
                 )
             try:
                 await self.discord.force_reply(channel_id)
@@ -783,50 +813,36 @@ class WebApp:
         return result
 
     def _subscription_web_search_probe_view(self, model: str) -> dict[str, Any] | None:
-        report = self.store.subscription_web_search_probe(model)
+        with self.store._lock:
+            report = self.store._db.execute(
+                """
+                SELECT * FROM provider_capability_probes
+                WHERE capability='hosted_web_search'
+                ORDER BY completed_at DESC LIMIT 1
+                """
+            ).fetchone()
         if report is None:
             return None
-        diagnostics = report.get("diagnostics")
-        diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
-        outcome = diagnostics.get("outcome")
-        if outcome not in {"verified", "response_mismatch", "request_error"}:
-            outcome = "verified" if report.get("supported") is True else "response_mismatch"
-        checked_at = report.get("checked_at")
-        checked_at_label = (
-            datetime.fromtimestamp(float(checked_at)).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-            if isinstance(checked_at, (int, float))
-            else "—"
+        configuration = json.loads(report["configuration"])
+        status = str(report["status"])
+        outcome = (
+            "verified"
+            if status == "supported"
+            else ("request_error" if status == "error" else "response_mismatch")
         )
-        function_names = diagnostics.get("function_call_names")
-        function_names = [str(name) for name in function_names] if isinstance(function_names, list) else []
-        hosted_calls = diagnostics.get("hosted_calls")
-        hosted_labels = []
-        for call in hosted_calls if isinstance(hosted_calls, list) else []:
-            if isinstance(call, dict):
-                hosted_labels.append(f"{call.get('kind', '?')}:{call.get('status', '?')}")
-        observed = "—"
-        if diagnostics and outcome != "request_error":
-            observed = "; ".join(
-                (
-                    f"text_output={str(bool(diagnostics.get('response_text_present'))).lower()}",
-                    f"function_calls={diagnostics.get('function_call_count', 0)}"
-                    f" [{', '.join(function_names)}]",
-                    f"connection_test_ok={str(bool(diagnostics.get('connection_test_ok'))).lower()}",
-                    f"hosted_calls={diagnostics.get('hosted_call_count', 0)} [{', '.join(hosted_labels)}]",
-                )
-            )
+        response = json.loads(report["response_payload"]) if report["response_payload"] else {}
         return {
-            "model": str(report.get("model") or model),
-            "effort": str(diagnostics.get("effort") or "—"),
-            "checked_at_label": checked_at_label,
+            "model": str(configuration.get("model_id") or model),
+            "effort": str(configuration.get("options", {}).get("reasoning_effort") or "—"),
+            "checked_at_label": datetime.fromtimestamp(report["completed_at"])
+            .astimezone()
+            .strftime("%Y-%m-%d %H:%M:%S %Z"),
             "result_label": self._t(f"web_search_probe_result_{outcome}"),
-            "response_id": str(diagnostics.get("response_id") or "—"),
-            "observed": observed,
-            "error": str(diagnostics.get("error") or ""),
-            "request_log_id": diagnostics.get("request_log_id"),
-            "request_log_url": self._url(f"?tab=usage#model-request-{diagnostics['request_log_id']}")
-            if isinstance(diagnostics.get("request_log_id"), int)
-            else None,
+            "response_id": str(report["id"]),
+            "observed": json.dumps(response, ensure_ascii=False)[:2000] or "—",
+            "error": str(report["conclusion"] if status == "error" else ""),
+            "request_log_id": None,
+            "request_log_url": None,
         }
 
     def _personality_view(self) -> dict[str, Any] | None:
@@ -990,10 +1006,31 @@ class WebApp:
         )
         return data
 
-    def _set_provider(self, provider: str) -> None:
-        if provider not in PROVIDERS:
-            raise ValueError("Unknown model provider")
-        self.store.set_app_settings(replace(self.store.app_settings(), provider=provider))
+    def _save_provider_selection(self, provider: str, settings: AppSettings) -> None:
+        if provider == "chatgpt":
+            self.models.save_subscription(
+                model_id=settings.model,
+                reasoning_effort=settings.reasoning_effort,
+                max_output_tokens=settings.max_reply_tokens,
+            )
+            return
+        custom = self.store.custom_provider()
+        if provider != "custom" or custom is None:
+            raise ValueError("Unknown or unavailable model provider")
+        self.models.save_custom_openai(
+            custom,
+            model_id=settings.model,
+            reasoning_effort=settings.reasoning_effort,
+            max_output_tokens=settings.max_reply_tokens,
+        )
+
+    def _active_provider(self) -> str:
+        configuration = self.models.configuration
+        return "custom" if configuration and configuration.provider_id == "custom_openai" else "chatgpt"
+
+    def _hosted_search_capability(self) -> bool | None:
+        configuration = self.models.configuration
+        return configuration.capabilities.hosted_web_search if configuration else None
 
     async def _infer_personality(self, samples: str, *, source: str) -> RedirectResponse:
         cfg = self.store.app_settings()
@@ -1002,16 +1039,13 @@ class WebApp:
         if cached and cached["source_hash"] == source_hash:
             return self._back(tab="assistant", message=self._t("personality_cached"))
         try:
-            profile = await self.chatgpt.complete(
-                [{"role": "user", "content": samples}],
-                prompts_for(cfg.prompt_locale).personality,
-                cfg.model,
-                cfg.reasoning_effort,
-                purpose="personality_inference",
-                max_output_tokens=PERSONALITY_MAX_OUTPUT_TOKENS,
-                cache_key=make_prompt_cache_key("personality", cfg.model),
-                locale=cfg.prompt_locale,
+            response = await self.models.build_model().ainvoke(
+                [
+                    SystemMessage(prompts_for(cfg.prompt_locale).personality),
+                    HumanMessage(samples),
+                ]
             )
+            profile = response.text.strip()
         except Exception as exc:
             return self._back(tab="assistant", error=str(exc))
         self.store.set_personality(profile, source_hash, source=source)

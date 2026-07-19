@@ -95,6 +95,7 @@ class DiscordEventQueue:
         payload: dict[str, Any],
         *,
         observed_at: float | None = None,
+        enqueue: bool = True,
     ) -> bool:
         with self._lock, self._connection:
             if self._connection.execute("SELECT 1 FROM discord_events WHERE id=?", (event_id,)).fetchone():
@@ -119,10 +120,11 @@ class DiscordEventQueue:
                     observed_at or time.time(),
                 ),
             )
-            self._connection.execute(
-                "INSERT INTO chat_event_queue(event_id, channel_id) VALUES(?, ?)",
-                (event_id, channel_id),
-            )
+            if enqueue:
+                self._connection.execute(
+                    "INSERT INTO chat_event_queue(event_id, channel_id) VALUES(?, ?)",
+                    (event_id, channel_id),
+                )
             return True
 
     def claim_ready(
@@ -176,6 +178,18 @@ class DiscordEventQueue:
                 WHERE channel_id=? AND logical_request_id=? AND disposition='claimed'
                 """,
                 (time.time(), channel_id, logical_request_id),
+            ).rowcount
+
+    def release(self, channel_id: str, logical_request_id: str) -> int:
+        """Return an unfinished invocation's claims to the ordered ready queue."""
+        with self._lock, self._connection:
+            return self._connection.execute(
+                """
+                UPDATE chat_event_queue
+                SET disposition='pending', logical_request_id=NULL, injection_batch=NULL, claimed_at=NULL
+                WHERE channel_id=? AND logical_request_id=? AND disposition='claimed'
+                """,
+                (channel_id, logical_request_id),
             ).rowcount
 
     @staticmethod

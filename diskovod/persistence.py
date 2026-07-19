@@ -32,7 +32,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 1
+TARGET_SCHEMA_VERSION = 2
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -159,6 +159,21 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     CREATE VIRTUAL TABLE IF NOT EXISTS langgraph_store_fts USING fts5(
       namespace UNINDEXED, key UNINDEXED, body, tokenize='unicode61'
     );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS provider_capability_probes (
+      id TEXT PRIMARY KEY,
+      configuration TEXT NOT NULL,
+      capability TEXT NOT NULL,
+      status TEXT NOT NULL,
+      request_payload TEXT NOT NULL,
+      response_payload TEXT,
+      conclusion TEXT NOT NULL,
+      started_at REAL NOT NULL,
+      completed_at REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS provider_capability_probes_time
+      ON provider_capability_probes(completed_at DESC);
     """,
 )
 

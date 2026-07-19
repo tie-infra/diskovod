@@ -382,6 +382,50 @@ class Store:
                 ),
             )
 
+    def start_agent_run(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        channel_id: str,
+        trace_id: str,
+    ) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO agent_runs(id, thread_id, channel_id, trace_id, status, started_at) "
+                "VALUES(?, ?, ?, ?, 'running', ?)",
+                (run_id, thread_id, channel_id, trace_id, time.time()),
+            )
+
+    def finish_agent_run(self, run_id: str, status: str, error: str | None = None) -> None:
+        if status not in {"completed", "interrupted", "failed", "cancelled"}:
+            raise ValueError("Invalid agent run status")
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE agent_runs SET status=?, completed_at=?, error=? WHERE id=?",
+                (status, time.time(), error, run_id),
+            )
+
+    def record_agent_trace(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
+        with self._lock, self._db:
+            sequence = int(
+                self._db.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_trace_events WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()[0]
+            )
+            self._db.execute(
+                "INSERT INTO agent_trace_events(run_id, sequence, kind, payload, recorded_at) "
+                "VALUES(?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    sequence,
+                    kind,
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    time.time(),
+                ),
+            )
+
     def start_model_request(
         self,
         *,

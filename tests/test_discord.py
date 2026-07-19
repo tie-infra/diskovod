@@ -8,7 +8,6 @@ from typing import cast
 import pytest
 
 import diskovod.discord as discord_module
-from diskovod.automation import Automation
 from diskovod.discord import CaptchaBroker, DiscordService, PrivateDiscordClient
 from diskovod.models import capture_discord_attachments, model_supports_vision
 from diskovod.store import Store
@@ -94,29 +93,24 @@ class FakeChannel:
             yield message
 
 
-class EditAutomation:
+class EditRuntime:
     def __init__(self):
         self.human_channels: list[str] = []
-        self.rescheduled: list[object] = []
-        self.scheduled: list[tuple[object, bool]] = []
+        self.submitted: list[dict] = []
 
     def human_activity(self, channel_id: str):
         self.human_channels.append(channel_id)
 
-    def reschedule_if_pending(self, message: object):
-        self.rescheduled.append(message)
-        return True
-
-    def schedule(self, message: object, *, owner_trigger: bool = False):
-        self.scheduled.append((message, owner_trigger))
+    def submit_message(self, **values):
+        self.submitted.append(values)
 
 
-class ForceAutomation:
+class ForceRuntime:
     def __init__(self):
-        self.messages: list[object] = []
+        self.requests: list[dict] = []
 
-    def force_reply(self, message: object):
-        self.messages.append(message)
+    def force_reply(self, **values):
+        self.requests.append(values)
 
 
 class FakeEditDMChannel:
@@ -126,7 +120,7 @@ class FakeEditDMChannel:
 class RetryClient:
     attempts = 0
 
-    def __init__(self, _store, _automation, _captcha_handler, ready_callback):
+    def __init__(self, _store, _runtime, _captcha_handler, ready_callback):
         self.ready_callback = ready_callback
         self.user = "reconnected-user"
         self.ready = False
@@ -160,7 +154,8 @@ async def test_discord_connection_failure_retries_without_stopping_service(
     monkeypatch.setattr(discord_module, "PrivateDiscordClient", RetryClient)
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     store.set_discord_token("discord-token")
-    service = DiscordService(store, cast(Automation, None))
+    service = DiscordService(store)
+    service.attach_runtime(cast(object, SimpleNamespace()))
     service.retry_initial_seconds = 0.001
     service.retry_max_seconds = 0.001
 
@@ -204,12 +199,13 @@ async def test_force_reply_fetches_latest_incoming_discord_message(tmp_path: Pat
             return message
 
     channel = ForceChannel()
-    automation = ForceAutomation()
-    service = DiscordService(store, cast(Automation, automation))
+    runtime = ForceRuntime()
+    service = DiscordService(store)
+    service.attach_runtime(cast(object, runtime))
     service.client = cast(
         PrivateDiscordClient,
         SimpleNamespace(
-            user=object(),
+            user=SimpleNamespace(id=999),
             is_ready=lambda: True,
             get_channel=lambda channel_id: channel if channel_id == 42 else None,
             private_channels=[channel],
@@ -218,7 +214,7 @@ async def test_force_reply_fetches_latest_incoming_discord_message(tmp_path: Pat
 
     await service.force_reply("42")
 
-    assert automation.messages == [message]
+    assert runtime.requests == [{"channel_id": "42", "account_id": "999", "trigger_message_id": "123"}]
     store.close()
 
 
@@ -247,7 +243,7 @@ async def test_personality_history_is_limited_and_excludes_generated_messages(tm
         content="generated message",
         timestamp=now + 4,
     )
-    service = DiscordService(store, cast(Automation, None))
+    service = DiscordService(store)
     service.client = cast(
         PrivateDiscordClient,
         SimpleNamespace(
@@ -305,7 +301,7 @@ async def test_personality_history_marks_consecutive_owner_message_bursts(tmp_pa
         ),
     ]
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    service = DiscordService(store, cast(Automation, None))
+    service = DiscordService(store)
     service.client = cast(
         PrivateDiscordClient,
         SimpleNamespace(
@@ -330,8 +326,8 @@ async def test_raw_owner_edit_updates_style_history_and_marks_human_activity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
-    user = object()
-    automation = EditAutomation()
+    user = SimpleNamespace(id=999)
+    runtime = EditRuntime()
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     store.upsert_conversation("42", "peer", "Peer")
     store.save_message(
@@ -344,7 +340,7 @@ async def test_raw_owner_edit_updates_style_history_and_marks_human_activity(
         content="generated draft",
         timestamp=time.time(),
     )
-    client = SimpleNamespace(user=user, store=store, automation=automation)
+    client = SimpleNamespace(user=user, store=store, runtime=runtime)
     message = SimpleNamespace(
         id="outgoing",
         channel=FakeEditDMChannel(),
@@ -358,7 +354,8 @@ async def test_raw_owner_edit_updates_style_history_and_marks_human_activity(
     saved = store.history("42", 1)[0]
     assert saved["content"] == "edited by owner"
     assert saved["source"] == "human"
-    assert automation.human_channels == ["42"]
+    assert runtime.human_channels == ["42"]
+    assert runtime.submitted[0]["participant_role"] == "owner"
     store.close()
 
 
@@ -367,8 +364,8 @@ async def test_raw_owner_edit_reschedules_inline_collaboration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
-    user = object()
-    automation = EditAutomation()
+    user = SimpleNamespace(id=999)
+    runtime = EditRuntime()
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     store.upsert_conversation("42", "peer", "Peer")
     store.set_conversation_mode("42", "inline")
@@ -382,7 +379,7 @@ async def test_raw_owner_edit_reschedules_inline_collaboration(
         content="original",
         timestamp=time.time(),
     )
-    client = SimpleNamespace(user=user, store=store, automation=automation)
+    client = SimpleNamespace(user=user, store=store, runtime=runtime)
     message = SimpleNamespace(
         id="outgoing",
         channel=FakeEditDMChannel(),
@@ -393,8 +390,9 @@ async def test_raw_owner_edit_reschedules_inline_collaboration(
 
     await PrivateDiscordClient.on_raw_message_edit(client, payload)
 
-    assert automation.human_channels == []
-    assert automation.scheduled == [(message, True)]
+    assert runtime.human_channels == []
+    assert runtime.submitted[0]["participant_role"] == "owner"
+    assert runtime.submitted[0]["edited"] is True
     store.close()
 
 
@@ -403,9 +401,9 @@ async def test_raw_remote_edit_updates_history_and_only_requests_pending_resched
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
-    user = object()
-    remote = SimpleNamespace(bot=False)
-    automation = EditAutomation()
+    user = SimpleNamespace(id=999)
+    remote = SimpleNamespace(id=123, bot=False)
+    runtime = EditRuntime()
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
     store.upsert_conversation("42", "peer", "Peer")
     store.save_message(
@@ -418,7 +416,7 @@ async def test_raw_remote_edit_updates_history_and_only_requests_pending_resched
         content="original text",
         timestamp=time.time(),
     )
-    client = SimpleNamespace(user=user, store=store, automation=automation)
+    client = SimpleNamespace(user=user, store=store, runtime=runtime)
     message = SimpleNamespace(
         id="incoming",
         channel=FakeEditDMChannel(),
@@ -436,5 +434,7 @@ async def test_raw_remote_edit_updates_history_and_only_requests_pending_resched
     )
 
     assert store.history("42", 1)[0]["content"] == "corrected text"
-    assert automation.rescheduled == [message]
+    assert len(runtime.submitted) == 1
+    assert runtime.submitted[0]["participant_role"] == "peer"
+    assert runtime.submitted[0]["edited"] is True
     store.close()

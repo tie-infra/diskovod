@@ -66,6 +66,16 @@ class ModelService:
             raise ProviderBuildError("not_configured", "No model configuration has been saved")
         return self.registry.build_model(configuration, self._credentials(configuration))
 
+    def build_configuration(
+        self,
+        configuration: ModelConfiguration,
+        credentials: ProviderCredentials,
+    ) -> BaseChatModel:
+        return self.registry.build_model(configuration, credentials)
+
+    def credentials_for(self, configuration: ModelConfiguration) -> ProviderCredentials:
+        return self._credentials(configuration)
+
     def save_subscription(
         self,
         *,

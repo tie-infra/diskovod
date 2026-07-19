@@ -209,7 +209,7 @@ class DurableActionGateway(AgentActionGateway):
     ) -> None:
         self.ledger.record_escalation(
             f"{context.trace_id}:{tool_call_id}",
-            context.trace_id,
+            context.thread_id,
             context.channel_id,
             payload,
         )

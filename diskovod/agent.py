@@ -14,6 +14,7 @@ from langchain.agents.middleware import (
 )
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import ToolMessage
+from langchain_core.messages import SystemMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 from langgraph.store.base import BaseStore
@@ -31,6 +32,7 @@ class AgentPrompt:
     assistant_name: str
     base_instructions: str
     personality: str = ""
+    owner_details: str = ""
 
     def stable_prefix(self) -> str:
         prompts = prompts_for(self.locale)
@@ -43,7 +45,28 @@ class AgentPrompt:
         ]
         if self.personality.strip():
             parts.append(prompts.cached_personality.format(profile=self.personality.strip()))
+        if self.owner_details.strip():
+            parts.append(prompts.owner_details.format(details=self.owner_details.strip()))
         return "\n\n".join(parts)
+
+
+class RuntimePromptMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeContext]):
+    """Append only trusted invocation context after the stable cacheable prefix."""
+
+    async def awrap_model_call(self, request, handler):
+        context = request.runtime.context
+        prompts = prompts_for(context.prompt_locale)
+        suffix = [
+            f"Automation mode: {context.automation_mode}.",
+            f"Participant roles are supplied in trusted message metadata for channel {context.channel_id}.",
+        ]
+        if context.force_reply:
+            suffix.append(prompts.forced_reply)
+        system = request.system_message
+        stable = system.text if system is not None else ""
+        return await handler(
+            request.override(system_message=SystemMessage(content=stable + "\n\n" + "\n".join(suffix)))
+        )
 
 
 class ExplicitSendTerminationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeContext]):
@@ -129,6 +152,7 @@ def build_agent(
         system_prompt=prompt.stable_prefix(),
         middleware=(
             *extra_middleware,
+            RuntimePromptMiddleware(),
             EscalationValidationMiddleware(gateway, prompt.locale),
             ExplicitSendTerminationMiddleware(),
             ModelCallLimitMiddleware(run_limit=model_call_limit, exit_behavior="error"),

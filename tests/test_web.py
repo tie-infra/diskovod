@@ -1,4 +1,6 @@
 import hashlib
+import json
+import time
 from typing import cast
 
 import pytest
@@ -6,11 +8,9 @@ from fastapi import HTTPException
 from fastapi.security import HTTPBasicCredentials
 from starlette.requests import Request
 
-from diskovod.automation import Automation
-from diskovod.chatgpt import ChatGPTClient
 from diskovod.discord import DiscordService
 from diskovod.store import Store
-from diskovod.models import AppSettings, ChatCredentials
+from diskovod.models import AppSettings
 from diskovod.web import (
     PERSONALITY_INSTRUCTIONS,
     WebApp,
@@ -22,9 +22,11 @@ from diskovod.web import (
 def make_web(public_url: str = "https://diskovod.example/base") -> WebApp:
     return WebApp(
         cast(Store, None),
-        cast(ChatGPTClient, None),
+        cast(object, None),
+        cast(object, None),
+        cast(object, None),
         cast(DiscordService, None),
-        cast(Automation, None),
+        cast(object, None),
         "a-long-admin-password",
         public_url,
     )
@@ -92,27 +94,27 @@ def test_assistant_settings_defaults_preserve_only_admin_appearance():
 
 def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    store.set_chat_credentials(ChatCredentials("access", "refresh", 0, "account", None))
-    store.set_subscription_web_search_capability(
-        "gpt-model",
-        False,
-        {
-            "outcome": "response_mismatch",
-            "effort": "low",
-            "response_id": "resp-1",
-            "response_text_present": False,
-            "function_call_count": 1,
-            "function_call_names": ["connection_test"],
-            "connection_test_ok": True,
-            "hosted_call_count": 1,
-            "hosted_calls": [{"kind": "web_search_call", "status": "failed"}],
-        },
-    )
+    with store._db:
+        store._db.execute(
+            """INSERT INTO provider_capability_probes
+               VALUES(?, ?, 'hosted_web_search', 'unsupported', ?, ?, ?, ?, ?)""",
+            (
+                "probe-1",
+                json.dumps({"model_id": "gpt-model", "options": {"reasoning_effort": "low"}}),
+                json.dumps({"tools": [{"type": "web_search"}]}),
+                json.dumps({"content_blocks": [{"type": "web_search_call", "status": "failed"}]}),
+                "no_hosted_search_blocks_in_normalized_response",
+                time.time(),
+                time.time(),
+            ),
+        )
     web = WebApp(
         store,
-        cast(ChatGPTClient, None),
+        cast(object, None),
+        cast(object, None),
+        cast(object, None),
         cast(DiscordService, None),
-        cast(Automation, None),
+        cast(object, None),
         "a-long-admin-password",
         "https://diskovod.example",
     )
@@ -120,9 +122,8 @@ def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path
     view = web._subscription_web_search_probe_view("gpt-model")
 
     assert view["result_label"].startswith("Inconclusive")
-    assert view["response_id"] == "resp-1"
-    assert "connection_test_ok=true" in view["observed"]
-    assert "web_search_call:failed" in view["observed"]
+    assert view["response_id"] == "probe-1"
+    assert "web_search_call" in view["observed"]
     assert "access" not in str(view)
     store.close()
 
@@ -156,9 +157,11 @@ def test_model_request_log_view_correlates_validation_with_conversation(tmp_path
     )
     web = WebApp(
         store,
-        cast(ChatGPTClient, None),
+        cast(object, None),
+        cast(object, None),
+        cast(object, None),
         cast(DiscordService, None),
-        cast(Automation, None),
+        cast(object, None),
         "a-long-admin-password",
         "https://diskovod.example",
     )

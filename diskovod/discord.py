@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import secrets
 import time
 from collections.abc import Callable
@@ -9,8 +10,10 @@ from dataclasses import asdict, dataclass
 
 import discord
 
-from .automation import Automation
+from .agent_actions import DeliveryRecord
+from .agent_types import AgentRuntimeContext
 from .models import capture_discord_attachments
+from .runtime import AgentService
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -83,13 +86,13 @@ class PrivateDiscordClient(discord.Client):
     def __init__(
         self,
         store: Store,
-        automation: Automation,
+        runtime: AgentService,
         captcha_handler,
         ready_callback: Callable[[], None],
     ):
         super().__init__(sync_presence=False, captcha_handler=captcha_handler)
         self.store = store
-        self.automation = automation
+        self.runtime = runtime
         self.ready_callback = ready_callback
 
     async def on_ready(self) -> None:
@@ -126,10 +129,19 @@ class PrivateDiscordClient(discord.Client):
             if self.store.resolve_escalation_on_owner_reply(channel_id):
                 log.info("Manual owner reply resolved the active escalation for %s", channel_id)
             conversation = self.store.conversation(channel_id)
-            if conversation and conversation["mode"] == "inline" and not conversation["paused"]:
-                self.automation.schedule(message, owner_trigger=True)
-            else:
-                self.automation.human_activity(channel_id)
+            self.runtime.submit_message(
+                message_id=str(message.id),
+                channel_id=channel_id,
+                account_id=str(self.user.id),
+                author_id=str(self.user.id),
+                author_name=str(self.user),
+                participant_role="owner",
+                content=message.content,
+                attachments=attachments,
+                observed_at=message.created_at.timestamp(),
+            )
+            if not (conversation and conversation["mode"] == "inline" and not conversation["paused"]):
+                self.runtime.human_activity(channel_id)
             return
         if message.author.bot:
             return
@@ -145,7 +157,17 @@ class PrivateDiscordClient(discord.Client):
             timestamp=message.created_at.timestamp(),
             attachments=attachments,
         )
-        self.automation.schedule(message)
+        self.runtime.submit_message(
+            message_id=str(message.id),
+            channel_id=channel_id,
+            account_id=str(self.user.id),
+            author_id=str(message.author.id),
+            author_name=str(message.author),
+            participant_role="peer",
+            content=message.content,
+            attachments=attachments,
+            observed_at=message.created_at.timestamp(),
+        )
 
     async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
         if not self.user or "content" not in payload.data:
@@ -159,23 +181,56 @@ class PrivateDiscordClient(discord.Client):
             updated = self.store.update_message_content(str(message.id), content, source="human")
             if updated and updated["changed"]:
                 conversation = self.store.conversation(channel_id)
-                if conversation and conversation["mode"] == "inline" and not conversation["paused"]:
-                    self.automation.schedule(message, owner_trigger=True)
-                else:
-                    self.automation.human_activity(channel_id)
+                self.runtime.submit_message(
+                    message_id=str(message.id),
+                    channel_id=channel_id,
+                    account_id=str(self.user.id),
+                    author_id=str(self.user.id),
+                    author_name=str(self.user),
+                    participant_role="owner",
+                    content=content,
+                    attachments=[],
+                    observed_at=time.time(),
+                    edited=True,
+                )
+                if not (conversation and conversation["mode"] == "inline" and not conversation["paused"]):
+                    self.runtime.human_activity(channel_id)
             return
         if message.author.bot:
             return
         updated = self.store.update_message_content(str(message.id), content)
         if not updated or not updated["changed"]:
             return
-        self.automation.reschedule_if_pending(message)
+        self.runtime.submit_message(
+            message_id=str(message.id),
+            channel_id=channel_id,
+            account_id=str(self.user.id),
+            author_id=str(message.author.id),
+            author_name=str(message.author),
+            participant_role="peer",
+            content=content,
+            attachments=[],
+            observed_at=time.time(),
+            edited=True,
+        )
+
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        if not self.user:
+            return
+        channel_id = str(payload.channel_id)
+        if self.store.conversation(channel_id) is None:
+            return
+        self.runtime.submit_delete(
+            message_id=str(payload.message_id),
+            channel_id=channel_id,
+            account_id=str(self.user.id),
+        )
 
 
 class DiscordService:
-    def __init__(self, store: Store, automation: Automation):
+    def __init__(self, store: Store):
         self.store = store
-        self.automation = automation
+        self.runtime: AgentService | None = None
         self.captcha = CaptchaBroker()
         self.client: PrivateDiscordClient | None = None
         self.task: asyncio.Task | None = None
@@ -183,6 +238,11 @@ class DiscordService:
         self.retry_initial_seconds = 2.0
         self.retry_max_seconds = 60.0
         self._retry_delay = self.retry_initial_seconds
+
+    def attach_runtime(self, runtime: AgentService) -> None:
+        if self.runtime is not None:
+            raise RuntimeError("The Discord agent runtime is already attached")
+        self.runtime = runtime
 
     @property
     def connected(self) -> bool:
@@ -221,8 +281,127 @@ class DiscordService:
             message_id = int(stored["id"])
         except (TypeError, ValueError) as exc:
             raise RuntimeError("The latest incoming Discord message ID is invalid") from exc
-        message = await channel.fetch_message(message_id)
-        self.automation.force_reply(message)
+        await channel.fetch_message(message_id)
+        if self.runtime is None:
+            raise RuntimeError("The agent runtime is not available")
+        self.runtime.force_reply(
+            channel_id=channel_id,
+            account_id=str(client.user.id),
+            trigger_message_id=str(message_id),
+        )
+
+    async def send_messages(
+        self,
+        context: AgentRuntimeContext,
+        messages: tuple[str, ...],
+    ) -> list[DeliveryRecord]:
+        channel = self._channel(context.channel_id)
+        settings = self.store.app_settings()
+        conversation = self.store.conversation(context.channel_id)
+        inline = bool(conversation and conversation["mode"] == "inline")
+        records: list[DeliveryRecord] = []
+        for index, part in enumerate(messages):
+            if index:
+                await asyncio.sleep(
+                    random.uniform(
+                        settings.min_message_gap_seconds,
+                        settings.max_message_gap_seconds,
+                    )
+                )
+            cps = random.uniform(settings.min_typing_cps, settings.max_typing_cps)
+            try:
+                async with channel.typing():
+                    await asyncio.sleep(min(12.0, max(0.8, len(part) / cps)))
+                nonce = secrets.token_hex(12)
+                self.store.remember_nonce(nonce)
+                outbound = f"🤖 {part}" if settings.robot_prefix or inline else part
+                sent = await channel.send(
+                    outbound,
+                    nonce=nonce,
+                    silent=settings.silent_replies,
+                )
+            except Exception as error:
+                records.append(
+                    DeliveryRecord(
+                        "failed",
+                        index,
+                        error_code="discord_send_failed",
+                        error_detail=f"{type(error).__name__}: {error}"[:1000],
+                    )
+                )
+                continue
+            self.store.remember_bot_message(str(sent.id))
+            self.store.save_message(
+                id=str(sent.id),
+                channel_id=context.channel_id,
+                author_id=str(sent.author.id),
+                author_name=str(sent.author),
+                direction="out",
+                source="assistant",
+                content=part,
+                timestamp=sent.created_at.timestamp(),
+            )
+            if self.runtime is not None:
+                self.runtime.events.ingest(
+                    f"discord:message:{sent.id}",
+                    context.channel_id,
+                    "message",
+                    {
+                        "message_id": str(sent.id),
+                        "account_id": context.account_id,
+                        "author_id": str(sent.author.id),
+                        "author_name": str(sent.author),
+                        "participant_role": "assistant",
+                        "content": part,
+                        "attachments": [],
+                    },
+                    observed_at=sent.created_at.timestamp(),
+                    enqueue=False,
+                )
+            records.append(DeliveryRecord("accepted", index, discord_message_id=str(sent.id)))
+        return records
+
+    async def react_to_message(
+        self,
+        context: AgentRuntimeContext,
+        message_id: str,
+        emoji: str,
+    ) -> DeliveryRecord:
+        channel = self._channel(context.channel_id)
+        try:
+            message = await channel.fetch_message(int(message_id))
+            await message.add_reaction(emoji)
+        except Exception as error:
+            return DeliveryRecord(
+                "failed",
+                0,
+                error_code="discord_reaction_failed",
+                error_detail=f"{type(error).__name__}: {error}"[:1000],
+            )
+        self.store.record_assistant_reaction(
+            trigger_message_id=message_id,
+            channel_id=context.channel_id,
+            emoji=emoji,
+        )
+        return DeliveryRecord("accepted", 0, discord_message_id=f"reaction:{message_id}:{emoji}")
+
+    def _channel(self, channel_id: str):
+        client = self.client
+        if not client or not client.user or not client.is_ready():
+            raise RuntimeError("Discord is not connected")
+        try:
+            numeric = int(channel_id)
+        except ValueError as error:
+            raise RuntimeError("Invalid Discord channel ID") from error
+        channel = client.get_channel(numeric)
+        if channel is None:
+            channel = next(
+                (item for item in client.private_channels if str(getattr(item, "id", "")) == channel_id),
+                None,
+            )
+        if channel is None or not hasattr(channel, "send"):
+            raise RuntimeError("Discord conversation is not available")
+        return channel
 
     async def personality_history(self, limit: int) -> list[str]:
         client = self.client
@@ -289,6 +468,8 @@ class DiscordService:
         token = self.store.discord_token()
         if not token:
             return
+        if self.runtime is None:
+            raise RuntimeError("The Discord agent runtime has not been attached")
         self.error = None
         self._retry_delay = self.retry_initial_seconds
         self.task = asyncio.create_task(self._run(token), name="discord-client")
@@ -298,7 +479,7 @@ class DiscordService:
             while True:
                 client = PrivateDiscordClient(
                     self.store,
-                    self.automation,
+                    self.runtime,
                     self.captcha.handle,
                     self._connected,
                 )

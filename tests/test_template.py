@@ -2,9 +2,8 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from diskovod.localization import SUPPORTED_LOCALES
+from diskovod.localization import SUPPORTED_LOCALES, ui_text
 from diskovod.models import AppSettings
-from diskovod.ui_localization import ui_text
 
 
 def test_admin_template_is_script_free_and_contains_human_quiet_controls():

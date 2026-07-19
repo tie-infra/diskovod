@@ -24,11 +24,16 @@ from .chatgpt import (
     normalize_custom_base_url,
 )
 from .discord import DiscordService
-from .localization import SUPPORTED_LOCALES, assistant_name_for, normalize_locale, prompts_for
+from .localization import (
+    SUPPORTED_LOCALES,
+    assistant_name_for,
+    normalize_locale,
+    prompts_for,
+    ui_text,
+)
 from .models import ADMIN_THEMES, AppSettings, CustomProvider
 from .security import password_matches
 from .store import Store
-from .ui_localization import ui_text
 
 PERSONALITY_PROMPT_VERSION = "style-base-rates-examples-and-sequences-v4"
 PERSONALITY_MAX_OUTPUT_TOKENS = 2000

@@ -10,13 +10,14 @@ from diskovod.localization import (
     SUPPORTED_LOCALES,
     TOOL_TEXT,
     TOOL_POLICIES,
+    UI_TEXT,
     assistant_identity,
     assistant_name_for,
     prompts_for,
     tool_policy,
+    ui_text,
 )
 from diskovod.models import AppSettings, attachment_context
-from diskovod.ui_localization import UI_TEXT, ui_text
 from diskovod.web import localized_base_instructions, personality_source_hash
 
 
@@ -119,6 +120,7 @@ def test_unknown_locale_falls_back_to_english():
 def test_every_admin_string_supports_every_locale():
     for key, translations in UI_TEXT.items():
         assert set(translations) == set(SUPPORTED_LOCALES), key
+        assert tuple(translations) == tuple(SUPPORTED_LOCALES), key
         assert all(translations.values()), key
         for locale in SUPPORTED_LOCALES:
             assert ui_text(locale, key) == translations[locale]
@@ -145,11 +147,13 @@ def test_every_literal_admin_template_key_exists_in_the_catalog():
     assert referenced <= set(UI_TEXT)
 
 
-def test_chinese_admin_strings_are_declared_without_a_runtime_overlay():
-    source = (Path(__file__).parents[1] / "diskovod" / "ui_localization.py").read_text()
+def test_admin_strings_use_explicit_locale_maps_in_the_shared_catalog():
+    source = (Path(__file__).parents[1] / "diskovod" / "localization.py").read_text()
 
     assert "_ZH_UI_TEXT" not in source
+    assert "def _text(" not in source
     assert '"zh": "跳到内容"' in source
+    assert not (Path(__file__).parents[1] / "diskovod" / "ui_localization.py").exists()
 
 
 def test_locale_switch_translates_only_the_stock_base_prompt():

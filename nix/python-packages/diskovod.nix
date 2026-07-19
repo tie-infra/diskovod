@@ -1,10 +1,15 @@
 {
   aiohttp,
+  aiosqlite,
   buildPythonPackage,
   cryptography,
   discordpy-self,
   fastapi,
   jinja2,
+  langchain,
+  langchain-openai,
+  langgraph,
+  langgraph-checkpoint-sqlite,
   pytest,
   pytest-asyncio,
   python-multipart,
@@ -22,10 +27,15 @@ buildPythonPackage {
   build-system = [ setuptools ];
   dependencies = [
     aiohttp
+    aiosqlite
     cryptography
     discordpy-self
     fastapi
     jinja2
+    langchain
+    langchain-openai
+    langgraph
+    langgraph-checkpoint-sqlite
     python-multipart
     uvicorn
   ];

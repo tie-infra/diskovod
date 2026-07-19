@@ -17,6 +17,7 @@ from .models import (
     ChatCredentials,
     CustomProvider,
 )
+from .persistence import initialize_target_schema
 from .security import SecretBox
 
 LEGACY_BASE_INSTRUCTIONS_SHA256 = "ce9bd3d8ffbef462362269db68c7996d9ca0e3e93761d197fcf82f5e0f25502c"
@@ -76,6 +77,8 @@ class Store:
         self._lock = threading.RLock()
         self._box = SecretBox(secret)
         with self._db:
+            self._db.execute("PRAGMA busy_timeout=5000")
+            self._db.execute("PRAGMA foreign_keys=ON")
             self._db.executescript("""
               PRAGMA journal_mode=WAL;
               CREATE TABLE IF NOT EXISTS config (
@@ -157,6 +160,7 @@ class Store:
               CREATE INDEX IF NOT EXISTS model_request_logs_started_at
                 ON model_request_logs(started_at DESC);
             """)
+            initialize_target_schema(self._db)
             message_columns = {
                 row["name"] for row in self._db.execute("PRAGMA table_info(messages)").fetchall()
             }

@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import time
 import uuid
+import warnings
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
+from langchain_core._api import LangChainBetaWarning
 
 from diskovod.store import Store
 from diskovod.localization import tool_text
@@ -77,11 +79,18 @@ class ProviderSetup:
         probe_id = str(uuid.uuid4())
         response_payload: dict[str, Any] | None = None
         try:
-            response = await model.bind_tools(
-                [diskovod_setup_probe],
-                tool_choice="required",
-            ).ainvoke([HumanMessage(prompt)])
-            response_payload = self._message_payload(response)
+            response, events = await self._invoke_with_events(
+                model.bind_tools(
+                    [diskovod_setup_probe],
+                    tool_choice="required",
+                ),
+                [HumanMessage(prompt)],
+            )
+            response_payload = {
+                "message": self._message_payload(response),
+                "langchain_events_v3": events,
+                "raw_provider_transport": "unavailable",
+            }
             supported = bool(
                 isinstance(response, AIMessage)
                 and len(response.tool_calls) == 1
@@ -122,8 +131,15 @@ class ProviderSetup:
         probe_id = str(uuid.uuid4())
         response_payload: dict[str, Any] | None = None
         try:
-            response = await model.bind_tools([{"type": "web_search"}]).ainvoke([HumanMessage(prompt)])
-            response_payload = self._message_payload(response)
+            response, events = await self._invoke_with_events(
+                model.bind_tools([{"type": "web_search"}]),
+                [HumanMessage(prompt)],
+            )
+            response_payload = {
+                "message": self._message_payload(response),
+                "langchain_events_v3": events,
+                "raw_provider_transport": "unavailable",
+            }
             blocks = getattr(response, "content_blocks", [])
             block_types = {str(block.get("type")) for block in blocks if isinstance(block, dict)}
             supported = bool(
@@ -225,3 +241,27 @@ class ProviderSetup:
             payload = message.model_dump(mode="json")
             return payload if isinstance(payload, dict) else {"value": payload}
         return {"type": type(message).__name__, "content": str(message)[:20_000]}
+
+    async def _invoke_with_events(self, runnable, messages) -> tuple[Any, list[dict[str, Any]]]:
+        events: list[dict[str, Any]] = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", LangChainBetaWarning)
+            stream = await runnable.astream_events(messages, version="v3")
+        async for event in stream:
+            if len(events) < 500:
+                value = self._event_value(event)
+                events.append(value if isinstance(value, dict) else {"value": value})
+        response = await stream
+        return response, events
+
+    @classmethod
+    def _event_value(cls, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value if not isinstance(value, str) else value[:20_000]
+        if hasattr(value, "model_dump"):
+            return cls._event_value(value.model_dump(mode="json"))
+        if isinstance(value, dict):
+            return {str(key): cls._event_value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._event_value(item) for item in value[:200]]
+        return str(value)[:20_000]

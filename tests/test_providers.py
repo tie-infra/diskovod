@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_openai import ChatOpenAI
 
 from diskovod.models import ChatCredentials, CustomProvider
@@ -17,10 +19,20 @@ from diskovod.providers import (
     ProviderBuildError,
     ProviderCredentials,
     ProviderRegistry,
+    ProviderSetup,
     ModelService,
     StoredChatGPTTokenProvider,
 )
 from diskovod.store import Store
+from test_agent import ScriptedChatModel
+
+
+class StreamingChatModel(ScriptedChatModel):
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        del messages, stop, run_manager, kwargs
+        response = self.responses[self.index]
+        self.index += 1
+        yield ChatGenerationChunk(message=AIMessageChunk(content=response.content))
 
 
 class FakeAdapter(ProviderAdapter):
@@ -213,4 +225,18 @@ def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_perso
     assert first != second
     model = models.build_model()
     assert model.model_kwargs["prompt_cache_key"] == second
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_probe_capture_includes_v3_stream_events(tmp_path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    setup = ProviderSetup(store, SimpleNamespace())
+    model = StreamingChatModel(responses=[AIMessage(content="probe complete")])
+
+    response, events = await setup._invoke_with_events(model, [HumanMessage("probe")])
+
+    assert "probe complete" in response.text
+    assert events
+    assert any(event.get("event") == "content-block-delta" for event in events)
     store.close()

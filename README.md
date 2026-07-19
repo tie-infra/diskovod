@@ -111,11 +111,18 @@ account access, or an integration issue.
 
 The **Model request log** in Usage retains the newest 100 request traces. It correlates ordinary
 generations, tool continuations, native repairs, hosted-search probes, provider errors, and validator
-decisions. Entries include the provider request and raw response JSON, compact metadata, response
-IDs, timings, repair links, and explicit expected-versus-observed validator output. These traces are
-sensitive because they contain prompt, DM, generated-text, and tool-argument content. Credentials,
-signed URL parameters, and binary data are removed; each request or response payload is capped at
-1,000,000 characters.
+decisions. Subscription response traces include the complete SSE event sequence and the reconstructed
+effective response, not only the final response summary. Entries also include compact metadata,
+response IDs, timings, repair links, and explicit expected-versus-observed validator output. These
+traces are sensitive because they contain prompt, DM, generated-text, and tool-argument content.
+Credentials, signed URL parameters, and binary data are removed; each request or response payload is
+capped at 1,000,000 characters.
+
+The subscription transport reconstructs streamed function calls from output-item and argument events,
+handles incomplete, failed, error, and refusal outcomes explicitly, and requests encrypted reasoning
+content so it can replay the model's reasoning and assistant output during local-tool continuations.
+Text emitted alongside an otherwise valid terminal function call is treated as protocol chatter and
+is not sent to Discord.
 
 ### OpenAI-compatible provider
 

@@ -273,7 +273,137 @@ async def test_completed_stream_records_usage(tmp_path: Path):
     assert session.last_kwargs["headers"]["Originator"] == ORIGINATOR
     assert "max_output_tokens" not in session.last_kwargs["json"]
     assert session.last_kwargs["json"]["prompt_cache_key"] == "diskovod:dm:cache-key"
+    assert session.last_kwargs["json"]["include"] == ["reasoning.encrypted_content"]
     assert "within approximately 256 tokens" in session.last_kwargs["json"]["instructions"]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_stream_reconstructs_function_call_missing_from_completed_summary(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_chat_credentials(ChatCredentials("access", "refresh", time.time() + 3600, "account", None))
+    events = [
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "function_call",
+                "id": "fc-1",
+                "call_id": "call-1",
+                "name": "calculate",
+                "arguments": "",
+            },
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc-1",
+            "output_index": 0,
+            "delta": '{"expression":"2+',
+        },
+        {
+            "type": "response.function_call_arguments.done",
+            "item_id": "fc-1",
+            "output_index": 0,
+            "arguments": '{"expression":"2+2"}',
+        },
+        {
+            "type": "response.completed",
+            "response": {"id": "resp-stream-tool", "status": "completed", "output": []},
+        },
+    ]
+    stream = "".join(f"data: {json.dumps(event)}\n\n" for event in events).encode()
+    client = ChatGPTClient(store)
+    client.session = cast(aiohttp.ClientSession, FakeSession(FakeResponse(stream)))
+
+    result = await client.complete_result([], "instructions", "gpt-5", "low")
+
+    assert result.function_calls[0].call_id == "call-1"
+    assert result.function_calls[0].parsed_arguments == {"expression": "2+2"}
+    assert result.continuation_items == [
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "calculate",
+            "arguments": '{"expression":"2+2"}',
+        }
+    ]
+    trace = store.model_request_logs()[0]["response_payload"]
+    assert trace["stream_events"] == events
+    assert trace["effective_response"]["output"][0]["name"] == "calculate"
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event", "error"),
+    [
+        (
+            {
+                "type": "response.incomplete",
+                "response": {"incomplete_details": {"reason": "max_output_tokens"}},
+            },
+            "incomplete response: max_output_tokens",
+        ),
+        (
+            {
+                "type": "response.failed",
+                "response": {"error": {"message": "backend failed"}},
+            },
+            "response failed: backend failed",
+        ),
+        (
+            {"type": "response.error", "error": {"message": "response event failed"}},
+            "response error: response event failed",
+        ),
+        (
+            {"type": "error", "error": {"message": "generic event failed"}},
+            "response error: generic event failed",
+        ),
+    ],
+)
+async def test_subscription_stream_surfaces_terminal_failures(tmp_path: Path, event: dict, error: str):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_chat_credentials(ChatCredentials("access", "refresh", time.time() + 3600, "account", None))
+    stream = f"data: {json.dumps(event)}\n\n".encode()
+    client = ChatGPTClient(store)
+    client.session = cast(aiohttp.ClientSession, FakeSession(FakeResponse(stream)))
+
+    with pytest.raises(RuntimeError, match=error):
+        await client.complete_result([], "instructions", "gpt-5", "low")
+
+    request_log = store.model_request_logs()[0]
+    assert request_log["status"] == "error"
+    assert request_log["response_payload"]["stream_events"] == [event]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_stream_surfaces_refusal(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.set_chat_credentials(ChatCredentials("access", "refresh", time.time() + 3600, "account", None))
+    event = {
+        "type": "response.completed",
+        "response": {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "refusal", "refusal": "cannot comply"}],
+                }
+            ],
+        },
+    }
+    client = ChatGPTClient(store)
+    client.session = cast(
+        aiohttp.ClientSession,
+        FakeSession(FakeResponse(f"data: {json.dumps(event)}\n\n".encode())),
+    )
+
+    with pytest.raises(RuntimeError, match="refused the response: cannot comply"):
+        await client.complete_result([], "instructions", "gpt-5", "low")
+
     store.close()
 
 
@@ -609,7 +739,8 @@ async def test_subscription_web_search_probe_is_model_scoped_and_requires_termin
         {"kind": "web_search_call", "status": "completed"}
     ]
     assert request_log["request_payload"] == session.last_kwargs["json"]
-    assert request_log["response_payload"] == completed["response"]
+    assert request_log["response_payload"]["stream_events"] == [completed]
+    assert request_log["response_payload"]["effective_response"] == completed["response"]
     assert client.hosted_web_search_available is False
     store.set_app_settings(AppSettings(model="gpt-model"))
     assert client.hosted_web_search_available is True
@@ -648,7 +779,7 @@ async def test_subscription_web_search_probe_records_inconclusive_response_diagn
     request_log = store.model_request_logs()[0]
     assert request_log["validation_status"] == "probe_inconclusive"
     assert request_log["validation_detail"] == "response_mismatch"
-    assert request_log["response_payload"]["output"][0]["content"][0]["text"] == "OK"
+    assert request_log["response_payload"]["effective_response"]["output"][0]["content"][0]["text"] == ("OK")
     store.close()
 
 
@@ -674,7 +805,7 @@ async def test_subscription_web_search_probe_records_request_errors_as_inconclus
     request_log = store.model_request_logs()[0]
     assert request_log["status"] == "error"
     assert request_log["validation_status"] == "probe_inconclusive"
-    assert request_log["response_payload"] == event
+    assert request_log["response_payload"]["stream_events"] == [event]
     store.close()
 
 
@@ -918,6 +1049,13 @@ def test_responses_parser_retains_structured_outputs_and_bounded_hosted_calls():
         "id": "resp-tools",
         "output": [
             {
+                "type": "reasoning",
+                "id": "reasoning-1",
+                "summary": [],
+                "encrypted_content": "encrypted-reasoning",
+                "status": "completed",
+            },
+            {
                 "type": "web_search_call",
                 "status": "completed",
                 "action": {"query": "latest news", "ignored": ["raw result"]},
@@ -937,3 +1075,18 @@ def test_responses_parser_retains_structured_outputs_and_bounded_hosted_calls():
     assert result.function_calls[0].parsed_arguments == {"messages": ["natural reply"]}
     assert result.hosted_tool_calls[0].kind == "web_search_call"
     assert result.hosted_tool_calls[0].metadata == {"action": {"query": "latest news"}}
+    assert result.continuation_items == [
+        {
+            "type": "reasoning",
+            "id": "reasoning-1",
+            "summary": [],
+            "encrypted_content": "encrypted-reasoning",
+            "status": "completed",
+        },
+        {
+            "type": "function_call",
+            "call_id": "send-call",
+            "name": "send_messages",
+            "arguments": '{"messages":["natural reply"]}',
+        },
+    ]

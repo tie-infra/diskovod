@@ -474,7 +474,8 @@ class Automation:
                     f"read_only_tool:{call.name}",
                 )
                 read_only_calls += 1
-                continuation.extend((function_call_item(call), function_output_item(call, output)))
+                continuation.extend(result.continuation_items or [function_call_item(call)])
+                continuation.append(function_output_item(call, output))
                 tool_choice = "required"
                 continue
 

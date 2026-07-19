@@ -56,6 +56,108 @@ class ProtocolDetection:
     hosted_web_search: bool
 
 
+class ResponsesStreamState:
+    """Accumulate the Responses SSE protocol without relying on the final summary alone."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+        self.output_items: dict[int, dict[str, Any]] = {}
+        self.item_indexes: dict[str, int] = {}
+        self.text_chunks: list[str] = []
+        self.terminal_type: str | None = None
+        self.terminal_response: dict[str, Any] | None = None
+        self.terminal_error: Any = None
+        self.refusal: str | None = None
+
+    def add(self, payload: dict[str, Any]) -> None:
+        self.events.append(payload)
+        event_type = str(payload.get("type") or "")
+        if event_type in {"response.output_item.added", "response.output_item.done"}:
+            item = payload.get("item")
+            output_index = payload.get("output_index")
+            if isinstance(item, dict) and isinstance(output_index, int):
+                self.output_items[output_index] = dict(item)
+                if item_id := item.get("id"):
+                    self.item_indexes[str(item_id)] = output_index
+        elif event_type == "response.function_call_arguments.delta":
+            self._append_function_arguments(payload, replace=False)
+        elif event_type == "response.function_call_arguments.done":
+            self._append_function_arguments(payload, replace=True)
+        elif event_type == "response.output_text.delta":
+            delta = payload.get("delta")
+            if isinstance(delta, str):
+                self.text_chunks.append(delta)
+        elif event_type == "response.output_text.done":
+            text = payload.get("text")
+            if isinstance(text, str) and not self.text_chunks:
+                self.text_chunks.append(text)
+        elif event_type in {"response.refusal.delta", "response.refusal.done"}:
+            value = payload.get("refusal" if event_type.endswith("done") else "delta")
+            if isinstance(value, str):
+                self.refusal = value if event_type.endswith("done") else (self.refusal or "") + value
+        elif event_type in {"response.completed", "response.incomplete", "response.failed"}:
+            self.terminal_type = event_type
+            response = payload.get("response")
+            self.terminal_response = dict(response) if isinstance(response, dict) else {}
+        elif event_type in {"response.error", "error"}:
+            self.terminal_type = event_type
+            self.terminal_error = payload.get("error") or payload
+
+    def _append_function_arguments(self, payload: dict[str, Any], *, replace: bool) -> None:
+        item_id = str(payload.get("item_id") or "")
+        output_index = self.item_indexes.get(item_id)
+        if output_index is None:
+            candidate = payload.get("output_index")
+            output_index = candidate if isinstance(candidate, int) else None
+        if output_index is None:
+            return
+        item = self.output_items.get(output_index)
+        if item is None:
+            return
+        value = payload.get("arguments" if replace else "delta")
+        if not isinstance(value, str):
+            return
+        item["arguments"] = value if replace else str(item.get("arguments") or "") + value
+
+    def response(self) -> dict[str, Any]:
+        response = dict(self.terminal_response or {})
+        output = [item for item in response.get("output", []) if isinstance(item, dict)]
+        known = {
+            str(item.get("id") or item.get("call_id") or f"{item.get('type')}:{index}")
+            for index, item in enumerate(output)
+        }
+        for output_index, item in sorted(self.output_items.items()):
+            identity = str(item.get("id") or item.get("call_id") or f"{item.get('type')}:{output_index}")
+            if identity not in known:
+                output.append(item)
+                known.add(identity)
+        if self.text_chunks and not self._has_output_text(output):
+            output.append(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "".join(self.text_chunks),
+                            "annotations": [],
+                        }
+                    ],
+                }
+            )
+        response["output"] = output
+        return response
+
+    @staticmethod
+    def _has_output_text(output: list[dict[str, Any]]) -> bool:
+        for item in output:
+            content = item.get("content")
+            if item.get("type") == "message" and isinstance(content, list):
+                if any(isinstance(part, dict) and part.get("type") == "output_text" for part in content):
+                    return True
+        return False
+
+
 def make_prompt_cache_key(scope: str, identity: str) -> str:
     digest = hashlib.sha256(f"{scope}\0{identity}".encode()).hexdigest()[:32]
     return f"diskovod:{scope}:{digest}"
@@ -614,6 +716,7 @@ class ChatGPTClient:
             "model": model,
             "instructions": instructions,
             "input": input_items,
+            "include": ["reasoning.encrypted_content"],
             "stream": True,
             "store": False,
             "reasoning": {"effort": effort, "summary": "auto"},
@@ -633,8 +736,7 @@ class ChatGPTClient:
             body["parallel_tool_calls"] = False
         if trace is not None:
             trace["request"] = self._trace_payload(body)
-        chunks: list[str] = []
-        completed_response: dict[str, Any] | None = None
+        stream_state = ResponsesStreamState()
         async with self.session.post(f"{BACKEND_URL}/responses", headers=headers, json=body) as response:
             if response.status >= 400:
                 raw_detail = await response.text()
@@ -648,36 +750,81 @@ class ChatGPTClient:
                     )
                 raise RuntimeError(f"ChatGPT returned HTTP {response.status}: {raw_detail[:1000]}")
             buffer = ""
-            async for raw in response.content.iter_any():
-                buffer += raw.decode(errors="replace").replace("\r\n", "\n")
-                while "\n\n" in buffer:
-                    event, buffer = buffer.split("\n\n", 1)
-                    for line in event.splitlines():
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            continue
-                        payload = json.loads(data)
-                        if payload.get("type") in ("error", "response.failed") and trace is not None:
-                            trace["response"] = self._trace_payload(payload)
-                        if payload.get("type") == "response.output_text.delta":
-                            chunks.append(payload.get("delta", ""))
-                        if payload.get("type") == "response.completed":
-                            candidate = payload.get("response")
-                            if isinstance(candidate, dict):
-                                completed_response = candidate
-                        if payload.get("type") in ("error", "response.failed"):
-                            raise RuntimeError(str(payload.get("error") or payload))
+            try:
+                async for raw in response.content.iter_any():
+                    buffer += raw.decode(errors="replace").replace("\r\n", "\n")
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        self._consume_responses_sse_line(line, stream_state)
+                self._consume_responses_sse_line(buffer, stream_state)
+            except Exception:
+                if trace is not None:
+                    trace["response"] = self._trace_payload(
+                        {
+                            "stream_events": stream_state.events,
+                            "unparsed_tail": buffer,
+                            "effective_response": stream_state.response(),
+                        }
+                    )
+                raise
         if trace is not None:
             trace["response"] = self._trace_payload(
-                completed_response or {"streamed_output_text": "".join(chunks)}
+                {
+                    "stream_events": stream_state.events,
+                    "effective_response": stream_state.response(),
+                }
             )
-        result = self._model_result_from_response(completed_response or {})
-        if not result.text and chunks:
-            result.text_outputs.append(TextOutput("".join(chunks).strip(), []))
+        self._raise_for_responses_terminal_state(stream_state)
+        result = self._model_result_from_response(stream_state.response())
         self._record_usage(result, model=model, purpose=purpose)
         return result
+
+    @staticmethod
+    def _consume_responses_sse_line(line: str, state: ResponsesStreamState) -> None:
+        if not line.startswith("data:"):
+            return
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            return
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"ChatGPT returned an invalid Responses stream event: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("ChatGPT returned a non-object Responses stream event")
+        state.add(payload)
+
+    @classmethod
+    def _raise_for_responses_terminal_state(cls, state: ResponsesStreamState) -> None:
+        if state.terminal_type is None:
+            raise RuntimeError("ChatGPT Responses stream ended without a terminal event")
+        if state.terminal_type == "response.incomplete":
+            response = state.terminal_response or {}
+            details = response.get("incomplete_details")
+            reason = details.get("reason") if isinstance(details, dict) else None
+            raise RuntimeError(f"ChatGPT returned an incomplete response: {reason or 'unknown reason'}")
+        if state.terminal_type == "response.failed":
+            response = state.terminal_response or {}
+            raise RuntimeError(f"ChatGPT response failed: {cls._error_detail(response)}")
+        if state.terminal_type in {"response.error", "error"}:
+            raise RuntimeError(
+                f"ChatGPT response error: {cls._error_detail({'error': state.terminal_error})}"
+            )
+        refusal = state.refusal or cls._response_refusal(state.response())
+        if refusal:
+            raise RuntimeError(f"ChatGPT refused the response: {refusal}")
+
+    @staticmethod
+    def _response_refusal(payload: dict[str, Any]) -> str | None:
+        output = payload.get("output")
+        for item in output if isinstance(output, list) else []:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            content = item.get("content")
+            for part in content if isinstance(content, list) else []:
+                if isinstance(part, dict) and part.get("type") == "refusal":
+                    return str(part.get("refusal") or "Model refusal")
+        return None
 
     async def _complete_custom(
         self,
@@ -1264,6 +1411,7 @@ class ChatGPTClient:
         text_outputs: list[TextOutput] = []
         function_calls: list[FunctionCall] = []
         hosted_tool_calls: list[HostedToolCall] = []
+        continuation_items: list[dict[str, Any]] = []
         output = payload.get("output")
         for item in output if isinstance(output, list) else []:
             if not isinstance(item, dict):
@@ -1271,6 +1419,20 @@ class ChatGPTClient:
             item_type = str(item.get("type") or "")
             if item_type == "message":
                 content = item.get("content")
+                replay_content = (
+                    [dict(part) for part in content if isinstance(part, dict)]
+                    if isinstance(content, list)
+                    else []
+                )
+                if replay_content:
+                    replay_message: dict[str, Any] = {
+                        "type": "message",
+                        "role": str(item.get("role") or "assistant"),
+                        "content": replay_content,
+                    }
+                    if item.get("phase") is not None:
+                        replay_message["phase"] = item["phase"]
+                    continuation_items.append(replay_message)
                 for part in content if isinstance(content, list) else []:
                     if not isinstance(part, dict) or part.get("type") != "output_text":
                         continue
@@ -1285,14 +1447,30 @@ class ChatGPTClient:
                     )
             elif item_type == "function_call":
                 arguments = str(item.get("arguments") or "")
+                call_id = str(item.get("call_id") or item.get("id") or "")
+                name = str(item.get("name") or "")
                 function_calls.append(
                     FunctionCall(
-                        call_id=str(item.get("call_id") or item.get("id") or ""),
-                        name=str(item.get("name") or ""),
+                        call_id=call_id,
+                        name=name,
                         arguments=arguments,
                         parsed_arguments=cls._parse_function_arguments(arguments),
                     )
                 )
+                continuation_items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": arguments,
+                    }
+                )
+            elif item_type == "reasoning":
+                reasoning_item = {"type": "reasoning"}
+                for key in ("id", "summary", "content", "encrypted_content", "status"):
+                    if key in item:
+                        reasoning_item[key] = item[key]
+                continuation_items.append(reasoning_item)
             elif item_type.endswith("_call"):
                 metadata: dict[str, Any] = {}
                 action = item.get("action")
@@ -1309,6 +1487,7 @@ class ChatGPTClient:
             hosted_tool_calls,
             cls._usage_from_response(payload),
             str(payload.get("id")) if payload.get("id") else None,
+            continuation_items=continuation_items,
         )
 
     @classmethod

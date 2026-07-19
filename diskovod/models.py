@@ -281,6 +281,7 @@ class ModelResult:
     request_log_id: int | None = None
     request_payload: dict[str, Any] | None = None
     response_payload: dict[str, Any] | None = None
+    continuation_items: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def text(self) -> str:

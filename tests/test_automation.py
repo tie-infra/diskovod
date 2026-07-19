@@ -397,9 +397,24 @@ async def test_forced_reply_repairs_reaction_to_written_native_action(tmp_path: 
 @pytest.mark.asyncio
 async def test_time_tool_output_is_ephemeral_and_terminal_action_follows(tmp_path: Path):
     store = reply_store(tmp_path, owner_timezone="Europe/Moscow")
+    time_result = function_result("get_current_datetime", {"timezone": None}, "time-call")
+    time_result.continuation_items = [
+        {
+            "type": "reasoning",
+            "id": "reasoning-1",
+            "summary": [],
+            "encrypted_content": "encrypted-reasoning",
+        },
+        {
+            "type": "function_call",
+            "call_id": "time-call",
+            "name": "get_current_datetime",
+            "arguments": '{"timezone": null}',
+        },
+    ]
     chatgpt = ReplyingChatGPT(
         [
-            function_result("get_current_datetime", {"timezone": None}, "time-call"),
+            time_result,
             function_result("send_messages", {"messages": ["Сегодня воскресенье."]}, "send-call"),
         ]
     )
@@ -410,8 +425,13 @@ async def test_time_tool_output_is_ephemeral_and_terminal_action_follows(tmp_pat
     await automation._reply(trigger, 0)
 
     continuation = chatgpt.calls[1]["continuation_items"]
-    assert [item["type"] for item in continuation] == ["function_call", "function_call_output"]
-    assert '"timezone":"Europe/Moscow"' in continuation[1]["output"]
+    assert [item["type"] for item in continuation] == [
+        "reasoning",
+        "function_call",
+        "function_call_output",
+    ]
+    assert continuation[0]["encrypted_content"] == "encrypted-reasoning"
+    assert '"timezone":"Europe/Moscow"' in continuation[2]["output"]
     assert all("Europe/Moscow" not in item["content"] for item in store.history("dm", 10))
     store.close()
 

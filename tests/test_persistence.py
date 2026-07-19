@@ -85,40 +85,33 @@ async def test_schema_migration_removes_unsupported_subscription_token_limit(tmp
         assert saved["capabilities"]["output_token_limit"] is False
 
 
-def test_sqlite_langgraph_store_conforms_to_sync_and_async_api(tmp_path: Path):
+async def test_sqlite_langgraph_store_supports_the_async_api(tmp_path: Path):
     store = SQLiteLangGraphStore(tmp_path / "diskovod.sqlite3")
     namespace = ("chat", "account-1", "channel-1", "memory")
 
-    store.put(namespace, "preference", {"text": "Prefers decaf coffee", "kind": "preference"})
-    store.put(
+    await store.aput(namespace, "preference", {"text": "Prefers decaf coffee", "kind": "preference"})
+    await store.aput(
         namespace,
         "fact",
         {"text": "Lives in Berlin", "kind": "fact", "confidence": 0.9},
         index=["$.text"],
     )
-    store.put(("chat", "account-1", "channel-2", "memory"), "other", {"text": "Other chat"})
+    await store.aput(("chat", "account-1", "channel-2", "memory"), "other", {"text": "Other chat"})
 
-    assert store.get(namespace, "preference").value["text"] == "Prefers decaf coffee"
-    assert [item.key for item in store.search(namespace, filter={"kind": "fact"})] == ["fact"]
-    assert [item.key for item in store.search(namespace, filter={"confidence": {"$gte": 0.8}})] == ["fact"]
-    assert [item.key for item in store.search(namespace, query="decaf coffee")] == ["preference"]
-    assert store.list_namespaces(prefix=("chat", "account-1"), max_depth=3) == [
+    assert (await store.aget(namespace, "preference")).value["text"] == "Prefers decaf coffee"
+    assert [item.key for item in await store.asearch(namespace, filter={"kind": "fact"})] == ["fact"]
+    assert [item.key for item in await store.asearch(namespace, filter={"confidence": {"$gte": 0.8}})] == [
+        "fact"
+    ]
+    assert [item.key for item in await store.asearch(namespace, query="decaf coffee")] == ["preference"]
+    assert await store.alist_namespaces(prefix=("chat", "account-1"), max_depth=3) == [
         ("chat", "account-1", "channel-1"),
         ("chat", "account-1", "channel-2"),
     ]
 
-    async def exercise_async_api():
-        await store.aput(namespace, "async", {"text": "Stored asynchronously"})
-        assert (await store.aget(namespace, "async")).value["text"] == "Stored asynchronously"
-        await store.adelete(namespace, "async")
-        assert await store.aget(namespace, "async") is None
-        await store.database.close()
-
-    import asyncio
-
-    asyncio.run(exercise_async_api())
-    store.delete(namespace, "fact")
-    assert store.get(namespace, "fact") is None
+    await store.adelete(namespace, "fact")
+    assert await store.aget(namespace, "fact") is None
+    await store.database.close()
 
 
 async def test_async_langgraph_store_initializes_only_the_async_database(tmp_path: Path):
@@ -133,11 +126,11 @@ async def test_async_langgraph_store_initializes_only_the_async_database(tmp_pat
     await store.database.close()
 
 
-async def test_langgraph_sync_adapter_rejects_event_loop_blocking(tmp_path: Path):
+def test_langgraph_store_explicitly_rejects_the_sync_api(tmp_path: Path):
     store = SQLiteLangGraphStore(tmp_path / "diskovod.sqlite3")
 
-    with pytest.raises(RuntimeError, match="asynchronous LangGraph Store API"):
-        store.put(("chat", "account", "channel", "memory"), "key", {"text": "value"})
+    with pytest.raises(NotImplementedError, match="only the asynchronous API"):
+        store.batch([])
 
 
 def test_checkpoint_cipher_rejects_tampering_and_wrong_context():

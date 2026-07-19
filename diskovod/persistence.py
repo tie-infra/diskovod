@@ -367,20 +367,8 @@ class SQLiteLangGraphStore(BaseStore):
         self._schema_lock = asyncio.Lock()
 
     def batch(self, ops: Iterable[Op]) -> list[Result]:
-        """Adapt LangGraph's mandatory sync API to the canonical async implementation."""
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self._adapt_sync_batch(list(ops)))
-        raise RuntimeError("Use the asynchronous LangGraph Store API from an async event loop")
-
-    async def _adapt_sync_batch(self, operations: list[Op]) -> list[Result]:
-        database = AsyncSQLite(self.path)
-        try:
-            await self._initialize_database(database)
-            return await self._abatch(database, operations)
-        finally:
-            await database.close()
+        del ops
+        raise NotImplementedError("Diskovod's LangGraph Store supports only the asynchronous API")
 
     async def abatch(self, ops: Iterable[Op]) -> list[Result]:
         await self.start()

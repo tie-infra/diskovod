@@ -3,21 +3,40 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx2
 import pytest
 
 from diskovod.attachments import AttachmentRepository
+from diskovod.http_client import PublicHTTPResponse
 
 
 class Attachment(SimpleNamespace):
     async def read(self, *, use_cached: bool = False) -> bytes:
-        assert use_cached is True
-        return self.body
+        raise AssertionError("Discord's HTTP client must not download attachments")
+
+
+class RecordingHTTP:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.calls: list[tuple[str, int]] = []
+
+    async def get(self, url: str, *, max_bytes: int, timeout=None) -> PublicHTTPResponse:
+        del timeout
+        self.calls.append((url, max_bytes))
+        return PublicHTTPResponse(
+            url=url,
+            status_code=200,
+            headers=httpx2.Headers({"Content-Type": "text/plain"}),
+            content=self.body,
+            encoding="utf-8",
+        )
 
 
 @pytest.mark.asyncio
 async def test_attachment_is_content_addressed_and_searchable_per_chat(tmp_path: Path):
-    repository = AttachmentRepository(tmp_path / "diskovod.sqlite3")
     body = b"The launch code name is blue heron."
+    http = RecordingHTTP(body)
+    repository = AttachmentRepository(tmp_path / "diskovod.sqlite3", http)
     attachment = Attachment(
         id="attachment-1",
         filename="notes.txt",
@@ -35,6 +54,8 @@ async def test_attachment_is_content_addressed_and_searchable_per_chat(tmp_path:
     )
 
     digest = captured[0]["sha256"]
+    assert captured[0]["text"] == body.decode()
+    assert http.calls == [("https://cdn.example/notes.txt", len(body))]
     assert (tmp_path / "attachments" / digest[:2] / digest).read_bytes() == body
     assert repository.search("chat-a", "blue heron")[0]["filename"] == "notes.txt"
     assert repository.search("chat-b", "blue heron") == []

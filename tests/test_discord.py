@@ -9,7 +9,7 @@ import pytest
 
 import diskovod.discord as discord_module
 from diskovod.discord import CaptchaBroker, DiscordService, PrivateDiscordClient
-from diskovod.models import capture_discord_attachments
+from diskovod.models import discord_attachment_metadata
 from diskovod.store import Store
 
 
@@ -21,25 +21,17 @@ class FakeCaptcha(Exception):
     should_serve_invisible = False
 
 
-class FakeAttachment(SimpleNamespace):
-    async def read(self, *, use_cached: bool = False) -> bytes:
-        assert use_cached is True
-        return self.body
-
-
-@pytest.mark.asyncio
-async def test_captures_metadata_and_small_text_attachment_body():
-    attachment = FakeAttachment(
+def test_captures_attachment_metadata_without_downloading():
+    attachment = SimpleNamespace(
         id="attachment-1",
         filename="notes.txt",
         content_type="text/plain; charset=utf-8",
         size=11,
         url="https://cdn.example/notes.txt",
         description="meeting notes",
-        body=b"hello world",
     )
 
-    assert await capture_discord_attachments([attachment]) == [
+    assert discord_attachment_metadata([attachment]) == [
         {
             "id": "attachment-1",
             "filename": "notes.txt",
@@ -47,7 +39,6 @@ async def test_captures_metadata_and_small_text_attachment_body():
             "size": 11,
             "url": "https://cdn.example/notes.txt",
             "description": "meeting notes",
-            "text": "hello world",
         }
     ]
 

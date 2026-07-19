@@ -9,7 +9,14 @@ from diskovod.agent import build_agent
 from diskovod.events import DiscordEventQueue
 from diskovod.steering import LiveConversationMiddleware
 
-from test_agent import RecordingGateway, ScriptedChatModel, prompt, runtime_context, tool_call
+from test_agent import (
+    RecordingGateway,
+    ScriptedChatModel,
+    UnusedPublicHTTP,
+    prompt,
+    runtime_context,
+    tool_call,
+)
 
 
 class InjectingModel(ScriptedChatModel):
@@ -72,6 +79,7 @@ async def test_new_input_cancels_unstarted_tool_and_returns_to_model(tmp_path: P
         model,
         RecordingGateway(),
         prompt(),
+        UnusedPublicHTTP(),
         extra_middleware=[LiveConversationMiddleware(queue, "en")],
     )
 
@@ -139,6 +147,7 @@ async def test_live_input_wins_race_with_explicit_send_termination(tmp_path: Pat
         model,
         gateway,
         prompt(),
+        UnusedPublicHTTP(),
         extra_middleware=[LiveConversationMiddleware(queue, "en")],
     )
 

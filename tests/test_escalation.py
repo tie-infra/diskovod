@@ -13,7 +13,14 @@ from diskovod.agent_actions import DeliveryRecord
 from diskovod.durable_actions import DurableActionGateway, SideEffectLedger
 from diskovod.localization import escalation_fallback
 
-from test_agent import RecordingGateway, ScriptedChatModel, prompt, runtime_context, tool_call
+from test_agent import (
+    RecordingGateway,
+    ScriptedChatModel,
+    UnusedPublicHTTP,
+    prompt,
+    runtime_context,
+    tool_call,
+)
 
 
 @pytest.mark.asyncio
@@ -22,7 +29,7 @@ async def test_invalid_escalation_uses_fixed_fallback_without_retry():
     model = ScriptedChatModel(
         responses=[tool_call("escalate_to_owner", {"reason": "made_up"}, "escalate-invalid")]
     )
-    agent = build_agent(model, gateway, prompt())
+    agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
 
     result = await agent.ainvoke(
         {"messages": [HumanMessage("get the owner")]},
@@ -64,7 +71,7 @@ async def test_valid_escalation_interrupts_and_resumes_without_resending(tmp_pat
             AIMessage(content="done after owner resolution"),
         ]
     )
-    agent = build_agent(model, gateway, prompt(), checkpointer=InMemorySaver())
+    agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP(), checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "discord:account:channel:g1"}}
     context = runtime_context()
 

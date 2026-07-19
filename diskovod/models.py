@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import logging
 import mimetypes
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
 from .localization import prompts_for
-
-log = logging.getLogger(__name__)
 
 MAX_ATTACHMENTS_PER_MESSAGE = 4
 MAX_NATIVE_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -78,7 +75,7 @@ def _content_type(filename: str, value: object) -> str:
     return guessed or "application/octet-stream"
 
 
-def _is_text_attachment(filename: str, content_type: str) -> bool:
+def is_text_attachment(filename: str, content_type: str) -> bool:
     return (
         content_type.startswith("text/")
         or content_type
@@ -94,10 +91,9 @@ def _is_text_attachment(filename: str, content_type: str) -> bool:
     )
 
 
-async def capture_discord_attachments(values: Iterable[Any]) -> list[dict[str, Any]]:
-    """Capture bounded metadata and small textual attachment bodies from a Discord message."""
+def discord_attachment_metadata(values: Iterable[Any]) -> list[dict[str, Any]]:
+    """Capture bounded attachment metadata without using Discord's HTTP client."""
     captured: list[dict[str, Any]] = []
-    inline_bytes = 0
     for attachment in list(values)[:MAX_ATTACHMENTS_PER_MESSAGE]:
         filename = str(getattr(attachment, "filename", "attachment"))[:255]
         content_type = _content_type(filename, getattr(attachment, "content_type", None))
@@ -116,17 +112,6 @@ async def capture_discord_attachments(values: Iterable[Any]) -> list[dict[str, A
         if description:
             item["description"] = str(description)[:1000]
 
-        remaining = MAX_INLINE_TEXT_BYTES - inline_bytes
-        if _is_text_attachment(filename, content_type) and (not size or size <= remaining):
-            try:
-                raw = await attachment.read(use_cached=True)
-                if len(raw) <= remaining and b"\0" not in raw:
-                    text = raw.decode("utf-8", errors="replace").strip()
-                    if text:
-                        item["text"] = text[:MAX_INLINE_TEXT_CHARACTERS]
-                        inline_bytes += len(raw)
-            except Exception as exc:
-                log.warning("Could not read Discord text attachment %s: %s", filename, exc)
         captured.append(item)
     return captured
 

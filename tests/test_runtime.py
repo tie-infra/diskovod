@@ -12,7 +12,7 @@ from diskovod.providers import ModelConfiguration, ProviderCapabilities
 from diskovod.runtime import AgentService
 from diskovod.store import Store
 
-from test_agent import ScriptedChatModel, tool_call
+from test_agent import ScriptedChatModel, UnusedPublicHTTP, tool_call
 
 
 class FakeModels:
@@ -69,7 +69,7 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp
             )
         ]
     )
-    service = AgentService(store, FakeModels(model), transport, "x" * 32)
+    service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
     await service.start()
 
     service.submit_message(
@@ -103,7 +103,7 @@ async def test_historical_replay_uses_emulated_discord_actions(tmp_path):
     store.upsert_conversation("channel", "peer", "Peer")
     transport = RecordingTransport()
     model = ScriptedChatModel(responses=[AIMessage(content="Initial turn")])
-    service = AgentService(store, FakeModels(model), transport, "x" * 32)
+    service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
     await service.start()
     service.submit_message(
         message_id="discord-replay",
@@ -145,7 +145,7 @@ async def test_model_change_rolls_checkpoint_to_portable_summary(tmp_path):
     store.upsert_conversation("channel", "peer", "Peer")
     model = ScriptedChatModel(responses=[AIMessage(content="Initial answer")])
     models = FakeModels(model)
-    service = AgentService(store, models, RecordingTransport(), "x" * 32)
+    service = AgentService(store, models, RecordingTransport(), "x" * 32, UnusedPublicHTTP())
     await service.start()
     service.submit_message(
         message_id="discord-rollover",
@@ -188,6 +188,7 @@ async def test_agent_service_allows_a_zero_message_turn(tmp_path):
         FakeModels(ScriptedChatModel(responses=[AIMessage(content="No visible action needed")])),
         transport,
         "x" * 32,
+        UnusedPublicHTTP(),
     )
     await service.start()
     service.submit_message(
@@ -228,7 +229,7 @@ async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tm
             AIMessage(content="The owner resolved the handoff."),
         ]
     )
-    service = AgentService(store, FakeModels(model), transport, "x" * 32)
+    service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
     await service.start()
     service.submit_message(
         message_id="discord-3",

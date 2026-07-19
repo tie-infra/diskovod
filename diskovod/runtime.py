@@ -21,6 +21,7 @@ from .attachments import AttachmentRepository
 from .agent_actions import DeliveryRecord
 from .durable_actions import DiscordActionTransport, DurableActionGateway, SideEffectLedger
 from .events import DiscordEventQueue, QueuedDiscordEvent
+from .http_client import PublicHTTP
 from .localization import assistant_name_for, runtime_context_text, summarization_prompt
 from .persistence import SQLiteLangGraphStore, open_checkpointer
 from .providers import ModelService
@@ -66,13 +67,15 @@ class AgentService:
         models: ModelService,
         transport: DiscordActionTransport,
         checkpoint_secret: str,
+        http: PublicHTTP,
     ):
         self.store = store
         self.models = models
         self.transport = transport
         self.checkpoint_secret = checkpoint_secret
+        self.http = http
         self.events = DiscordEventQueue(store.path)
-        self.attachments = AttachmentRepository(store.path)
+        self.attachments = AttachmentRepository(store.path, http)
         self.memory = SQLiteLangGraphStore(store.path)
         self.ledger = SideEffectLedger(store.path)
         self.gateway = DurableActionGateway(self.ledger, transport)
@@ -304,6 +307,7 @@ class AgentService:
                 str(personality.get("profile") or ""),
                 settings.owner_details,
             ),
+            self.http,
             checkpointer=InMemorySaver(),
             store=InMemoryStore(),
             attachments=self.attachments,
@@ -504,6 +508,7 @@ class AgentService:
                 str(personality.get("profile") or ""),
                 settings.owner_details,
             ),
+            self.http,
             checkpointer=self.checkpointer,
             store=self.memory,
             extra_middleware=(LiveConversationMiddleware(self.events, settings.prompt_locale),),
@@ -671,6 +676,7 @@ class AgentService:
             self.models.build_model(),
             self.gateway,
             prompt,
+            self.http,
             checkpointer=self.checkpointer,
             store=self.memory,
             extra_middleware=(LiveConversationMiddleware(self.events, settings.prompt_locale),),

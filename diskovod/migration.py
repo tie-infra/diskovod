@@ -434,6 +434,7 @@ class LegacyMigrator:
                     context.assistant_name,
                     settings.base_instructions,
                 ),
+                self.runtime.http,
                 checkpointer=self.runtime.checkpointer,
                 store=self.runtime.memory,
             )

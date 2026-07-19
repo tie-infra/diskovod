@@ -5,10 +5,13 @@ import contextlib
 import ipaddress
 import socket
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Iterator
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 import httpcore2
 import httpx2
+
+USER_AGENT = "Diskovod/1.0 (+local Discord assistant)"
 
 
 class PublicNetworkError(RuntimeError):
@@ -17,6 +20,25 @@ class PublicNetworkError(RuntimeError):
 
 AddressInfo = tuple[int, int, int, str, tuple[Any, ...]]
 Resolver = Callable[[str, int], Awaitable[list[AddressInfo]]]
+
+
+@dataclass(frozen=True, slots=True)
+class PublicHTTPResponse:
+    url: str
+    status_code: int
+    headers: httpx2.Headers
+    content: bytes
+    encoding: str
+
+
+class PublicHTTP(Protocol):
+    async def get(
+        self,
+        url: str,
+        *,
+        max_bytes: int,
+        timeout: httpx2.Timeout | float | None = None,
+    ) -> PublicHTTPResponse: ...
 
 
 async def _resolve(host: str, port: int) -> list[AddressInfo]:
@@ -198,3 +220,51 @@ class PublicAsyncHTTPTransport(httpx2.AsyncBaseTransport):
 
     async def aclose(self) -> None:
         await self._pool.aclose()
+
+
+class PublicHTTPClient:
+    """Application-owned HTTP/2 client for bounded reads from untrusted URLs."""
+
+    def __init__(self) -> None:
+        self._client = httpx2.AsyncClient(
+            transport=PublicAsyncHTTPTransport(),
+            timeout=httpx2.Timeout(20, connect=8),
+            headers={"User-Agent": USER_AGENT},
+            follow_redirects=True,
+            max_redirects=5,
+            trust_env=False,
+        )
+
+    async def get(
+        self,
+        url: str,
+        *,
+        max_bytes: int,
+        timeout: httpx2.Timeout | float | None = None,
+    ) -> PublicHTTPResponse:
+        if max_bytes < 1:
+            raise ValueError("max_bytes must be positive")
+        options = {"timeout": timeout} if timeout is not None else {}
+        async with self._client.stream("GET", url, **options) as response:
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    if int(content_length) > max_bytes:
+                        raise PublicNetworkError("response_too_large")
+                except ValueError:
+                    pass
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > max_bytes:
+                    raise PublicNetworkError("response_too_large")
+            return PublicHTTPResponse(
+                url=str(response.url),
+                status_code=response.status_code,
+                headers=response.headers,
+                content=bytes(body),
+                encoding=response.encoding or "utf-8",
+            )
+
+    async def close(self) -> None:
+        await self._client.aclose()

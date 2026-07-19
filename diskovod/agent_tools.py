@@ -13,6 +13,7 @@ from .agent_actions import AgentActionGateway
 from .agent_types import AgentRuntimeContext, DiskovodAgentState
 from .attachments import AttachmentRepository
 from .calculation import evaluate_expression
+from .http_client import PublicHTTP
 from .localization import tool_text
 from .web_access import WebAccessError, fetch_url as fetch_public_url, search_web as search_public_web
 
@@ -28,6 +29,7 @@ ReactionEmoji = Literal[
 def localized_agent_tools(
     locale: str,
     gateway: AgentActionGateway,
+    http: PublicHTTP,
     attachments: AttachmentRepository | None = None,
     *,
     include_web_search: bool = True,
@@ -73,7 +75,7 @@ def localized_agent_tools(
     ) -> dict[str, Any]:
         del runtime
         try:
-            results = await search_public_web(query)
+            results = await search_public_web(http, query)
         except WebAccessError as error:
             return {"ok": False, "error": text["web_error"], "code": str(error)}
         return {"ok": True, "results": results}
@@ -84,7 +86,7 @@ def localized_agent_tools(
     ) -> dict[str, Any]:
         del runtime
         try:
-            result = await fetch_public_url(url)
+            result = await fetch_public_url(http, url)
         except WebAccessError as error:
             return {"ok": False, "error": text["web_error"], "code": str(error)}
         return {"ok": True, **result}

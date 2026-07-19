@@ -8,29 +8,28 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import httpx2
 
-from .http_client import PublicAsyncHTTPTransport, PublicNetworkError
+from .http_client import PublicHTTP, PublicNetworkError
 
 MAX_FETCH_BYTES = 1_000_000
-USER_AGENT = "Diskovod/1.0 (+local Discord assistant)"
 
 
 class WebAccessError(RuntimeError):
     pass
 
 
-async def search_web(query: str, limit: int = 5) -> list[dict[str, str]]:
+async def search_web(http: PublicHTTP, query: str, limit: int = 5) -> list[dict[str, str]]:
     query = query.strip()
     if not query:
         raise WebAccessError("empty_query")
     url = f"https://html.duckduckgo.com/html/?q={quote_plus(query[:500])}"
-    body, _ = await _request_text(url)
+    body, _ = await _request_text(http, url)
     parser = _SearchParser(max(1, min(limit, 8)))
     parser.feed(body)
     return parser.results
 
 
-async def fetch_url(url: str) -> dict[str, Any]:
-    body, metadata = await _request_text(url)
+async def fetch_url(http: PublicHTTP, url: str) -> dict[str, Any]:
+    body, metadata = await _request_text(http, url)
     content_type = metadata["content_type"]
     if "html" in content_type:
         parser = _TextParser()
@@ -47,37 +46,19 @@ async def fetch_url(url: str) -> dict[str, Any]:
     }
 
 
-async def _request_text(url: str) -> tuple[str, dict[str, str]]:
-    timeout = httpx2.Timeout(20, connect=8)
+async def _request_text(http: PublicHTTP, url: str) -> tuple[str, dict[str, str]]:
     try:
-        async with httpx2.AsyncClient(
-            transport=PublicAsyncHTTPTransport(),
-            timeout=timeout,
-            headers={"User-Agent": USER_AGENT},
-            follow_redirects=True,
-            max_redirects=5,
-            trust_env=False,
-        ) as session:
-            async with session.stream("GET", url) as response:
-                if response.status_code < 200 or response.status_code >= 300:
-                    raise WebAccessError(f"http_status_{response.status_code}")
-                content_type = response.headers.get("Content-Type", "").split(";", 1)[0].casefold()
-                if not (
-                    content_type.startswith("text/")
-                    or content_type in {"application/json", "application/xml"}
-                ):
-                    raise WebAccessError("unsupported_content_type")
-                body = bytearray()
-                async for chunk in response.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > MAX_FETCH_BYTES:
-                        raise WebAccessError("response_too_large")
-                charset = response.encoding or "utf-8"
-                try:
-                    text = body.decode(charset, errors="replace")
-                except LookupError:
-                    text = body.decode("utf-8", errors="replace")
-                return text, {"url": str(response.url), "content_type": content_type}
+        response = await http.get(url, max_bytes=MAX_FETCH_BYTES)
+        if response.status_code < 200 or response.status_code >= 300:
+            raise WebAccessError(f"http_status_{response.status_code}")
+        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].casefold()
+        if not (content_type.startswith("text/") or content_type in {"application/json", "application/xml"}):
+            raise WebAccessError("unsupported_content_type")
+        try:
+            text = response.content.decode(response.encoding, errors="replace")
+        except LookupError:
+            text = response.content.decode("utf-8", errors="replace")
+        return text, {"url": response.url, "content_type": content_type}
     except WebAccessError:
         raise
     except PublicNetworkError as error:

@@ -57,6 +57,12 @@ class RecordingGateway:
         return None
 
 
+class UnusedPublicHTTP:
+    async def get(self, url, *, max_bytes, timeout=None):
+        del url, max_bytes, timeout
+        raise AssertionError("This test must not perform external HTTP requests")
+
+
 def runtime_context(locale: str = "en") -> AgentRuntimeContext:
     return AgentRuntimeContext(
         account_id="account",
@@ -91,7 +97,7 @@ def tool_call(name: str, arguments: dict[str, Any], call_id: str) -> AIMessage:
 async def test_ordinary_final_text_stops_without_sending_to_discord():
     gateway = RecordingGateway()
     model = ScriptedChatModel(responses=[AIMessage(content="internal final text")])
-    agent = build_agent(model, gateway, prompt())
+    agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
 
     result = await agent.ainvoke(
         {"messages": [HumanMessage("hello")]},
@@ -120,7 +126,7 @@ async def test_send_messages_returns_control_and_supports_explicit_final_send():
             ),
         ]
     )
-    agent = build_agent(model, gateway, prompt())
+    agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
 
     result = await agent.ainvoke(
         {"messages": [HumanMessage("Check 6 * 7")]},
@@ -148,7 +154,7 @@ async def test_failed_final_send_does_not_terminate_the_agent():
             AIMessage(content="stop after observing the failure"),
         ]
     )
-    agent = build_agent(model, gateway, prompt())
+    agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
 
     result = await agent.ainvoke(
         {"messages": [HumanMessage("hello")]},
@@ -168,6 +174,7 @@ async def test_verified_hosted_search_is_bound_as_a_server_tool():
         model,
         RecordingGateway(),
         prompt(),
+        UnusedPublicHTTP(),
         hosted_web_search=True,
     )
 
@@ -182,7 +189,7 @@ async def test_verified_hosted_search_is_bound_as_a_server_tool():
 def test_tool_schemas_and_validation_messages_are_localized():
     gateway = RecordingGateway()
     for locale in SUPPORTED_LOCALES:
-        tools = {tool.name: tool for tool in localized_agent_tools(locale, gateway)}
+        tools = {tool.name: tool for tool in localized_agent_tools(locale, gateway, UnusedPublicHTTP())}
         text = tool_text(locale)
         assert tools["send_messages"].description == text["send_messages"]
         schema = tools["send_messages"].tool_call_schema.model_json_schema()

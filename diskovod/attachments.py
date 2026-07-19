@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -9,18 +10,34 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from .models import MAX_NATIVE_ATTACHMENT_BYTES, capture_discord_attachments
+import httpx2
+
+from .http_client import PublicHTTP, PublicNetworkError
+from .models import (
+    MAX_INLINE_TEXT_BYTES,
+    MAX_INLINE_TEXT_CHARACTERS,
+    MAX_NATIVE_ATTACHMENT_BYTES,
+    discord_attachment_metadata,
+    is_text_attachment,
+)
 from .persistence import SQLITE_BUSY_TIMEOUT_MS, initialize_target_schema
 
 CHUNK_CHARACTERS = 4_000
 MAX_EXTRACTED_CHARACTERS = 200_000
+log = logging.getLogger(__name__)
 
 
 class AttachmentRepository:
     """Content-addressed attachment objects and bounded per-chat lexical retrieval."""
 
-    def __init__(self, database_path: Path, object_root: Path | None = None):
+    def __init__(
+        self,
+        database_path: Path,
+        http: PublicHTTP,
+        object_root: Path | None = None,
+    ):
         self.database_path = database_path
+        self.http = http
         self.object_root = object_root or database_path.parent / "attachments"
         self.object_root.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(database_path, check_same_thread=False)
@@ -41,22 +58,44 @@ class AttachmentRepository:
         channel_id: str,
         message_id: str,
     ) -> list[dict[str, Any]]:
-        attachments = list(values)
-        captured = await capture_discord_attachments(attachments)
-        by_id = {str(getattr(item, "id", "")): item for item in attachments}
+        captured = discord_attachment_metadata(values)
+        inline_bytes = 0
         for metadata in captured:
-            source = by_id.get(str(metadata.get("id") or ""))
             size = int(metadata.get("size") or 0)
-            if source is None or size <= 0 or size > MAX_NATIVE_ATTACHMENT_BYTES:
+            if size <= 0 or size > MAX_NATIVE_ATTACHMENT_BYTES:
                 continue
             try:
-                body = await source.read(use_cached=True)
+                response = await self.http.get(
+                    str(metadata.get("url") or ""),
+                    max_bytes=size,
+                    timeout=httpx2.Timeout(60, connect=8),
+                )
             except Exception as error:
-                metadata["ingestion_error"] = type(error).__name__
+                code = str(error) if isinstance(error, (PublicNetworkError, httpx2.HTTPError)) else ""
+                metadata["ingestion_error"] = code or type(error).__name__
+                log.warning("Could not download Discord attachment %s: %s", metadata["filename"], error)
                 continue
+            if response.status_code < 200 or response.status_code >= 300:
+                metadata["ingestion_error"] = f"http_status_{response.status_code}"
+                continue
+            body = response.content
             if len(body) != size:
                 metadata["ingestion_error"] = "size_mismatch"
                 continue
+            remaining = MAX_INLINE_TEXT_BYTES - inline_bytes
+            if (
+                remaining > 0
+                and is_text_attachment(
+                    str(metadata.get("filename") or ""),
+                    str(metadata.get("content_type") or ""),
+                )
+                and len(body) <= remaining
+                and b"\0" not in body
+            ):
+                text = body.decode("utf-8", errors="replace").strip()
+                if text:
+                    metadata["text"] = text[:MAX_INLINE_TEXT_CHARACTERS]
+                    inline_bytes += len(body)
             digest = self.put_object(body, str(metadata.get("content_type") or ""))
             metadata["sha256"] = digest
             self.add_reference(channel_id, message_id, metadata, digest)

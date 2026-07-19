@@ -9,7 +9,7 @@ from diskovod.migration import LegacyMigrator
 from diskovod.runtime import AgentService
 from diskovod.store import Store
 
-from test_agent import ScriptedChatModel
+from test_agent import ScriptedChatModel, UnusedPublicHTTP
 from test_runtime import FakeModels, RecordingTransport
 
 
@@ -42,6 +42,7 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
         FakeModels(ScriptedChatModel(responses=[])),
         RecordingTransport(),
         "x" * 32,
+        UnusedPublicHTTP(),
     )
     await runtime.start()
     migrator = LegacyMigrator(store, runtime)
@@ -109,6 +110,7 @@ async def test_cutover_converts_active_legacy_escalation_to_real_interrupt(tmp_p
         FakeModels(ScriptedChatModel(responses=[])),
         RecordingTransport(),
         "x" * 32,
+        UnusedPublicHTTP(),
     )
     await runtime.start()
 

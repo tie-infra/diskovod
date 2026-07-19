@@ -8,6 +8,7 @@ import uvicorn
 
 from .config import RuntimeConfig
 from .discord import DiscordService
+from .http_client import PublicHTTPClient
 from .migration import LegacyMigrator
 from .oauth import ChatGPTAccount
 from .providers import ModelService, ProviderSetup
@@ -18,7 +19,7 @@ from .web import WebApp
 
 def build(
     config: RuntimeConfig,
-) -> tuple[WebApp, Store, ChatGPTAccount, DiscordService, AgentService]:
+) -> tuple[WebApp, Store, ChatGPTAccount, DiscordService, AgentService, PublicHTTPClient]:
     password = RuntimeConfig.read_secret(config.admin_password_file, "admin password", 12)
     secret = RuntimeConfig.read_secret(config.secret_key_file, "secret key", 32)
     store = Store(config.data_dir / "diskovod.sqlite3", secret)
@@ -26,7 +27,8 @@ def build(
     models = ModelService(store, account)
     provider_setup = ProviderSetup(store, models)
     discord = DiscordService(store)
-    runtime = AgentService(store, models, discord, secret)
+    public_http = PublicHTTPClient()
+    runtime = AgentService(store, models, discord, secret, public_http)
     discord.attach_runtime(runtime)
     return (
         WebApp(
@@ -43,6 +45,7 @@ def build(
         account,
         discord,
         runtime,
+        public_http,
     )
 
 
@@ -55,7 +58,7 @@ def main() -> None:
         level=config.log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    web, store, account, discord, runtime = build(config)
+    web, store, account, discord, runtime, public_http = build(config)
 
     @web.app.on_event("startup")
     async def startup() -> None:
@@ -71,6 +74,7 @@ def main() -> None:
         await discord.stop()
         await runtime.close()
         await account.close()
+        await public_http.close()
         store.close()
 
     uvicorn.run(

@@ -26,6 +26,7 @@ from .agent_actions import AgentActionGateway
 from .agent_tools import localized_agent_tools
 from .agent_types import AgentRuntimeContext, DiskovodAgentState
 from .attachments import AttachmentRepository
+from .http_client import PublicHTTP
 from .localization import (
     assistant_identity,
     escalation_fallback,
@@ -242,6 +243,7 @@ def build_agent(
     model: BaseChatModel,
     gateway: AgentActionGateway,
     prompt: AgentPrompt,
+    http: PublicHTTP,
     *,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     store: BaseStore | None = None,
@@ -256,6 +258,7 @@ def build_agent(
     tools: list[Any] = localized_agent_tools(
         prompt.locale,
         gateway,
+        http,
         attachments,
         include_web_search=not hosted_web_search,
     )

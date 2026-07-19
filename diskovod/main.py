@@ -10,7 +10,7 @@ import uvicorn
 from uvicorn.config import LOGGING_CONFIG
 
 from .config import RuntimeConfig
-from .admin_job_handlers import register_provider_jobs
+from .admin_job_handlers import register_provider_jobs, register_runtime_jobs
 from .admin_jobs import AdminJobRepository, AdminJobService, AdminJobWorker
 from .discord import DiscordService
 from .http_client import PublicHTTPClient
@@ -61,6 +61,7 @@ def build(
     public_http = PublicHTTPClient()
     runtime = AgentService(store, models, discord, secret, public_http)
     discord.attach_runtime(runtime)
+    register_runtime_jobs(jobs, store, models, discord, runtime)
     return (
         WebApp(
             store,

@@ -174,6 +174,12 @@ DATABASE_TABLES = {
         "order_by": "created_at",
         "read_only": True,
     },
+    "admin_job_inputs": {
+        "label": "Encrypted administrative job inputs",
+        "primary_key": "id",
+        "order_by": "created_at",
+        "read_only": True,
+    },
 }
 
 
@@ -676,6 +682,35 @@ class Store:
         async with self.database.transaction() as connection:
             await connection.execute("DELETE FROM provider_setup_drafts WHERE id=?", (draft_id,))
 
+    async def acreate_admin_job_input(
+        self,
+        input_id: str,
+        payload: dict[str, Any],
+        *,
+        expires_at: float,
+    ) -> None:
+        encoded = self._box.seal(json.dumps(payload, ensure_ascii=False))
+        async with self.database.transaction() as connection:
+            await connection.execute(
+                "INSERT INTO admin_job_inputs(id, payload, secret, created_at, expires_at) "
+                "VALUES(?, ?, 1, ?, ?)",
+                (input_id, encoded, time.time(), expires_at),
+            )
+
+    async def aadmin_job_input(self, input_id: str) -> dict[str, Any] | None:
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT payload, secret FROM admin_job_inputs WHERE id=? AND expires_at>?",
+                    (input_id, time.time()),
+                )
+            ).fetchone()
+        return self._decode_config(str(row["payload"]), bool(row["secret"])) if row else None
+
+    async def adelete_admin_job_input(self, input_id: str) -> None:
+        async with self.database.transaction() as connection:
+            await connection.execute("DELETE FROM admin_job_inputs WHERE id=?", (input_id,))
+
     async def astart_agent_run(
         self,
         *,
@@ -917,6 +952,7 @@ class Store:
             await connection.execute("DELETE FROM bot_nonces WHERE created_at<?", (cutoff,))
             await connection.execute("DELETE FROM bot_message_ids WHERE created_at<?", (cutoff,))
             await connection.execute("DELETE FROM provider_setup_drafts WHERE expires_at<?", (time.time(),))
+            await connection.execute("DELETE FROM admin_job_inputs WHERE expires_at<?", (time.time(),))
 
     async def achat_threads(self) -> list[dict[str, Any]]:
         async with self.database.transaction() as connection:

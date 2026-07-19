@@ -377,7 +377,13 @@ class AgentService:
             "message_count": len(values.get("messages", [])),
         }
 
-    async def replay_checkpoint(self, thread_id: str, checkpoint_id: str) -> str:
+    async def replay_checkpoint(
+        self,
+        thread_id: str,
+        checkpoint_id: str,
+        *,
+        configuration_id: int | None = None,
+    ) -> str:
         """Replay a historical state with isolated memory and emulated Discord actions."""
         if self.checkpointer is None or not self.models.ready:
             raise RuntimeError("The agent runtime is not ready")
@@ -390,8 +396,13 @@ class AgentService:
         if thread is None:
             raise ValueError("Unknown checkpoint thread")
         channel_id = str(thread["channel_id"])
-        configuration = self.models.configuration
-        assert configuration is not None
+        configuration = (
+            await self.store.aagent_configuration(configuration_id)
+            if configuration_id is not None
+            else self.models.configuration
+        )
+        if configuration is None:
+            raise ValueError("Unknown model configuration")
         interface = self.store.interface_settings()
         profile = self.store.assistant_profile()
         conversation = await self.store.aconversation(channel_id)
@@ -419,8 +430,16 @@ class AgentService:
         )
         personality = self.store.personality() or {}
         gateway = EmulatedActionGateway()
+        replay_model = (
+            self.models.build_configuration(
+                configuration,
+                self.models.credentials_for(configuration),
+            )
+            if configuration_id is not None
+            else self.models.build_model()
+        )
         agent = build_agent(
-            self.models.build_model(),
+            replay_model,
             gateway,
             AgentPrompt(
                 profile.prompt_locale,
@@ -453,6 +472,15 @@ class AgentService:
                 config={"configurable": {"thread_id": context.thread_id}, "recursion_limit": 40},
                 context=context,
             )
+        except asyncio.CancelledError:
+            await self._flush_trace(trace_id, replay_id)
+            await self.store.arecord_agent_trace(
+                replay_id,
+                "emulated_actions",
+                {"actions": gateway.actions},
+            )
+            await self.store.afinish_agent_run(replay_id, "cancelled", "Replay cancelled by owner")
+            raise
         except Exception as error:
             await self._flush_trace(trace_id, replay_id)
             await self.store.arecord_agent_trace(

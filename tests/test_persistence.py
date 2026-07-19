@@ -42,6 +42,7 @@ async def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path)
             "checkpoint_index",
             "admin_jobs",
             "admin_job_events",
+            "admin_job_inputs",
             "provider_setup_drafts",
         } <= tables
         assert await (await connection.execute("SELECT version FROM schema_migrations")).fetchall() == [
@@ -52,6 +53,7 @@ async def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path)
             (5,),
             (6,),
             (7,),
+            (8,),
         ]
         assert (await (await connection.execute("PRAGMA journal_mode")).fetchone())[0] == "wal"
 

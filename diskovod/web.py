@@ -16,8 +16,6 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
-from langchain_core.messages import HumanMessage, SystemMessage
-
 from .discord import DiscordService
 from .admin_jobs import AdminJobService, AdminJobWorker
 from .admin_queries import AdminQueryService
@@ -36,6 +34,7 @@ from .models import (
     InterfaceSettings,
 )
 from .oauth import ChatGPTAccount
+from .personality import assistant_profile_fingerprint, personality_source_hash
 from .providers import (
     ModelConfiguration,
     ModelService,
@@ -47,7 +46,6 @@ from .runtime import AgentService
 from .security import password_matches
 from .store import Store
 
-PERSONALITY_PROMPT_VERSION = "style-base-rates-examples-and-sequences-v4"
 PERSONALITY_INSTRUCTIONS = prompts_for("en").personality
 SECTION_DESTINATIONS = {
     "connections": "/settings/connections",
@@ -69,10 +67,6 @@ class ProviderDraft:
     capabilities: dict[str, bool]
     probe_model: str
     expires_at: float
-
-
-def personality_source_hash(samples: str, locale: str = "en") -> str:
-    return hashlib.sha256(f"{PERSONALITY_PROMPT_VERSION}\0{locale}\0{samples}".encode()).hexdigest()
 
 
 def localized_base_instructions(previous_locale: str, new_locale: str, submitted: str) -> str:
@@ -874,21 +868,65 @@ class WebApp:
             samples = samples.strip()
             if len(samples) < 200:
                 return self._back(tab="assistant", error=self._t("history_too_short"))
-            return await self._infer_personality(samples, source="pasted_history")
+            profile = self.store.assistant_profile()
+            source_hash = personality_source_hash(samples, profile.prompt_locale)
+            cached = self.store.personality()
+            if cached and cached["source_hash"] == source_hash:
+                return self._back(tab="assistant", message=self._t("personality_cached"))
+            configuration_id = await self.store.aactive_configuration_id()
+            if configuration_id is None or self.jobs is None:
+                return self._back(tab="assistant", error=self._t("connect_provider_before_force"))
+            input_id = secrets.token_urlsafe(24)
+            await self.store.acreate_admin_job_input(
+                input_id,
+                {"samples": samples},
+                expires_at=time.time() + 60 * 60,
+            )
+            try:
+                job, created = await self.jobs.enqueue(
+                    "assistant.personality_inference",
+                    {
+                        "configuration_id": configuration_id,
+                        "prompt_locale": profile.prompt_locale,
+                        "profile_fingerprint": assistant_profile_fingerprint(profile),
+                        "source": "pasted_history",
+                        "input_id": input_id,
+                    },
+                    idempotency_key=f"personality:{source_hash}",
+                    target_kind="assistant_profile",
+                    target_id=assistant_profile_fingerprint(profile),
+                )
+            except Exception:
+                await self.store.adelete_admin_job_input(input_id)
+                raise
+            if not created:
+                await self.store.adelete_admin_job_input(input_id)
+            return RedirectResponse(self._url(f"/activity/jobs/{job['id']}"), status_code=303)
 
         @self.app.post("/personality/infer-history")
         async def personality_infer_history(
             history_limit: int = Form(100),
             _: str = Depends(auth),
         ):
-            try:
-                messages = await self.discord.personality_history(max(20, min(history_limit, 500)))
-            except Exception as exc:
-                return self._back(tab="assistant", error=self._localized_known_error(exc))
-            samples = "\n\n---\n\n".join(messages)
-            if len(samples) < 200:
-                return self._back(tab="assistant", error=self._t("discord_history_too_short"))
-            return await self._infer_personality(samples, source="discord_history")
+            profile = self.store.assistant_profile()
+            configuration_id = await self.store.aactive_configuration_id()
+            if configuration_id is None or self.jobs is None:
+                return self._back(tab="assistant", error=self._t("connect_provider_before_force"))
+            fingerprint = assistant_profile_fingerprint(profile)
+            job, _ = await self.jobs.enqueue(
+                "assistant.personality_inference",
+                {
+                    "configuration_id": configuration_id,
+                    "prompt_locale": profile.prompt_locale,
+                    "profile_fingerprint": fingerprint,
+                    "source": "discord_history",
+                    "history_limit": max(20, min(history_limit, 500)),
+                },
+                idempotency_key=f"personality-history:{configuration_id}:{fingerprint}",
+                target_kind="assistant_profile",
+                target_id=fingerprint,
+            )
+            return RedirectResponse(self._url(f"/activity/jobs/{job['id']}"), status_code=303)
 
         @self.app.post("/personality/save")
         async def personality_save(profile: str = Form(...), _: str = Depends(auth)):
@@ -1045,11 +1083,21 @@ class WebApp:
         ):
             if confirm != "emulate":
                 return self._back(tab="usage", error=self._t("replay_confirmation_required"))
-            try:
-                run_id = await self.runtime.replay_checkpoint(thread_id, checkpoint_id)
-            except (RuntimeError, ValueError) as error:
-                return self._back(tab="usage", error=str(error))
-            return self._back(tab="usage", message=self._t("replay_completed", id=run_id))
+            configuration_id = await self.store.aactive_configuration_id()
+            if configuration_id is None or self.jobs is None:
+                return self._back(tab="usage", error=self._t("connect_provider_before_force"))
+            job, _ = await self.jobs.enqueue(
+                "runtime.checkpoint_replay",
+                {
+                    "thread_id": thread_id,
+                    "checkpoint_id": checkpoint_id,
+                    "configuration_id": configuration_id,
+                },
+                idempotency_key=f"checkpoint-replay:{thread_id}:{checkpoint_id}:{configuration_id}",
+                target_kind="checkpoint",
+                target_id=f"{thread_id}:{checkpoint_id}",
+            )
+            return RedirectResponse(self._url(f"/activity/jobs/{job['id']}"), status_code=303)
 
         @self.app.post("/knowledge/memories/delete")
         async def memory_delete(
@@ -1358,26 +1406,6 @@ class WebApp:
     def _hosted_search_capability(self) -> bool | None:
         configuration = self.models.configuration
         return configuration.capabilities.hosted_web_search if configuration else None
-
-    async def _infer_personality(self, samples: str, *, source: str) -> RedirectResponse:
-        cfg = self.store.assistant_profile()
-        source_hash = personality_source_hash(samples, cfg.prompt_locale)
-        cached = self.store.personality()
-        if cached and cached["source_hash"] == source_hash:
-            return self._back(tab="assistant", message=self._t("personality_cached"))
-        try:
-            response = await self.models.build_model().ainvoke(
-                [
-                    SystemMessage(prompts_for(cfg.prompt_locale).personality),
-                    HumanMessage(samples),
-                ]
-            )
-            profile = response.text.strip()
-        except Exception as exc:
-            return self._back(tab="assistant", error=str(exc))
-        await self.store.aset_personality(profile, source_hash, source=source)
-        await self.models.arefresh_prompt_cache_identity()
-        return self._back(tab="assistant", message=self._t("personality_inferred"))
 
     def _url(self, path: str) -> str:
         return self.public_url + "/" + path.lstrip("/")

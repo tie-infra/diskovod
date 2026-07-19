@@ -581,6 +581,10 @@ class AdminJobWorker:
             if claimed_any:
                 await asyncio.sleep(0)
                 continue
+            if not self._tasks and await self.repository.active_count() == 0:
+                self._idle_event.set()
+            else:
+                self._idle_event.clear()
             self._wake_event.clear()
             try:
                 await asyncio.wait_for(self._wake_event.wait(), timeout=self.idle_poll_seconds)
@@ -596,8 +600,6 @@ class AdminJobWorker:
                 continue
             if await self.repository.cancellation_requested(job_id, self.owner):
                 task.cancel()
-        if not self._tasks:
-            self._idle_event.set()
 
     async def _execute(self, job: dict[str, Any], definition: JobDefinition) -> None:
         job_id = str(job["id"])

@@ -30,7 +30,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 7
+TARGET_SCHEMA_VERSION = 8
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -346,6 +346,16 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
       expires_at REAL NOT NULL
     );
     CREATE INDEX provider_setup_drafts_expiry ON provider_setup_drafts(expires_at);
+    """,
+    """
+    CREATE TABLE admin_job_inputs (
+      id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      secret INTEGER NOT NULL DEFAULT 1,
+      created_at REAL NOT NULL,
+      expires_at REAL NOT NULL
+    );
+    CREATE INDEX admin_job_inputs_expiry ON admin_job_inputs(expires_at);
     """,
 )
 

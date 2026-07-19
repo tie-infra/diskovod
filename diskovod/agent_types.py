@@ -46,8 +46,8 @@ class DiskovodAgentState(AgentState):
     """Provider-neutral durable state for one Discord chat generation."""
 
     logical_request_id: NotRequired[str]
-    claimed_event_ids: NotRequired[list[str]]
+    claimed_event_ids: NotRequired[Annotated[list[str], add]]
     successful_written_sends: NotRequired[Annotated[int, add]]
     terminate_after_send: NotRequired[bool]
-    live_injection_batches: NotRequired[int]
+    live_injection_batches: NotRequired[Annotated[int, add]]
     summary_metadata: NotRequired[dict[str, Any]]

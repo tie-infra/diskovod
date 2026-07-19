@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Any
 
 from langchain.agents import create_agent
@@ -76,6 +77,7 @@ def build_agent(
     store: BaseStore | None = None,
     model_call_limit: int = 12,
     tool_call_limit: int = 24,
+    extra_middleware: Sequence[AgentMiddleware] = (),
 ):
     """Build Diskovod's provider-neutral LangChain agent loop."""
     return create_agent(
@@ -83,6 +85,7 @@ def build_agent(
         tools=localized_agent_tools(prompt.locale, gateway),
         system_prompt=prompt.stable_prefix(),
         middleware=(
+            *extra_middleware,
             ExplicitSendTerminationMiddleware(),
             ModelCallLimitMiddleware(run_limit=model_call_limit, exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=tool_call_limit, exit_behavior="error"),

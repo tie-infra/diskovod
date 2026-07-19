@@ -231,6 +231,8 @@ class WebApp:
                     "conversations": self._conversation_views(),
                     "usage_stats": self._usage_views(),
                     "request_logs": self._model_request_log_views() if active_tab == "usage" else [],
+                    "agent_runs": self._agent_run_views() if active_tab == "usage" else [],
+                    "capability_probes": self._capability_probe_views() if active_tab == "usage" else [],
                     "database": self._database_view(db_table, db_page, db_query),
                     "message": request.query_params.get("message"),
                     "error": request.query_params.get("error"),
@@ -728,6 +730,17 @@ class WebApp:
                 return self._back(tab="conversations", error=self._localized_known_error(exc))
             return self._back(tab="conversations", message=self._t("forced_reply_scheduled"))
 
+        @self.app.post("/conversations/{channel_id}/steering")
+        async def live_steering(
+            channel_id: str,
+            enabled: str | None = Form(None),
+            _: str = Depends(auth),
+        ):
+            if self.store.conversation(channel_id) is None:
+                return self._back(tab="conversations", error=self._t("conversation_not_found"))
+            self.runtime.set_live_steering(channel_id, enabled is not None)
+            return self._back(tab="conversations", message=self._t("settings_saved"))
+
         @self.app.post("/escalations/{escalation_id}/claim")
         async def escalation_claim(escalation_id: str, _: str = Depends(auth)):
             if not await self.runtime.claim_escalation(escalation_id):
@@ -802,11 +815,59 @@ class WebApp:
         now = time.time()
         result = self.store.conversations()
         for conversation in result:
+            with self.store._lock:
+                thread = self.store._db.execute(
+                    "SELECT live_steering FROM chat_threads WHERE channel_id=?",
+                    (conversation["channel_id"],),
+                ).fetchone()
+            conversation["live_steering"] = bool(thread["live_steering"]) if thread else True
             until = conversation["snoozed_until"]
             conversation["snoozed"] = bool(until and until > now)
             conversation["quiet_minutes_remaining"] = (
                 max(1, int((until - now + 59) // 60)) if until and until > now else 0
             )
+        return result
+
+    def _agent_run_views(self) -> list[dict[str, Any]]:
+        with self.store._lock:
+            runs = self.store._db.execute(
+                "SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT 100"
+            ).fetchall()
+            traces = self.store._db.execute(
+                "SELECT * FROM agent_trace_events ORDER BY run_id, sequence"
+            ).fetchall()
+        by_run: dict[str, list[dict[str, Any]]] = {}
+        for trace in traces:
+            item = dict(trace)
+            item["payload_json"] = json.dumps(
+                json.loads(item["payload"]), ensure_ascii=False, indent=2, sort_keys=True
+            )
+            by_run.setdefault(str(item["run_id"]), []).append(item)
+        result = []
+        for row in runs:
+            item = dict(row)
+            item["started_at_label"] = (
+                datetime.fromtimestamp(item["started_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            )
+            item["traces"] = by_run.get(str(item["id"]), [])
+            result.append(item)
+        return result
+
+    def _capability_probe_views(self) -> list[dict[str, Any]]:
+        with self.store._lock:
+            rows = self.store._db.execute(
+                "SELECT * FROM provider_capability_probes ORDER BY completed_at DESC LIMIT 100"
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["completed_at_label"] = (
+                datetime.fromtimestamp(item["completed_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            )
+            for field in ("configuration", "request_payload", "response_payload"):
+                value = json.loads(item[field]) if item[field] else None
+                item[f"{field}_json"] = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+            result.append(item)
         return result
 
     def _subscription_web_search_probe_view(self, model: str) -> dict[str, Any] | None:

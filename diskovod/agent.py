@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from collections.abc import Sequence
+from dataclasses import dataclass, fields, is_dataclass
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     AgentMiddleware,
+    ClearToolUsesEdit,
+    ContextEditingMiddleware,
     ModelCallLimitMiddleware,
+    SummarizationMiddleware,
     ToolCallLimitMiddleware,
     ToolCallRequest,
     hook_config,
@@ -23,7 +26,13 @@ from .agent_actions import AgentActionGateway
 from .agent_tools import localized_agent_tools
 from .agent_types import AgentRuntimeContext, DiskovodAgentState
 from .attachments import AttachmentRepository
-from .localization import assistant_identity, escalation_fallback, prompts_for, tool_policy
+from .localization import (
+    assistant_identity,
+    escalation_fallback,
+    prompts_for,
+    summarization_prompt,
+    tool_policy,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +105,70 @@ class AttachmentInputMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntime
             else:
                 messages.append(message)
         return await handler(request.override(messages=messages) if changed else request)
+
+
+class LocalTracingMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeContext]):
+    """Capture exact normalized model/tool exchanges in the local correlated trace."""
+
+    def __init__(self, diagnostics: Callable[[str, str, dict[str, Any]], None]):
+        self.diagnostics = diagnostics
+
+    async def awrap_model_call(self, request, handler):
+        context = request.runtime.context
+        self.diagnostics(
+            context.trace_id,
+            "model_request",
+            {
+                "model_class": type(request.model).__name__,
+                "system_message": _trace_value(request.system_message),
+                "messages": [_trace_value(message) for message in request.messages],
+                "tools": [tool.name for tool in request.tools],
+                "model_settings": _trace_value(request.model_settings),
+                "observability": "normalized_langchain_exchange; raw_provider_transport_unavailable",
+            },
+        )
+        try:
+            response = await handler(request)
+        except Exception as error:
+            self.diagnostics(
+                context.trace_id,
+                "model_error",
+                {"type": type(error).__name__, "detail": str(error)[:8000]},
+            )
+            raise
+        self.diagnostics(
+            context.trace_id,
+            "model_response",
+            _trace_value(response),
+        )
+        return response
+
+    async def awrap_tool_call(self, request: ToolCallRequest, handler):
+        context = request.runtime.context
+        self.diagnostics(
+            context.trace_id,
+            "tool_request",
+            _trace_value(request.tool_call),
+        )
+        try:
+            response = await handler(request)
+        except Exception as error:
+            self.diagnostics(
+                context.trace_id,
+                "tool_error",
+                {
+                    "tool_call": _trace_value(request.tool_call),
+                    "type": type(error).__name__,
+                    "detail": str(error)[:8000],
+                },
+            )
+            raise
+        self.diagnostics(
+            context.trace_id,
+            "tool_response",
+            {"tool_call": _trace_value(request.tool_call), "response": _trace_value(response)},
+        )
+        return response
 
 
 class ExplicitSendTerminationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeContext]):
@@ -174,6 +247,7 @@ def build_agent(
     tool_call_limit: int = 24,
     extra_middleware: Sequence[AgentMiddleware] = (),
     attachments: AttachmentRepository | None = None,
+    diagnostics: Callable[[str, str, dict[str, Any]], None] | None = None,
 ):
     """Build Diskovod's provider-neutral LangChain agent loop."""
     return create_agent(
@@ -184,6 +258,14 @@ def build_agent(
             *extra_middleware,
             RuntimePromptMiddleware(),
             AttachmentInputMiddleware(),
+            *((LocalTracingMiddleware(diagnostics),) if diagnostics is not None else ()),
+            SummarizationMiddleware(
+                model,
+                trigger=("messages", 80),
+                keep=("messages", 30),
+                summary_prompt=summarization_prompt(prompt.locale),
+            ),
+            ContextEditingMiddleware(edits=[ClearToolUsesEdit(trigger=20_000, keep=5, clear_at_least=2)]),
             EscalationValidationMiddleware(gateway, prompt.locale),
             ExplicitSendTerminationMiddleware(),
             ModelCallLimitMiddleware(run_limit=model_call_limit, exit_behavior="error"),
@@ -207,3 +289,17 @@ def _valid_escalation_arguments(arguments: object) -> bool:
         and 1 <= len(acknowledgement.strip()) <= 2000
         and not any(ord(character) < 32 and character not in "\n\t" for character in acknowledgement)
     )
+
+
+def _trace_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if is_dataclass(value) and not isinstance(value, type):
+        return {field.name: _trace_value(getattr(value, field.name)) for field in fields(value)}
+    if isinstance(value, dict):
+        return {str(key): _trace_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_trace_value(item) for item in value]
+    return str(value)

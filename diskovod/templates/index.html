@@ -987,6 +987,52 @@
           </details>
         </article>
 
+        <article class="card mt-4" id="agent-runs">
+          <div class="card-header">
+            <div><h2>{{ t("agent_runs_title") }}</h2></div>
+            <span class="pill">{{ agent_runs | length }}</span>
+          </div>
+          <p>{{ t("agent_runs_help") }}</p>
+          {% for run in agent_runs %}
+            <details class="request-log" {% if run.status == "failed" and loop.first %}open{% endif %}>
+              <summary>
+                <code>{{ run.id }}</code> · {{ run.started_at_label }} · {{ run.status }} · {{ run.channel_id }}
+              </summary>
+              {% if run.error %}<p class="inline-error">{{ run.error }}</p>{% endif %}
+              {% for trace in run.traces %}
+                <details class="request-log-payload">
+                  <summary>#{{ trace.sequence }} · {{ trace.kind }}</summary>
+                  <pre><code>{{ trace.payload_json }}</code></pre>
+                </details>
+              {% endfor %}
+            </details>
+          {% else %}
+            <div class="empty-state">{{ t("no_agent_runs") }}</div>
+          {% endfor %}
+        </article>
+
+        <article class="card mt-4" id="capability-probes">
+          <div class="card-header">
+            <div><h2>{{ t("capability_probes_title") }}</h2></div>
+            <span class="pill">{{ capability_probes | length }}</span>
+          </div>
+          <p>{{ t("capability_probes_help") }}</p>
+          {% for probe in capability_probes %}
+            <details class="request-log">
+              <summary>{{ probe.completed_at_label }} · {{ probe.capability }} · {{ probe.status }}</summary>
+              <p>{{ probe.conclusion }}</p>
+              <h3>{{ t("configuration") }}</h3>
+              <pre><code>{{ probe.configuration_json }}</code></pre>
+              <h3>{{ t("model_request_metadata") }}</h3>
+              <pre><code>{{ probe.request_payload_json }}</code></pre>
+              <h3>{{ t("model_response_metadata") }}</h3>
+              <pre><code>{{ probe.response_payload_json }}</code></pre>
+            </details>
+          {% else %}
+            <div class="empty-state">{{ t("no_capability_probes") }}</div>
+          {% endfor %}
+        </article>
+
         <article class="card mt-4" id="model-requests">
           <div class="card-header">
             <div>
@@ -1223,6 +1269,13 @@
                         {{ t("mode_paused") }}
                       </option>
                     </select>
+                    <button class="btn btn-sm btn-outline-secondary">{{ t("save") }}</button>
+                  </form>
+                  <form method="post" action="/conversations/{{ conversation.channel_id }}/steering" class="conversation-mode-form">
+                    <label class="toggle" title="{{ t('live_steering_help') }}">
+                      <input type="checkbox" name="enabled" value="1" {% if conversation.live_steering %}checked{% endif %}>
+                      {{ t("live_steering") }}
+                    </label>
                     <button class="btn btn-sm btn-outline-secondary">{{ t("save") }}</button>
                   </form>
                 </div>

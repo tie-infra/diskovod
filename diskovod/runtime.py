@@ -46,6 +46,7 @@ class AgentService:
         self.ledger = SideEffectLedger(store.path)
         self.gateway = DurableActionGateway(self.ledger, transport)
         self.tasks: dict[str, asyncio.Task[None]] = {}
+        self._trace_buffers: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         self._checkpoint_context: AbstractAsyncContextManager[AsyncSqliteSaver] | None = None
         self.checkpointer: AsyncSqliteSaver | None = None
 
@@ -258,6 +259,7 @@ class AgentService:
             store=self.memory,
             extra_middleware=(LiveConversationMiddleware(self.events, settings.prompt_locale),),
             attachments=self.attachments,
+            diagnostics=self._buffer_trace,
         )
         resume_payload = {
             "action": action,
@@ -270,6 +272,7 @@ class AgentService:
             config={"configurable": {"thread_id": thread_id}, "recursion_limit": 40},
             context=context,
         )
+        self._flush_trace(trace_id, str(run["id"]))
         state = "dismissed" if action == "dismissed" else "resolved"
         self.store.set_interrupt_state(escalation_id, state)
         self.store.finish_agent_run(
@@ -378,6 +381,7 @@ class AgentService:
             store=self.memory,
             extra_middleware=(LiveConversationMiddleware(self.events, settings.prompt_locale),),
             attachments=self.attachments,
+            diagnostics=self._buffer_trace,
         )
         initial_messages = [message for event in claimed if (message := self._message(event)) is not None]
         state = {
@@ -405,10 +409,12 @@ class AgentService:
             result = await agent.ainvoke(state, config=config, context=context)
         except asyncio.CancelledError:
             self.events.release(channel_id, run_id)
+            self._flush_trace(trace_id, run_id)
             self.store.finish_agent_run(run_id, "cancelled")
             raise
         except Exception as error:
             self.events.release(channel_id, run_id)
+            self._flush_trace(trace_id, run_id)
             self.store.finish_agent_run(run_id, "failed", f"{type(error).__name__}: {error}")
             self.store.record_agent_trace(
                 run_id,
@@ -417,6 +423,7 @@ class AgentService:
             )
             raise
         interrupted = bool(result.get("__interrupt__"))
+        self._flush_trace(trace_id, run_id)
         self.events.complete(channel_id, run_id)
         self.store.finish_agent_run(run_id, "interrupted" if interrupted else "completed")
         self.store.record_agent_trace(
@@ -479,6 +486,9 @@ class AgentService:
             ).fetchone()
         if row:
             return str(row["account_id"])
+        client = getattr(self.transport, "client", None)
+        if client is not None and getattr(client, "user", None) is not None:
+            return str(client.user.id)
         credentials = self.store.chat_credentials()
         return str(credentials.account_id if credentials and credentials.account_id else "discord-owner")
 
@@ -508,6 +518,13 @@ class AgentService:
                 (channel_id,),
             ).fetchone()
         return row is not None
+
+    def _buffer_trace(self, trace_id: str, kind: str, payload: dict[str, Any]) -> None:
+        self._trace_buffers.setdefault(trace_id, []).append((kind, payload))
+
+    def _flush_trace(self, trace_id: str, run_id: str) -> None:
+        for kind, payload in self._trace_buffers.pop(trace_id, []):
+            self.store.record_agent_trace(run_id, kind, payload)
 
     @staticmethod
     def _capabilities(configuration) -> CapabilityProfile:

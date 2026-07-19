@@ -66,6 +66,90 @@ DATABASE_TABLES = {
         "order_by": "created_at",
         "read_only": False,
     },
+    "agent_configuration_versions": {
+        "label": "Agent configurations",
+        "primary_key": "id",
+        "order_by": "created_at",
+        "read_only": True,
+    },
+    "chat_threads": {
+        "label": "Graph threads",
+        "primary_key": "channel_id",
+        "order_by": "updated_at",
+        "read_only": True,
+    },
+    "discord_events": {
+        "label": "Discord event audit",
+        "primary_key": "id",
+        "order_by": "observed_at",
+        "read_only": True,
+    },
+    "chat_event_queue": {
+        "label": "Agent event queue",
+        "primary_key": "event_id",
+        "order_by": "claimed_at",
+        "read_only": True,
+    },
+    "side_effect_deliveries": {
+        "label": "Side-effect deliveries",
+        "primary_key": "tool_call_id",
+        "order_by": "claimed_at",
+        "read_only": True,
+    },
+    "agent_runs": {
+        "label": "Agent runs",
+        "primary_key": "id",
+        "order_by": "started_at",
+        "read_only": True,
+    },
+    "agent_trace_events": {
+        "label": "Agent trace events",
+        "primary_key": "id",
+        "order_by": "recorded_at",
+        "read_only": True,
+    },
+    "provider_capability_probes": {
+        "label": "Capability probes",
+        "primary_key": "id",
+        "order_by": "completed_at",
+        "read_only": True,
+    },
+    "attachment_objects": {
+        "label": "Attachment objects",
+        "primary_key": "sha256",
+        "order_by": "created_at",
+        "read_only": True,
+    },
+    "attachment_references": {
+        "label": "Attachment references",
+        "primary_key": "id",
+        "order_by": "created_at",
+        "read_only": False,
+    },
+    "attachment_artifacts": {
+        "label": "Attachment artifacts",
+        "primary_key": "id",
+        "order_by": "updated_at",
+        "read_only": True,
+    },
+    "attachment_chunks": {
+        "label": "Attachment chunks",
+        "primary_key": "id",
+        "order_by": "id",
+        "read_only": True,
+    },
+    "escalation_interrupts": {
+        "label": "Graph interrupts",
+        "primary_key": "id",
+        "order_by": "updated_at",
+        "read_only": True,
+    },
+    "langgraph_store_items": {
+        "label": "Long-term memories",
+        "primary_key": "key",
+        "order_by": "updated_at",
+        "read_only": True,
+    },
 }
 
 
@@ -425,6 +509,17 @@ class Store:
                     time.time(),
                 ),
             )
+
+    def record_agent_trace_for_trace(
+        self,
+        trace_id: str,
+        kind: str,
+        payload: dict[str, Any],
+    ) -> None:
+        with self._lock:
+            row = self._db.execute("SELECT id FROM agent_runs WHERE trace_id=?", (trace_id,)).fetchone()
+        if row is not None:
+            self.record_agent_trace(str(row["id"]), kind, payload)
 
     def start_model_request(
         self,

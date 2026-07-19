@@ -3,7 +3,7 @@ let
   pythonPackagesOverlay =
     python-final: _:
     final.lib.packagesFromDirectoryRecursive {
-      inherit (python-final) callPackage newScope;
+      inherit (python-final) callPackage;
       directory = ./python-packages;
     };
 in

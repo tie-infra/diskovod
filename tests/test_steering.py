@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from diskovod.agent import build_agent
 from diskovod.events import DiscordEventQueue
 from diskovod.steering import LiveConversationMiddleware
+from diskovod.store import Store
 
 from test_agent import (
     RecordingGateway,
@@ -23,11 +24,11 @@ class InjectingModel(ScriptedChatModel):
     queue: object
     injected: bool = False
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
         if not self.injected:
             self.injected = True
-            self.queue.ingest(
+            await self.queue.ingest(
                 "steer-1",
                 "channel",
                 "message",
@@ -49,7 +50,7 @@ class InjectingGateway(RecordingGateway):
 
     async def send_messages(self, context, messages, *, tool_call_id):
         result = await super().send_messages(context, messages, tool_call_id=tool_call_id)
-        self.queue.ingest(
+        await self.queue.ingest(
             "steer-after-send",
             "channel",
             "message",
@@ -66,8 +67,9 @@ class InjectingGateway(RecordingGateway):
 
 @pytest.mark.asyncio
 async def test_new_input_cancels_unstarted_tool_and_returns_to_model(tmp_path: Path):
-    queue = DiscordEventQueue(tmp_path / "diskovod.sqlite3")
-    queue.thread_id("account", "channel")
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    queue = DiscordEventQueue(store.database)
+    await queue.thread_id("account", "channel")
     model = InjectingModel(
         responses=[
             tool_call("calculate", {"expression": "6 * 7"}, "stale-calculation"),
@@ -104,34 +106,37 @@ async def test_new_input_cancels_unstarted_tool_and_returns_to_model(tmp_path: P
     )
     assert model.index == 2
     assert result["claimed_event_ids"] == ["steer-1"]
-    assert queue.claimed("channel", "request-1")[0].id == "steer-1"
-    queue.close()
+    assert (await queue.claimed("channel", "request-1"))[0].id == "steer-1"
+    await store.aclose()
 
 
-def test_recovery_reapplies_claimed_but_uncheckpointed_events(tmp_path: Path):
-    queue = DiscordEventQueue(tmp_path / "diskovod.sqlite3")
-    queue.thread_id("account", "channel")
-    queue.ingest("event", "channel", "message", {"content": "recovered"})
-    assert queue.claim_ready("channel", "request-1")[0].id == "event"
+@pytest.mark.asyncio
+async def test_recovery_reapplies_claimed_but_uncheckpointed_events(tmp_path: Path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    queue = DiscordEventQueue(store.database)
+    await queue.thread_id("account", "channel")
+    await queue.ingest("event", "channel", "message", {"content": "recovered"})
+    assert (await queue.claim_ready("channel", "request-1"))[0].id == "event"
     middleware = LiveConversationMiddleware(queue, "en")
 
     class Runtime:
         context = runtime_context()
 
-    update = middleware.before_model(
+    update = await middleware.abefore_model(
         {"messages": [], "logical_request_id": "request-1"},
         Runtime(),
     )
 
     assert update["claimed_event_ids"] == ["event"]
     assert update["messages"][0].content == "recovered"
-    queue.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
 async def test_live_input_wins_race_with_explicit_send_termination(tmp_path: Path):
-    queue = DiscordEventQueue(tmp_path / "diskovod.sqlite3")
-    queue.thread_id("account", "channel")
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    queue = DiscordEventQueue(store.database)
+    await queue.thread_id("account", "channel")
     gateway = InjectingGateway(queue)
     model = ScriptedChatModel(
         responses=[
@@ -165,4 +170,4 @@ async def test_live_input_wins_race_with_explicit_send_termination(tmp_path: Pat
         for message in result["messages"]
     )
     assert result["terminate_after_send"] is False
-    queue.close()
+    await store.aclose()

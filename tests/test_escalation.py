@@ -12,6 +12,7 @@ from diskovod.agent import build_agent
 from diskovod.agent_actions import DeliveryRecord
 from diskovod.durable_actions import DurableActionGateway, SideEffectLedger
 from diskovod.localization import escalation_fallback
+from diskovod.store import Store
 
 from test_agent import (
     RecordingGateway,
@@ -55,7 +56,8 @@ class EscalationTransport:
 
 @pytest.mark.asyncio
 async def test_valid_escalation_interrupts_and_resumes_without_resending(tmp_path: Path):
-    ledger = SideEffectLedger(tmp_path / "diskovod.sqlite3")
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    ledger = SideEffectLedger(store.database)
     transport = EscalationTransport()
     gateway = DurableActionGateway(ledger, transport)
     model = ScriptedChatModel(
@@ -94,4 +96,4 @@ async def test_valid_escalation_interrupts_and_resumes_without_resending(tmp_pat
     connection = sqlite3.connect(tmp_path / "diskovod.sqlite3")
     assert connection.execute("SELECT state FROM escalation_interrupts").fetchone() == ("pending",)
     connection.close()
-    ledger.close()
+    await store.aclose()

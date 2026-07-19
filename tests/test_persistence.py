@@ -78,6 +78,7 @@ def test_sqlite_langgraph_store_conforms_to_sync_and_async_api(tmp_path: Path):
         assert (await store.aget(namespace, "async")).value["text"] == "Stored asynchronously"
         await store.adelete(namespace, "async")
         assert await store.aget(namespace, "async") is None
+        await store.database.close()
 
     import asyncio
 

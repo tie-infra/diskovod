@@ -113,19 +113,17 @@ class PrivateDiscordClient(discord.Client):
         )
         if message.author == self.user:
             nonce = str(message.nonce) if message.nonce is not None else ""
-            consumed_nonce = bool(nonce) and await asyncio.to_thread(self.store.consume_nonce, nonce)
-            if consumed_nonce or await asyncio.to_thread(self.store.is_bot_message, str(message.id)):
+            consumed_nonce = bool(nonce) and await self.store.aconsume_nonce(nonce)
+            if consumed_nonce or await self.store.ais_bot_message(str(message.id)):
                 return
             peer = message.channel.recipient
             if peer:
-                await asyncio.to_thread(
-                    self.store.upsert_conversation,
+                await self.store.aupsert_conversation(
                     channel_id,
                     str(peer.id),
                     str(peer),
                 )
-            await asyncio.to_thread(
-                self.store.save_message,
+            await self.store.asave_message(
                 id=str(message.id),
                 channel_id=channel_id,
                 author_id=str(self.user.id),
@@ -165,14 +163,12 @@ class PrivateDiscordClient(discord.Client):
             return
         if message.author.bot:
             return
-        await asyncio.to_thread(
-            self.store.upsert_conversation,
+        await self.store.aupsert_conversation(
             channel_id,
             str(message.author.id),
             str(message.author),
         )
-        await asyncio.to_thread(
-            self.store.save_message,
+        await self.store.asave_message(
             id=str(message.id),
             channel_id=channel_id,
             author_id=str(message.author.id),
@@ -204,8 +200,7 @@ class PrivateDiscordClient(discord.Client):
         channel_id = str(message.channel.id)
         content = message.content
         if message.author == self.user:
-            updated = await asyncio.to_thread(
-                self.store.update_message_content,
+            updated = await self.store.aupdate_message_content(
                 str(message.id),
                 content,
                 source="human",
@@ -229,7 +224,7 @@ class PrivateDiscordClient(discord.Client):
             return
         if message.author.bot:
             return
-        updated = await asyncio.to_thread(self.store.update_message_content, str(message.id), content)
+        updated = await self.store.aupdate_message_content(str(message.id), content)
         if not updated or not updated["changed"]:
             return
         await self.runtime.submit_message(
@@ -344,7 +339,7 @@ class DiscordService:
                 async with channel.typing():
                     await asyncio.sleep(min(12.0, max(0.8, len(part) / cps)))
                 nonce = secrets.token_hex(12)
-                await asyncio.to_thread(self.store.remember_nonce, nonce)
+                await self.store.aremember_nonce(nonce)
                 outbound = f"🤖 {part}" if settings.robot_prefix or inline else part
                 sent = await channel.send(
                     outbound,
@@ -361,8 +356,7 @@ class DiscordService:
                     )
                 )
                 continue
-            await asyncio.to_thread(
-                self._record_sent_message,
+            await self._record_sent_message(
                 context,
                 part,
                 str(sent.id),
@@ -373,7 +367,7 @@ class DiscordService:
             records.append(DeliveryRecord("accepted", index, discord_message_id=str(sent.id)))
         return records
 
-    def _record_sent_message(
+    async def _record_sent_message(
         self,
         context: AgentRuntimeContext,
         content: str,
@@ -382,8 +376,8 @@ class DiscordService:
         author_name: str,
         timestamp: float,
     ) -> None:
-        self.store.remember_bot_message(message_id)
-        self.store.save_message(
+        await self.store.aremember_bot_message(message_id)
+        await self.store.asave_message(
             id=message_id,
             channel_id=context.channel_id,
             author_id=author_id,
@@ -394,7 +388,7 @@ class DiscordService:
             timestamp=timestamp,
         )
         if self.runtime is not None:
-            self.runtime.events.ingest(
+            await self.runtime.events.ingest(
                 f"discord:message:{message_id}",
                 context.channel_id,
                 "message",
@@ -428,8 +422,7 @@ class DiscordService:
                 error_code="discord_reaction_failed",
                 error_detail=f"{type(error).__name__}: {error}"[:1000],
             )
-        await asyncio.to_thread(
-            self.store.record_assistant_reaction,
+        await self.store.arecord_assistant_reaction(
             trigger_message_id=message_id,
             channel_id=context.channel_id,
             emoji=emoji,

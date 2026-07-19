@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 import uuid
@@ -104,8 +103,7 @@ class ProviderSetup:
             supported = False
             conclusion = f"{type(error).__name__}: {error}"[:4000]
             status = "error"
-        await asyncio.to_thread(
-            self._record,
+        await self._record(
             probe_id,
             configuration,
             "native_tools",
@@ -163,8 +161,7 @@ class ProviderSetup:
             supported = False
             conclusion = f"{type(error).__name__}: {error}"[:4000]
             status = "error"
-        await asyncio.to_thread(
-            self._record,
+        await self._record(
             probe_id,
             configuration,
             "hosted_web_search",
@@ -206,7 +203,7 @@ class ProviderSetup:
             integration_version=configuration.integration_version,
         )
 
-    def _record(
+    async def _record(
         self,
         probe_id: str,
         configuration: ModelConfiguration,
@@ -217,8 +214,8 @@ class ProviderSetup:
         conclusion: str,
         started: float,
     ) -> None:
-        with self.store._lock, self.store._db:
-            self.store._db.execute(
+        async with self.store.database.transaction() as connection:
+            await connection.execute(
                 """
                 INSERT INTO provider_capability_probes(
                   id, configuration, capability, status, request_payload,

@@ -71,4 +71,4 @@ async def test_build_shares_one_public_http_client_across_untrusted_consumers(tm
     await runtime.close()
     await account.close()
     await public_http.close()
-    store.close()
+    await store.aclose()

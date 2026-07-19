@@ -228,6 +228,51 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
 )
 
 
+class AsyncSQLite:
+    """One serialized async connection for Diskovod's application repositories."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._connection: aiosqlite.Connection | None = None
+        self._connection_lock = asyncio.Lock()
+        self._transaction_lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        await self._get_connection()
+
+    async def close(self) -> None:
+        async with self._transaction_lock:
+            async with self._connection_lock:
+                connection, self._connection = self._connection, None
+            if connection is not None:
+                await connection.close()
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Serialize a complete application transaction on the shared connection."""
+        async with self._transaction_lock:
+            connection = await self._get_connection()
+            try:
+                yield connection
+            except BaseException:
+                await connection.rollback()
+                raise
+            else:
+                await connection.commit()
+
+    async def _get_connection(self) -> aiosqlite.Connection:
+        if self._connection is not None:
+            return self._connection
+        async with self._connection_lock:
+            if self._connection is None:
+                connection = await aiosqlite.connect(self.path)
+                connection.row_factory = aiosqlite.Row
+                await connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+                await connection.execute("PRAGMA foreign_keys=ON")
+                self._connection = connection
+        return self._connection
+
+
 def initialize_target_schema(connection: sqlite3.Connection) -> None:
     """Apply target-schema migrations to Diskovod's single relational database."""
     connection.execute("PRAGMA journal_mode=WAL")
@@ -294,7 +339,8 @@ class SQLiteLangGraphStore(BaseStore):
 
     supports_ttl = False
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, database: AsyncSQLite | None = None):
+        self.database = database or AsyncSQLite(path)
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.RLock()
@@ -324,7 +370,129 @@ class SQLiteLangGraphStore(BaseStore):
 
     async def abatch(self, ops: Iterable[Op]) -> list[Result]:
         operations = list(ops)
-        return await asyncio.to_thread(self.batch, operations)
+        results: list[Result] = []
+        async with self.database.transaction() as connection:
+            for operation in operations:
+                if isinstance(operation, GetOp):
+                    results.append(await self._aget(connection, operation))
+                elif isinstance(operation, PutOp):
+                    results.append(await self._aput(connection, operation))
+                elif isinstance(operation, SearchOp):
+                    results.append(await self._asearch(connection, operation))
+                elif isinstance(operation, ListNamespacesOp):
+                    results.append(await self._alist_namespaces(connection, operation))
+                else:
+                    raise TypeError(f"Unsupported Store operation: {type(operation).__name__}")
+        return results
+
+    async def _aget(self, connection: aiosqlite.Connection, operation: GetOp) -> Item | None:
+        namespace = self._namespace(operation.namespace)
+        row = await (
+            await connection.execute(
+                "SELECT * FROM langgraph_store_items WHERE namespace=? AND key=?",
+                (namespace, operation.key),
+            )
+        ).fetchone()
+        return self._item(row) if row else None
+
+    async def _aput(self, connection: aiosqlite.Connection, operation: PutOp) -> None:
+        namespace = self._namespace(operation.namespace)
+        if not operation.key:
+            raise ValueError("Store keys cannot be empty")
+        await connection.execute(
+            "DELETE FROM langgraph_store_fts WHERE namespace=? AND key=?",
+            (namespace, operation.key),
+        )
+        if operation.value is None:
+            await connection.execute(
+                "DELETE FROM langgraph_store_items WHERE namespace=? AND key=?",
+                (namespace, operation.key),
+            )
+            return None
+        value = self._json(operation.value)
+        index_text = self._index_text(operation.value, operation.index)
+        now = datetime.now(UTC).timestamp()
+        await connection.execute(
+            """
+            INSERT INTO langgraph_store_items(namespace, key, value, index_text, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?)
+            ON CONFLICT(namespace, key) DO UPDATE SET
+              value=excluded.value, index_text=excluded.index_text, updated_at=excluded.updated_at
+            """,
+            (namespace, operation.key, value, index_text, now, now),
+        )
+        if index_text:
+            await connection.execute(
+                "INSERT INTO langgraph_store_fts(namespace, key, body) VALUES(?, ?, ?)",
+                (namespace, operation.key, index_text),
+            )
+        return None
+
+    async def _asearch(self, connection: aiosqlite.Connection, operation: SearchOp) -> list[SearchItem]:
+        rows = await (
+            await connection.execute(
+                "SELECT * FROM langgraph_store_items ORDER BY updated_at DESC, namespace, key"
+            )
+        ).fetchall()
+        prefix = operation.namespace_prefix
+        candidates = [
+            row for row in rows if self._decode_namespace(row["namespace"])[: len(prefix)] == prefix
+        ]
+        if operation.filter:
+            candidates = [
+                row for row in candidates if self._matches_filter(json.loads(row["value"]), operation.filter)
+            ]
+        scores: dict[tuple[str, str], float] = {}
+        if operation.query:
+            query = self._fts_query(operation.query)
+            if not query:
+                return []
+            matches = await (
+                await connection.execute(
+                    "SELECT namespace, key, bm25(langgraph_store_fts) AS rank "
+                    "FROM langgraph_store_fts WHERE body MATCH ?",
+                    (query,),
+                )
+            ).fetchall()
+            scores = {(row["namespace"], row["key"]): -float(row["rank"]) for row in matches}
+            candidates = [row for row in candidates if (row["namespace"], row["key"]) in scores]
+            candidates.sort(
+                key=lambda row: (scores[(row["namespace"], row["key"])], row["updated_at"]),
+                reverse=True,
+            )
+        selected = candidates[operation.offset : operation.offset + operation.limit]
+        return [
+            SearchItem(
+                namespace=self._decode_namespace(row["namespace"]),
+                key=row["key"],
+                value=json.loads(row["value"]),
+                created_at=self._datetime(row["created_at"]),
+                updated_at=self._datetime(row["updated_at"]),
+                score=scores.get((row["namespace"], row["key"])),
+            )
+            for row in selected
+        ]
+
+    async def _alist_namespaces(
+        self, connection: aiosqlite.Connection, operation: ListNamespacesOp
+    ) -> list[tuple[str, ...]]:
+        rows = await (
+            await connection.execute("SELECT DISTINCT namespace FROM langgraph_store_items")
+        ).fetchall()
+        namespaces = [self._decode_namespace(row["namespace"]) for row in rows]
+        if operation.match_conditions:
+            namespaces = [
+                namespace
+                for namespace in namespaces
+                if all(
+                    self._matches_namespace(namespace, condition.match_type, condition.path)
+                    for condition in operation.match_conditions
+                )
+            ]
+        if operation.max_depth is not None:
+            namespaces = list({namespace[: operation.max_depth] for namespace in namespaces})
+        namespaces.sort()
+        return namespaces[operation.offset : operation.offset + operation.limit]
 
     def _get(self, operation: GetOp) -> Item | None:
         namespace = self._namespace(operation.namespace)

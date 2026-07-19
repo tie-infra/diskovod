@@ -90,7 +90,7 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp
     assert store._db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] > 0
 
     await service.close()
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -132,7 +132,7 @@ async def test_historical_replay_uses_emulated_discord_actions(tmp_path):
     ).fetchone()
     assert "This must be emulated" in trace["payload"]
     await service.close()
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -171,7 +171,7 @@ async def test_model_change_rolls_checkpoint_to_portable_summary(tmp_path):
     assert summary.content == "Portable summary of the prior conversation"
     assert summary.additional_kwargs["diskovod_generation_summary"]["source_thread_id"].endswith(":g1")
     await service.close()
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -204,7 +204,7 @@ async def test_agent_service_allows_a_zero_message_turn(tmp_path):
     assert transport.messages == []
     assert store._db.execute("SELECT status FROM agent_runs").fetchone()["status"] == "completed"
     await service.close()
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -259,7 +259,7 @@ async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tm
     assert transport.messages == [("channel", ("I marked this for the owner.",))]
     assert store.active_interrupts() == []
     assert store._db.execute("SELECT status FROM agent_runs").fetchone()["status"] == "completed"
-    thread_id = service.events.thread_id("owner", "channel")
+    thread_id = await service.events.thread_id("owner", "channel")
     checkpoint = await service.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
     owner = next(
         message
@@ -268,4 +268,4 @@ async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tm
     )
     assert owner.additional_kwargs["diskovod_participant"]["role"] == "owner"
     await service.close()
-    store.close()
+    await store.aclose()

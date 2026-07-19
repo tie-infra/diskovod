@@ -156,7 +156,7 @@ async def test_discord_connection_failure_retries_without_stopping_service(
 
     await service.stop()
     assert service.task is None
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -199,7 +199,7 @@ async def test_force_reply_fetches_latest_incoming_discord_message(tmp_path: Pat
     await service.force_reply("42")
 
     assert runtime.requests == [{"channel_id": "42", "account_id": "999", "trigger_message_id": "123"}]
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -244,7 +244,7 @@ async def test_personality_history_is_limited_and_excludes_generated_messages(tm
     assert any("human message 18" in item for item in history)
     assert not any("human message 20" in item for item in history)
     assert all("standalone owner message" in item for item in history)
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -302,7 +302,7 @@ async def test_personality_history_marks_consecutive_owner_message_bursts(tmp_pa
     assert "continuation in an owner message burst; 2.0s" in history[1]
     assert "standalone owner message" in history[2]
     assert all("peer content" not in item for item in history)
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -340,7 +340,7 @@ async def test_raw_owner_edit_updates_style_history_and_marks_human_activity(
     assert saved["source"] == "human"
     assert runtime.human_channels == ["42"]
     assert runtime.submitted[0]["participant_role"] == "owner"
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -377,7 +377,7 @@ async def test_raw_owner_edit_reschedules_inline_collaboration(
     assert runtime.human_channels == []
     assert runtime.submitted[0]["participant_role"] == "owner"
     assert runtime.submitted[0]["edited"] is True
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -421,4 +421,4 @@ async def test_raw_remote_edit_updates_history_and_only_requests_pending_resched
     assert len(runtime.submitted) == 1
     assert runtime.submitted[0]["participant_role"] == "peer"
     assert runtime.submitted[0]["edited"] is True
-    store.close()
+    await store.aclose()

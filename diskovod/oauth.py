@@ -143,14 +143,14 @@ class ChatGPTAccount:
         payload = response.json()
         if response.status_code >= 400:
             if clear_on_auth_error and response.status_code in {400, 401, 403}:
-                await asyncio.to_thread(self.store.clear_chat_credentials)
+                await self.store.aclear_chat_credentials()
             detail = payload.get("error_description") or payload.get("message") or payload.get("error")
             raise RuntimeError(
                 f"OpenAI token exchange returned HTTP {response.status_code}: {detail or 'unknown error'}"
             )
-        return await asyncio.to_thread(self._save_tokens, payload)
+        return await self._save_tokens(payload)
 
-    def _save_tokens(self, payload: dict) -> ChatCredentials:
+    async def _save_tokens(self, payload: dict) -> ChatCredentials:
         claims = self._jwt_claims(payload.get("id_token") or payload["access_token"])
         auth = claims.get("https://api.openai.com/auth") or {}
         organizations = claims.get("organizations") or []
@@ -165,7 +165,7 @@ class ChatGPTAccount:
             account_id=account_id or (previous.account_id if previous else None),
             email=claims.get("email") or payload.get("email") or (previous.email if previous else None),
         )
-        self.store.set_chat_credentials(credentials)
+        await self.store.aset_chat_credentials(credentials)
         self.last_error = None
         return credentials
 

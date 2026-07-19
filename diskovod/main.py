@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 from copy import deepcopy
 import logging
 from pathlib import Path
@@ -93,7 +92,7 @@ def main() -> None:
         web.models.migrate_legacy_selection()
         await runtime.start()
         await LegacyMigrator(store, runtime).run()
-        await asyncio.to_thread(store.prune)
+        await store.aprune()
         await discord.start()
 
     @web.app.on_event("shutdown")
@@ -102,7 +101,7 @@ def main() -> None:
         await runtime.close()
         await account.close()
         await public_http.close()
-        store.close()
+        await store.aclose()
 
     uvicorn.run(
         web.app,

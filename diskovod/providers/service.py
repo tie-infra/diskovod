@@ -86,21 +86,42 @@ class ModelService:
         max_output_tokens: int,
         capabilities: ProviderCapabilities | None = None,
     ) -> int:
+        return self.store.save_agent_configuration(
+            self._subscription_configuration(model_id, reasoning_effort, max_output_tokens, capabilities)
+        )
+
+    async def asave_subscription(
+        self,
+        *,
+        model_id: str,
+        reasoning_effort: str,
+        max_output_tokens: int,
+        capabilities: ProviderCapabilities | None = None,
+    ) -> int:
+        return await self.store.asave_agent_configuration(
+            self._subscription_configuration(model_id, reasoning_effort, max_output_tokens, capabilities)
+        )
+
+    def _subscription_configuration(
+        self,
+        model_id: str,
+        reasoning_effort: str,
+        max_output_tokens: int,
+        capabilities: ProviderCapabilities | None,
+    ) -> ModelConfiguration:
         if not self.account.connected:
             raise ProviderBuildError("missing_credentials", "ChatGPT Subscription is not connected")
-        return self.store.save_agent_configuration(
-            ModelConfiguration(
-                provider_id="chatgpt_subscription",
-                model_id=model_id,
-                transport_profile="responses",
-                credential_profile="chatgpt_subscription",
-                options={
-                    "reasoning_effort": reasoning_effort,
-                    "max_completion_tokens": max_output_tokens,
-                },
-                capabilities=capabilities or ProviderCapabilities(),
-                integration_version=version("langchain-openai"),
-            )
+        return ModelConfiguration(
+            provider_id="chatgpt_subscription",
+            model_id=model_id,
+            transport_profile="responses",
+            credential_profile="chatgpt_subscription",
+            options={
+                "reasoning_effort": reasoning_effort,
+                "max_completion_tokens": max_output_tokens,
+            },
+            capabilities=capabilities or ProviderCapabilities(),
+            integration_version=version("langchain-openai"),
         )
 
     def save_custom_openai(
@@ -111,8 +132,34 @@ class ModelService:
         reasoning_effort: str,
         max_output_tokens: int,
     ) -> int:
-        profile = "custom_openai_default"
+        profile, configuration = self._custom_openai_configuration(
+            provider, model_id, reasoning_effort, max_output_tokens
+        )
         self.store.set_provider_credentials(profile, {"api_key": provider.api_key})
+        return self.store.save_agent_configuration(configuration)
+
+    async def asave_custom_openai(
+        self,
+        provider: CustomProvider,
+        *,
+        model_id: str,
+        reasoning_effort: str,
+        max_output_tokens: int,
+    ) -> int:
+        profile, configuration = self._custom_openai_configuration(
+            provider, model_id, reasoning_effort, max_output_tokens
+        )
+        await self.store.aset_provider_credentials(profile, {"api_key": provider.api_key})
+        return await self.store.asave_agent_configuration(configuration)
+
+    def _custom_openai_configuration(
+        self,
+        provider: CustomProvider,
+        model_id: str,
+        reasoning_effort: str,
+        max_output_tokens: int,
+    ) -> tuple[str, ModelConfiguration]:
+        profile = "custom_openai_default"
         capabilities = ProviderCapabilities(
             native_tools=provider.supports("native_function_calls"),
             hosted_web_search=provider.supports("hosted_web_search"),
@@ -131,17 +178,15 @@ class ModelService:
                 model_id=model_id,
                 transport_profile=provider.protocol,
             )
-        return self.store.save_agent_configuration(
-            ModelConfiguration(
-                provider_id="custom_openai",
-                model_id=model_id,
-                transport_profile=provider.protocol,
-                credential_profile=profile,
-                endpoint=provider.base_url,
-                options=options,
-                capabilities=capabilities,
-                integration_version=version("langchain-openai"),
-            )
+        return profile, ModelConfiguration(
+            provider_id="custom_openai",
+            model_id=model_id,
+            transport_profile=provider.protocol,
+            credential_profile=profile,
+            endpoint=provider.base_url,
+            options=options,
+            capabilities=capabilities,
+            integration_version=version("langchain-openai"),
         )
 
     def migrate_legacy_selection(self) -> int | None:
@@ -182,6 +227,18 @@ class ModelService:
         return None
 
     def refresh_prompt_cache_identity(self) -> int | None:
+        configuration = self._refreshed_prompt_cache_configuration()
+        if configuration is None:
+            return None
+        return self.store.save_agent_configuration(configuration)
+
+    async def arefresh_prompt_cache_identity(self) -> int | None:
+        configuration = self._refreshed_prompt_cache_configuration()
+        if configuration is None:
+            return None
+        return await self.store.asave_agent_configuration(configuration)
+
+    def _refreshed_prompt_cache_configuration(self) -> ModelConfiguration | None:
         configuration = self.configuration
         if configuration is None or not configuration.capabilities.prompt_cache:
             return None
@@ -193,17 +250,15 @@ class ModelService:
         )
         if options == configuration.options:
             return None
-        return self.store.save_agent_configuration(
-            ModelConfiguration(
-                provider_id=configuration.provider_id,
-                model_id=configuration.model_id,
-                transport_profile=configuration.transport_profile,
-                credential_profile=configuration.credential_profile,
-                endpoint=configuration.endpoint,
-                options=options,
-                capabilities=configuration.capabilities,
-                integration_version=configuration.integration_version,
-            )
+        return ModelConfiguration(
+            provider_id=configuration.provider_id,
+            model_id=configuration.model_id,
+            transport_profile=configuration.transport_profile,
+            credential_profile=configuration.credential_profile,
+            endpoint=configuration.endpoint,
+            options=options,
+            capabilities=configuration.capabilities,
+            integration_version=configuration.integration_version,
         )
 
     def _prompt_cache_key(self, **model_identity: str) -> str:

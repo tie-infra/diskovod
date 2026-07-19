@@ -1,4 +1,3 @@
-import asyncio
 import json
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -98,7 +97,7 @@ def localized_agent_tools(
     ) -> dict[str, Any]:
         if attachments is None:
             return {"ok": False, "error": text["memory_unavailable"]}
-        results = await asyncio.to_thread(attachments.search, runtime.context.channel_id, query)
+        results = await attachments.search(runtime.context.channel_id, query)
         return {"ok": True, "results": results}
 
     async def search_chat_memory(

@@ -74,10 +74,10 @@ class AgentService:
         self.transport = transport
         self.checkpoint_secret = checkpoint_secret
         self.http = http
-        self.events = DiscordEventQueue(store.path)
-        self.attachments = AttachmentRepository(store.path, http)
-        self.memory = SQLiteLangGraphStore(store.path)
-        self.ledger = SideEffectLedger(store.path)
+        self.events = DiscordEventQueue(store.database)
+        self.attachments = AttachmentRepository(store.database, http)
+        self.memory = SQLiteLangGraphStore(store.path, store.database)
+        self.ledger = SideEffectLedger(store.database)
         self.gateway = DurableActionGateway(self.ledger, transport)
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self._trace_buffers: dict[str, list[tuple[str, dict[str, Any]]]] = {}
@@ -87,6 +87,7 @@ class AgentService:
     async def start(self) -> None:
         if self.checkpointer is not None:
             return
+        await self.store.database.start()
         self._checkpoint_context = open_checkpointer(self.store.path, self.checkpoint_secret)
         self.checkpointer = await self._checkpoint_context.__aenter__()
         for channel_id in self._pending_channels():
@@ -102,10 +103,7 @@ class AgentService:
             await self._checkpoint_context.__aexit__(None, None, None)
             self._checkpoint_context = None
             self.checkpointer = None
-        self.events.close()
-        self.attachments.close()
         self.memory.close()
-        self.ledger.close()
 
     @property
     def ready(self) -> bool:
@@ -117,16 +115,16 @@ class AgentService:
             task.cancel()
 
     async def permanently_pause(self, channel_id: str) -> None:
-        await asyncio.to_thread(self.store.set_permanent_pause, channel_id, True)
+        await self.store.aset_permanent_pause(channel_id, True)
         self.cancel(channel_id)
 
     async def human_activity(self, channel_id: str) -> float:
-        snoozed_until, should_cancel = await asyncio.to_thread(self._record_human_activity, channel_id)
+        snoozed_until, should_cancel = await self._record_human_activity(channel_id)
         if should_cancel:
             self.cancel(channel_id)
         return snoozed_until
 
-    def _record_human_activity(self, channel_id: str) -> tuple[float, bool]:
+    async def _record_human_activity(self, channel_id: str) -> tuple[float, bool]:
         conversation = self.store.conversation(channel_id)
         if conversation and conversation["mode"] == "inline" and not conversation["paused"]:
             return time.time(), False
@@ -135,7 +133,7 @@ class AgentService:
             settings.min_human_quiet_minutes,
             settings.max_human_quiet_minutes,
         )
-        return self.store.snooze(channel_id, quiet_minutes * 60), True
+        return await self.store.asnooze(channel_id, quiet_minutes * 60), True
 
     async def submit_message(
         self,
@@ -153,8 +151,7 @@ class AgentService:
         force: bool = False,
         agent_input: bool | None = None,
     ) -> bool:
-        inserted, automate = await asyncio.to_thread(
-            self._ingest_message,
+        inserted, automate = await self._ingest_message(
             message_id=message_id,
             channel_id=channel_id,
             account_id=account_id,
@@ -172,7 +169,7 @@ class AgentService:
             self._ensure_task(channel_id, force=force)
         return inserted
 
-    def _ingest_message(
+    async def _ingest_message(
         self,
         *,
         message_id: str,
@@ -210,7 +207,7 @@ class AgentService:
             "content": content,
             "attachments": attachments,
         }
-        inserted = self.events.ingest(
+        inserted = await self.events.ingest(
             event_id,
             channel_id,
             "edit" if edited else "message",
@@ -219,7 +216,7 @@ class AgentService:
             enqueue=automate,
         )
         if inserted and automate:
-            self.events.thread_id(account_id, channel_id)
+            await self.events.thread_id(account_id, channel_id)
         return inserted, automate
 
     async def submit_delete(
@@ -230,8 +227,7 @@ class AgentService:
         account_id: str,
         observed_at: float | None = None,
     ) -> bool:
-        inserted, automate = await asyncio.to_thread(
-            self._ingest_delete,
+        inserted, automate = await self._ingest_delete(
             message_id=message_id,
             channel_id=channel_id,
             account_id=account_id,
@@ -241,7 +237,7 @@ class AgentService:
             self._ensure_task(channel_id)
         return inserted
 
-    def _ingest_delete(
+    async def _ingest_delete(
         self,
         *,
         message_id: str,
@@ -251,7 +247,7 @@ class AgentService:
     ) -> tuple[bool, bool]:
         automate = self.store.app_settings().enabled and self.store.can_automate(channel_id)
         timestamp = observed_at or time.time()
-        inserted = self.events.ingest(
+        inserted = await self.events.ingest(
             f"discord:delete:{message_id}:{int(timestamp * 1_000_000)}",
             channel_id,
             "delete",
@@ -262,17 +258,16 @@ class AgentService:
         return inserted, automate
 
     async def force_reply(self, *, channel_id: str, account_id: str, trigger_message_id: str) -> None:
-        await asyncio.to_thread(
-            self._ingest_force_reply,
+        await self._ingest_force_reply(
             channel_id=channel_id,
             account_id=account_id,
             trigger_message_id=trigger_message_id,
         )
         self._ensure_task(channel_id, force=True)
 
-    def _ingest_force_reply(self, *, channel_id: str, account_id: str, trigger_message_id: str) -> None:
+    async def _ingest_force_reply(self, *, channel_id: str, account_id: str, trigger_message_id: str) -> None:
         event_id = f"diskovod:force:{uuid.uuid4()}"
-        self.events.ingest(
+        await self.events.ingest(
             event_id,
             channel_id,
             "force_reply",
@@ -283,13 +278,10 @@ class AgentService:
             },
             enqueue=True,
         )
-        self.events.thread_id(account_id, channel_id)
+        await self.events.thread_id(account_id, channel_id)
 
     async def set_live_steering(self, channel_id: str, enabled: bool) -> None:
-        await asyncio.to_thread(self._set_live_steering, channel_id, enabled)
-
-    def _set_live_steering(self, channel_id: str, enabled: bool) -> None:
-        self.events.set_live_steering(self._account_id(channel_id), channel_id, enabled)
+        await self.events.set_live_steering(self._account_id(channel_id), channel_id, enabled)
 
     async def checkpoint_views(self, *, limit_per_thread: int = 20) -> list[dict[str, Any]]:
         if self.checkpointer is None:
@@ -379,15 +371,13 @@ class AgentService:
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
         )
-        await asyncio.to_thread(
-            self.store.start_agent_run,
+        await self.store.astart_agent_run(
             run_id=replay_id,
             thread_id=context.thread_id,
             channel_id=channel_id,
             trace_id=trace_id,
         )
-        await asyncio.to_thread(
-            self.store.record_agent_trace,
+        await self.store.arecord_agent_trace(
             replay_id,
             "historical_replay",
             {"source_thread_id": thread_id, "source_checkpoint_id": checkpoint_id},
@@ -399,28 +389,25 @@ class AgentService:
                 context=context,
             )
         except Exception as error:
-            await asyncio.to_thread(self._flush_trace, trace_id, replay_id)
-            await asyncio.to_thread(
-                self.store.record_agent_trace,
+            await self._flush_trace(trace_id, replay_id)
+            await self.store.arecord_agent_trace(
                 replay_id,
                 "emulated_actions",
                 {"actions": gateway.actions},
             )
-            await asyncio.to_thread(
-                self.store.finish_agent_run,
+            await self.store.afinish_agent_run(
                 replay_id,
                 "failed",
                 f"{type(error).__name__}: {error}",
             )
             raise
-        await asyncio.to_thread(self._flush_trace, trace_id, replay_id)
-        await asyncio.to_thread(
-            self.store.record_agent_trace,
+        await self._flush_trace(trace_id, replay_id)
+        await self.store.arecord_agent_trace(
             replay_id,
             "emulated_actions",
             {"actions": gateway.actions},
         )
-        await asyncio.to_thread(self.store.finish_agent_run, replay_id, "completed")
+        await self.store.afinish_agent_run(replay_id, "completed")
         return replay_id
 
     async def apply_configuration_transition(self, previous) -> int:
@@ -485,8 +472,7 @@ class AgentService:
             summary = ""
         if not summary:
             summary = runtime_context_text(locale)["rollover_summary"].format(count=len(messages))
-        new_thread_id = await asyncio.to_thread(
-            self.events.roll_generation,
+        new_thread_id = await self.events.roll_generation(
             str(thread["account_id"]),
             str(thread["channel_id"]),
         )
@@ -529,7 +515,7 @@ class AgentService:
         )
 
     async def claim_escalation(self, escalation_id: str) -> bool:
-        return await asyncio.to_thread(self.store.set_interrupt_state, escalation_id, "claimed")
+        return await self.store.aset_interrupt_state(escalation_id, "claimed")
 
     async def resume_escalation(
         self,
@@ -607,8 +593,7 @@ class AgentService:
             "owner_message": owner_message[:4000],
             "resolved_at": time.time(),
         }
-        await asyncio.to_thread(
-            self.store.record_agent_trace,
+        await self.store.arecord_agent_trace(
             str(run["id"]),
             "interrupt_resume",
             resume_payload,
@@ -647,25 +632,22 @@ class AgentService:
                 context=context,
             )
         except Exception as error:
-            await asyncio.to_thread(self._flush_trace, trace_id, str(run["id"]))
-            await asyncio.to_thread(
-                self.store.record_agent_trace,
+            await self._flush_trace(trace_id, str(run["id"]))
+            await self.store.arecord_agent_trace(
                 str(run["id"]),
                 "interrupt_resume_error",
                 {"type": type(error).__name__, "detail": str(error)[:4000]},
             )
-            await asyncio.to_thread(
-                self.store.finish_agent_run,
+            await self.store.afinish_agent_run(
                 str(run["id"]),
                 "failed",
                 f"{type(error).__name__}: {error}",
             )
             raise
-        await asyncio.to_thread(self._flush_trace, trace_id, str(run["id"]))
+        await self._flush_trace(trace_id, str(run["id"]))
         state = "dismissed" if action == "dismissed" else "resolved"
-        await asyncio.to_thread(self.store.set_interrupt_state, escalation_id, state)
-        await asyncio.to_thread(
-            self.store.finish_agent_run,
+        await self.store.aset_interrupt_state(escalation_id, state)
+        await self.store.afinish_agent_run(
             str(run["id"]),
             "interrupted" if result.get("__interrupt__") else "completed",
         )
@@ -724,10 +706,10 @@ class AgentService:
         if not force:
             await asyncio.sleep(settings.debounce_seconds)
         account_id = self._account_id(channel_id)
-        thread_id = await asyncio.to_thread(self.events.thread_id, account_id, channel_id)
+        thread_id = await self.events.thread_id(account_id, channel_id)
         run_id = str(uuid.uuid4())
         trace_id = str(uuid.uuid4())
-        claimed = await asyncio.to_thread(self.events.claim_ready, channel_id, run_id)
+        claimed = await self.events.claim_ready(channel_id, run_id)
         if not claimed:
             return
         force = force or any(event.kind == "force_reply" for event in claimed)
@@ -798,15 +780,13 @@ class AgentService:
             "run_id": uuid.UUID(run_id),
             "recursion_limit": 40,
         }
-        await asyncio.to_thread(
-            self.store.start_agent_run,
+        await self.store.astart_agent_run(
             run_id=run_id,
             thread_id=thread_id,
             channel_id=channel_id,
             trace_id=trace_id,
         )
-        await asyncio.to_thread(
-            self.store.record_agent_trace,
+        await self.store.arecord_agent_trace(
             run_id,
             "run_input",
             {"event_ids": [event.id for event in claimed], "force_reply": force},
@@ -814,36 +794,32 @@ class AgentService:
         try:
             result = await agent.ainvoke(state, config=config, context=context)
         except asyncio.CancelledError:
-            await asyncio.to_thread(self.events.release, channel_id, run_id)
-            await asyncio.to_thread(self._flush_trace, trace_id, run_id)
-            await asyncio.to_thread(self.store.finish_agent_run, run_id, "cancelled")
+            await self.events.release(channel_id, run_id)
+            await self._flush_trace(trace_id, run_id)
+            await self.store.afinish_agent_run(run_id, "cancelled")
             raise
         except Exception as error:
-            await asyncio.to_thread(self.events.release, channel_id, run_id)
-            await asyncio.to_thread(self._flush_trace, trace_id, run_id)
-            await asyncio.to_thread(
-                self.store.finish_agent_run,
+            await self.events.release(channel_id, run_id)
+            await self._flush_trace(trace_id, run_id)
+            await self.store.afinish_agent_run(
                 run_id,
                 "failed",
                 f"{type(error).__name__}: {error}",
             )
-            await asyncio.to_thread(
-                self.store.record_agent_trace,
+            await self.store.arecord_agent_trace(
                 run_id,
                 "run_error",
                 {"type": type(error).__name__, "detail": str(error)[:4000]},
             )
             raise
         interrupted = bool(result.get("__interrupt__"))
-        await asyncio.to_thread(self._flush_trace, trace_id, run_id)
-        await asyncio.to_thread(self.events.complete, channel_id, run_id)
-        await asyncio.to_thread(
-            self.store.finish_agent_run,
+        await self._flush_trace(trace_id, run_id)
+        await self.events.complete(channel_id, run_id)
+        await self.store.afinish_agent_run(
             run_id,
             "interrupted" if interrupted else "completed",
         )
-        await asyncio.to_thread(
-            self.store.record_agent_trace,
+        await self.store.arecord_agent_trace(
             run_id,
             "run_output",
             {
@@ -945,9 +921,9 @@ class AgentService:
     def _buffer_trace(self, trace_id: str, kind: str, payload: dict[str, Any]) -> None:
         self._trace_buffers.setdefault(trace_id, []).append((kind, payload))
 
-    def _flush_trace(self, trace_id: str, run_id: str) -> None:
+    async def _flush_trace(self, trace_id: str, run_id: str) -> None:
         for kind, payload in self._trace_buffers.pop(trace_id, []):
-            self.store.record_agent_trace(run_id, kind, payload)
+            await self.store.arecord_agent_trace(run_id, kind, payload)
 
     @staticmethod
     def _capabilities(configuration) -> CapabilityProfile:

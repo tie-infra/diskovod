@@ -89,8 +89,7 @@ class _MigrationEscalationGateway:
         return DeliveryRecord("accepted", 0, f"legacy:{tool_call_id}:reaction")
 
     async def record_escalation(self, context, payload, *, tool_call_id):
-        await asyncio.to_thread(
-            self.runtime.ledger.record_escalation,
+        await self.runtime.ledger.record_escalation(
             f"{context.trace_id}:{tool_call_id}",
             context.thread_id,
             context.channel_id,
@@ -115,7 +114,7 @@ class LegacyMigrator:
         for conversation in conversations:
             channel_id = str(conversation["channel_id"])
             account_id = self.runtime._account_id(channel_id)
-            thread_id = await asyncio.to_thread(self.runtime.events.thread_id, account_id, channel_id)
+            thread_id = await self.runtime.events.thread_id(account_id, channel_id)
             history = self.store.history(channel_id, 100_000)
             messages = await self._messages(history, conversation, account_id)
             for item in history:
@@ -129,8 +128,7 @@ class LegacyMigrator:
                     "attachments": item.get("attachments") or [],
                     "legacy_source": str(item["source"]),
                 }
-                if await asyncio.to_thread(
-                    self.runtime.events.ingest,
+                if await self.runtime.events.ingest(
                     f"legacy:message:{item['id']}",
                     channel_id,
                     "message",
@@ -145,13 +143,12 @@ class LegacyMigrator:
                 await self._seed(thread_id, messages)
                 checkpoint_count += 1
         await self._migrate_active_escalations()
-        archived = await asyncio.to_thread(self._archive_legacy_records)
-        await asyncio.to_thread(self._migrate_owner_details)
+        archived = await self._archive_legacy_records()
+        await self._migrate_owner_details()
         report = MigrationReport(backup, len(conversations), event_count, checkpoint_count, archived)
         await self._validate(report)
-        await asyncio.to_thread(self._drop_legacy_tables)
-        await asyncio.to_thread(
-            self.store._set,
+        await self._drop_legacy_tables()
+        await self.store._aset(
             MIGRATION_KEY,
             {
                 "completed_at": time.time(),
@@ -244,8 +241,7 @@ class LegacyMigrator:
             raise RuntimeError("Migration found invalid side-effect ledger states")
         for conversation in self.store.conversations():
             channel_id = str(conversation["channel_id"])
-            thread_id = await asyncio.to_thread(
-                self.runtime.events.thread_id,
+            thread_id = await self.runtime.events.thread_id(
                 self.runtime._account_id(channel_id),
                 channel_id,
             )
@@ -349,13 +345,13 @@ class LegacyMigrator:
             config={"configurable": {"thread_id": thread_id}},
         )
 
-    def _archive_legacy_records(self) -> int:
+    async def _archive_legacy_records(self) -> int:
         archived = 0
-        with self.store._lock, self.store._db:
+        async with self.store.database.transaction() as connection:
             tables = {
                 str(row[0])
-                for row in self.store._db.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
+                for row in await (
+                    await connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
                 ).fetchall()
             }
             for table, kind, identity in (
@@ -365,10 +361,10 @@ class LegacyMigrator:
             ):
                 if table not in tables:
                     continue
-                rows = self.store._db.execute(f"SELECT * FROM {table}").fetchall()
+                rows = await (await connection.execute(f"SELECT * FROM {table}")).fetchall()
                 for row in rows:
                     payload = {key: row[key] for key in row.keys()}
-                    self.store._db.execute(
+                    await connection.execute(
                         "INSERT OR IGNORE INTO legacy_import_records VALUES(?, ?, ?, ?)",
                         (
                             kind,
@@ -397,7 +393,7 @@ class LegacyMigrator:
         for row in rows:
             channel_id = str(row["channel_id"])
             account_id = self.runtime._account_id(channel_id)
-            thread_id = await asyncio.to_thread(self.runtime.events.thread_id, account_id, channel_id)
+            thread_id = await self.runtime.events.thread_id(account_id, channel_id)
             trace_id = f"migration-escalation:{row['id']}"
             tool_call_id = f"legacy-escalation-{row['id']}"
             escalation_id = f"{trace_id}:{tool_call_id}"
@@ -446,8 +442,7 @@ class LegacyMigrator:
                 checkpointer=self.runtime.checkpointer,
                 store=self.runtime.memory,
             )
-            await asyncio.to_thread(
-                self.store.start_agent_run,
+            await self.store.astart_agent_run(
                 run_id=run_id,
                 thread_id=thread_id,
                 channel_id=channel_id,
@@ -467,14 +462,14 @@ class LegacyMigrator:
             )
             if not result.get("__interrupt__"):
                 raise RuntimeError(f"Legacy escalation {row['id']} did not create a graph interrupt")
-            await asyncio.to_thread(self.store.finish_agent_run, run_id, "interrupted")
+            await self.store.afinish_agent_run(run_id, "interrupted")
             if row["state"] == "claimed":
-                await asyncio.to_thread(self.store.set_interrupt_state, escalation_id, "claimed")
+                await self.store.aset_interrupt_state(escalation_id, "claimed")
 
-    def _migrate_owner_details(self) -> None:
+    async def _migrate_owner_details(self) -> None:
         details = self.store.app_settings().owner_details.strip()
         if details:
-            self.runtime.memory.put(
+            await self.runtime.memory.aput(
                 ("account", self.runtime._account_id("migration"), "preferences"),
                 "owner-provided-details",
                 {
@@ -484,15 +479,10 @@ class LegacyMigrator:
                 },
             )
 
-    def _drop_legacy_tables(self) -> None:
-        with self.store._lock, self.store._db:
-            self.store._db.executescript(
-                """
-                DROP TABLE IF EXISTS conversation_escalations;
-                DROP TABLE IF EXISTS chatgpt_usage;
-                DROP TABLE IF EXISTS model_request_logs;
-                """
-            )
+    async def _drop_legacy_tables(self) -> None:
+        async with self.store.database.transaction() as connection:
+            for table in ("conversation_escalations", "chatgpt_usage", "model_request_logs"):
+                await connection.execute(f"DROP TABLE IF EXISTS {table}")
 
     @staticmethod
     def _role(message: dict[str, Any]) -> str:

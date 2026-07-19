@@ -62,7 +62,7 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
     assert "model_request_logs" not in tables
     assert "chatgpt_usage" not in tables
     assert "conversation_escalations" not in tables
-    thread_id = runtime.events.thread_id("discord-owner", "channel")
+    thread_id = await runtime.events.thread_id("discord-owner", "channel")
     checkpoint = await runtime.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
     assert [message.content for message in checkpoint.checkpoint["channel_values"]["messages"]] == [
         "Do you remember this?",
@@ -73,7 +73,7 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
     assert second.backup_path is None
     assert len(list((tmp_path / "backups").glob("*.sqlite3"))) == 1
     await runtime.close()
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -127,4 +127,4 @@ async def test_cutover_converts_active_legacy_escalation_to_real_interrupt(tmp_p
         == "interrupted"
     )
     await runtime.close()
-    store.close()
+    await store.aclose()

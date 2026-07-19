@@ -8,6 +8,7 @@ import pytest
 
 from diskovod.attachments import AttachmentRepository
 from diskovod.http_client import PublicHTTPResponse
+from diskovod.store import Store
 
 
 class Attachment(SimpleNamespace):
@@ -36,7 +37,8 @@ class RecordingHTTP:
 async def test_attachment_is_content_addressed_and_searchable_per_chat(tmp_path: Path):
     body = b"The launch code name is blue heron."
     http = RecordingHTTP(body)
-    repository = AttachmentRepository(tmp_path / "diskovod.sqlite3", http)
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    repository = AttachmentRepository(store.database, http)
     attachment = Attachment(
         id="attachment-1",
         filename="notes.txt",
@@ -57,9 +59,9 @@ async def test_attachment_is_content_addressed_and_searchable_per_chat(tmp_path:
     assert captured[0]["text"] == body.decode()
     assert http.calls == [("https://cdn.example/notes.txt", len(body))]
     assert (tmp_path / "attachments" / digest[:2] / digest).read_bytes() == body
-    assert repository.search("chat-a", "blue heron")[0]["filename"] == "notes.txt"
-    assert repository.search("chat-b", "blue heron") == []
-    assert repository.manifest() == [
+    assert (await repository.search("chat-a", "blue heron"))[0]["filename"] == "notes.txt"
+    assert await repository.search("chat-b", "blue heron") == []
+    assert await repository.manifest() == [
         {"sha256": digest, "size": len(body), "storage_path": f"{digest[:2]}/{digest}"}
     ]
-    repository.close()
+    await store.aclose()

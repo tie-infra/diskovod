@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
@@ -22,28 +21,12 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
         self.max_batches = max_batches
 
     @hook_config(can_jump_to=["model"])
-    def before_model(
-        self,
-        state: DiskovodAgentState,
-        runtime: Runtime[AgentRuntimeContext],
-    ) -> dict[str, Any] | None:
-        return self._inject(state, runtime, cancel_tools=False)
-
-    @hook_config(can_jump_to=["model"])
     async def abefore_model(
         self,
         state: DiskovodAgentState,
         runtime: Runtime[AgentRuntimeContext],
     ) -> dict[str, Any] | None:
-        return await asyncio.to_thread(self._inject, state, runtime, cancel_tools=False)
-
-    @hook_config(can_jump_to=["model"])
-    def after_model(
-        self,
-        state: DiskovodAgentState,
-        runtime: Runtime[AgentRuntimeContext],
-    ) -> dict[str, Any] | None:
-        return self._inject(state, runtime, cancel_tools=True)
+        return await self._inject(state, runtime, cancel_tools=False)
 
     @hook_config(can_jump_to=["model"])
     async def aafter_model(
@@ -51,9 +34,9 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
         state: DiskovodAgentState,
         runtime: Runtime[AgentRuntimeContext],
     ) -> dict[str, Any] | None:
-        return await asyncio.to_thread(self._inject, state, runtime, cancel_tools=True)
+        return await self._inject(state, runtime, cancel_tools=True)
 
-    def _inject(
+    async def _inject(
         self,
         state: DiskovodAgentState,
         runtime: Runtime[AgentRuntimeContext],
@@ -64,17 +47,17 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
         context = runtime.context
         if (
             not request_id
-            or not self.queue.live_steering(context.channel_id)
+            or not await self.queue.live_steering(context.channel_id)
             or state.get("live_injection_batches", 0) >= self.max_batches
         ):
             return None
         already_applied = set(state.get("claimed_event_ids", []))
         recovered = [
             event
-            for event in self.queue.claimed(context.channel_id, request_id)
+            for event in await self.queue.claimed(context.channel_id, request_id)
             if event.id not in already_applied
         ]
-        claimed = self.queue.claim_ready(
+        claimed = await self.queue.claim_ready(
             context.channel_id,
             request_id,
             injection_batch=state.get("live_injection_batches", 0) + 1,

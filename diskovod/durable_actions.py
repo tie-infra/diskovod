@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import sqlite3
-import threading
 import time
-from pathlib import Path
 from typing import Protocol
 
 from .agent_actions import AgentActionGateway, DeliveryRecord
 from .agent_types import AgentRuntimeContext
-from .persistence import SQLITE_BUSY_TIMEOUT_MS, initialize_target_schema
+from .persistence import AsyncSQLite
 
 
 class DiscordActionTransport(Protocol):
@@ -31,19 +27,10 @@ class DiscordActionTransport(Protocol):
 class SideEffectLedger:
     """At-most-once claim and result storage for externally visible actions."""
 
-    def __init__(self, path: Path):
-        self._connection = sqlite3.connect(path, check_same_thread=False)
-        self._connection.row_factory = sqlite3.Row
-        self._lock = threading.RLock()
-        with self._connection:
-            initialize_target_schema(self._connection)
-            self._connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    def __init__(self, database: AsyncSQLite):
+        self.database = database
 
-    def close(self) -> None:
-        with self._lock:
-            self._connection.close()
-
-    def claim(
+    async def claim(
         self,
         run_id: str,
         tool_call_id: str,
@@ -51,27 +38,31 @@ class SideEffectLedger:
         request: dict,
     ) -> tuple[str, list[DeliveryRecord] | None]:
         serialized = _json(request)
-        with self._lock, self._connection:
-            row = self._connection.execute(
-                "SELECT * FROM side_effect_deliveries WHERE run_id=? AND tool_call_id=?",
-                (run_id, tool_call_id),
+        async with self.database.transaction() as connection:
+            inserted = await connection.execute(
+                """
+                INSERT OR IGNORE INTO side_effect_deliveries(
+                  run_id, tool_call_id, action, state, request, claimed_at
+                ) VALUES(?, ?, ?, 'claimed', ?, ?)
+                """,
+                (run_id, tool_call_id, action, serialized, time.time()),
+            )
+            if inserted.rowcount == 1:
+                return "new", None
+            row = await (
+                await connection.execute(
+                    "SELECT * FROM side_effect_deliveries WHERE run_id=? AND tool_call_id=?",
+                    (run_id, tool_call_id),
+                )
             ).fetchone()
             if row is None:
-                self._connection.execute(
-                    """
-                    INSERT INTO side_effect_deliveries(
-                      run_id, tool_call_id, action, state, request, claimed_at
-                    ) VALUES(?, ?, ?, 'claimed', ?, ?)
-                    """,
-                    (run_id, tool_call_id, action, serialized, time.time()),
-                )
-                return "new", None
+                raise RuntimeError("Side-effect claim disappeared after a uniqueness conflict")
             if row["action"] != action or row["request"] != serialized:
                 raise RuntimeError("A tool-call ID was reused for a different side effect")
             result = _delivery_records(row["result"]) if row["result"] else None
             return str(row["state"]), result
 
-    def finish(
+    async def finish(
         self,
         run_id: str,
         tool_call_id: str,
@@ -80,25 +71,27 @@ class SideEffectLedger:
     ) -> None:
         if state not in {"completed", "ambiguous"}:
             raise ValueError(f"Invalid side-effect terminal state {state!r}")
-        with self._lock, self._connection:
-            changed = self._connection.execute(
-                """
+        async with self.database.transaction() as connection:
+            changed = (
+                await connection.execute(
+                    """
                 UPDATE side_effect_deliveries
                 SET state=?, result=?, completed_at=?
                 WHERE run_id=? AND tool_call_id=? AND state='claimed'
                 """,
-                (
-                    state,
-                    _json([record.to_dict() for record in records]),
-                    time.time(),
-                    run_id,
-                    tool_call_id,
-                ),
+                    (
+                        state,
+                        _json([record.to_dict() for record in records]),
+                        time.time(),
+                        run_id,
+                        tool_call_id,
+                    ),
+                )
             ).rowcount
             if changed != 1:
                 raise RuntimeError("Side-effect claim is missing or already terminal")
 
-    def record_escalation(
+    async def record_escalation(
         self,
         escalation_id: str,
         thread_id: str,
@@ -106,12 +99,12 @@ class SideEffectLedger:
         payload: dict[str, object],
     ) -> None:
         now = time.time()
-        with self._lock, self._connection:
-            if self._connection.execute(
-                "SELECT 1 FROM escalation_interrupts WHERE id=?", (escalation_id,)
+        async with self.database.transaction() as connection:
+            if await (
+                await connection.execute("SELECT 1 FROM escalation_interrupts WHERE id=?", (escalation_id,))
             ).fetchone():
                 return
-            self._connection.execute(
+            await connection.execute(
                 """
                 INSERT INTO escalation_interrupts(
                   id, thread_id, channel_id, state, payload, created_at, updated_at
@@ -134,8 +127,7 @@ class DurableActionGateway(AgentActionGateway):
         *,
         tool_call_id: str,
     ) -> list[DeliveryRecord]:
-        state, recorded = await asyncio.to_thread(
-            self.ledger.claim,
+        state, recorded = await self.ledger.claim(
             context.trace_id,
             tool_call_id,
             "send_messages",
@@ -164,8 +156,7 @@ class DurableActionGateway(AgentActionGateway):
                 )
                 for index, _ in enumerate(messages)
             ]
-            await asyncio.to_thread(
-                self.ledger.finish,
+            await self.ledger.finish(
                 context.trace_id,
                 tool_call_id,
                 "ambiguous",
@@ -175,8 +166,7 @@ class DurableActionGateway(AgentActionGateway):
         terminal_state = (
             "completed" if all(record.status != "ambiguous" for record in records) else "ambiguous"
         )
-        await asyncio.to_thread(
-            self.ledger.finish,
+        await self.ledger.finish(
             context.trace_id,
             tool_call_id,
             terminal_state,
@@ -196,8 +186,7 @@ class DurableActionGateway(AgentActionGateway):
             "message_id": context.trigger_message_id,
             "emoji": emoji,
         }
-        state, recorded = await asyncio.to_thread(
-            self.ledger.claim,
+        state, recorded = await self.ledger.claim(
             context.trace_id,
             tool_call_id,
             "react_to_message",
@@ -216,8 +205,7 @@ class DurableActionGateway(AgentActionGateway):
                 error_code="transport_exception",
                 error_detail=type(error).__name__,
             )
-        await asyncio.to_thread(
-            self.ledger.finish,
+        await self.ledger.finish(
             context.trace_id,
             tool_call_id,
             "ambiguous" if result.status == "ambiguous" else "completed",
@@ -232,8 +220,7 @@ class DurableActionGateway(AgentActionGateway):
         *,
         tool_call_id: str,
     ) -> None:
-        await asyncio.to_thread(
-            self.ledger.record_escalation,
+        await self.ledger.record_escalation(
             f"{context.trace_id}:{tool_call_id}",
             context.thread_id,
             context.channel_id,

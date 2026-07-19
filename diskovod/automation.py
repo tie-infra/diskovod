@@ -398,6 +398,7 @@ class Automation:
         read_only_calls = 0
         tool_choice: str | dict[str, Any] = "required"
         last_result: ModelResult | None = None
+        parent_request_id: int | None = None
         for request_index in range(4):
             result = await self.chatgpt.complete_result(
                 messages,
@@ -415,9 +416,11 @@ class Automation:
                     "channel_id": channel_id,
                     "attempt": request_index + 1,
                     "repair": repair_used,
+                    "parent_request_id": parent_request_id,
                 },
             )
             last_result = result
+            parent_request_id = result.request_log_id
             calls = result.function_calls
             if not validate_hosted_web_search_calls(
                 result.hosted_tool_calls,
@@ -436,6 +439,7 @@ class Automation:
                         result.request_log_id,
                         "rejected",
                         "non_terminal_or_ambiguous_output_after_repair",
+                        self._model_output_observation(result),
                     )
                     log.error("Rejected non-terminal or ambiguous model output after native repair")
                     return None
@@ -443,6 +447,7 @@ class Automation:
                     result.request_log_id,
                     "repair_requested",
                     "expected_one_function_call_and_no_text",
+                    self._model_output_observation(result),
                 )
                 repair_used = True
                 tool_choice = {"type": "function", "name": "send_messages"}
@@ -533,6 +538,32 @@ class Automation:
             )
         log.error("Rejected reply after exceeding the total model request budget")
         return None
+
+    @staticmethod
+    def _model_output_observation(result: ModelResult) -> dict[str, Any]:
+        return {
+            "expected": {
+                "function_call_count": 1,
+                "response_text_present": False,
+            },
+            "observed": {
+                "text_output_count": len(result.text_outputs),
+                "text_characters": sum(len(output.text) for output in result.text_outputs),
+                "response_text_present": bool(result.text),
+                "function_call_count": len(result.function_calls),
+                "function_calls": [
+                    {
+                        "name": call.name,
+                        "arguments_valid_json_object": call.parsed_arguments is not None,
+                    }
+                    for call in result.function_calls
+                ],
+                "hosted_tool_call_count": len(result.hosted_tool_calls),
+                "hosted_tool_calls": [
+                    {"kind": call.kind, "status": call.status} for call in result.hosted_tool_calls
+                ],
+            },
+        }
 
     async def _manual_message_exists(self, channel: Any, since: float) -> bool:
         """Gateway delivery can lag; check recent server history immediately before sending."""

@@ -145,11 +145,14 @@ def test_model_request_log_view_correlates_validation_with_conversation(tmp_path
         status="completed",
         duration_ms=500,
         response_summary={"text_outputs": [{"characters": 10}]},
+        request_payload={"instructions": "private prompt"},
+        response_payload={"output": [{"type": "message", "text": "model output"}]},
     )
     store.annotate_model_request(
         request_id,
         "rejected",
         "non_terminal_or_ambiguous_output_after_repair",
+        {"observed": {"response_text_present": True}},
     )
     web = WebApp(
         store,
@@ -168,6 +171,9 @@ def test_model_request_log_view_correlates_validation_with_conversation(tmp_path
     assert view["is_problem"] is True
     assert "content_characters" in view["request_json"]
     assert "characters" in view["response_json"]
+    assert "private prompt" in view["request_payload_json"]
+    assert "model output" in view["response_payload_json"]
+    assert "response_text_present" in view["validation_summary_json"]
     store.close()
 
 

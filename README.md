@@ -104,18 +104,18 @@ terminal function call in the same probe.
 
 The probe distinguishes verified support from request errors and response-contract mismatches.
 **Probe diagnostics** shows the model, stable reasoning-effort value, transport, timestamp, provider
-response ID, and sanitized tool-call counts and statuses. The same metadata is logged for
-correlation. Search results, prompts beyond the fixed public test, credentials, and raw response
-content are not retained. An inconclusive result does not by itself prove that the model lacks web
-search; it can also indicate backend rollout, account access, or an integration issue.
+response ID, and sanitized tool-call counts and statuses. Its linked sensitive request trace retains
+the fixed probe request and raw provider response while removing credentials. An inconclusive result
+does not by itself prove that the model lacks web search; it can also indicate backend rollout,
+account access, or an integration issue.
 
-The **Model request log** in Usage retains the newest 500 redacted request records. It correlates
-ordinary generations, tool continuations, native repairs, hosted-search probes, provider errors,
-and validator decisions. Each record includes transport and model settings, message and instruction
-sizes, tool names and argument keys, output shape, token counters, duration, response ID, and a
-stable acceptance or rejection reason. It does not store DM text, prompt text, tool argument values,
-attachment bodies, raw model responses, cache keys, or credentials. Bounded provider error text is
-stored after common credential patterns are redacted.
+The **Model request log** in Usage retains the newest 100 request traces. It correlates ordinary
+generations, tool continuations, native repairs, hosted-search probes, provider errors, and validator
+decisions. Entries include the provider request and raw response JSON, compact metadata, response
+IDs, timings, repair links, and explicit expected-versus-observed validator output. These traces are
+sensitive because they contain prompt, DM, generated-text, and tool-argument content. Credentials,
+signed URL parameters, and binary data are removed; each request or response payload is capped at
+1,000,000 characters.
 
 ### OpenAI-compatible provider
 

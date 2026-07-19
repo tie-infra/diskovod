@@ -172,11 +172,17 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
                 "conversation_label": "Peer",
                 "attempt": 2,
                 "repair": True,
+                "parent_request_id": 41,
+                "parent_request_url": "/?tab=usage#model-request-41",
                 "response_id": "resp-42",
                 "error_type": None,
                 "error_detail": None,
                 "request_json": '{"tools": ["send_messages"]}',
                 "response_json": '{"function_calls": [], "text_outputs": [{"characters": 12}]}',
+                "request_payload_json": '{"instructions": "system prompt", "input": [{"content": "hello"}]}',
+                "response_payload_json": '{"output": [{"type": "message", "text": "bad output"}]}',
+                "validation_summary": {"observed": {"response_text_present": True}},
+                "validation_summary_json": '{"observed": {"response_text_present": true}}',
                 "is_problem": True,
             }
         ],
@@ -306,13 +312,18 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "Probe diagnostics" in rendered
     assert "resp-probe" in rendered
     assert "connection_test_ok=false" in rendered
-    assert "query results and credentials are not stored" in rendered
+    assert "fixed probe prompt and raw response" in rendered
     assert "Model token usage" in rendered
     assert "Model request log" in rendered
     assert 'id="model-request-42"' in rendered
     assert "non_terminal_or_ambiguous_output_after_repair" in rendered
-    assert "Redacted request metadata" in rendered
-    assert "DM text, prompts, tool argument values" in rendered
+    assert "Provider request JSON" in rendered
+    assert "Raw provider response JSON" in rendered
+    assert "Sensitive diagnostic data" in rendered
+    assert "system prompt" in rendered
+    assert "bad output" in rendered
+    assert "response_text_present" in rendered
+    assert "View request #41" in rendered
     assert "View request #42" in rendered
     assert "1,434" in rendered
     assert "DM reply" in rendered

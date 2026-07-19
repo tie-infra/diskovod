@@ -279,6 +279,8 @@ class ModelResult:
     usage: dict[str, Any] | None = None
     provider_response_id: str | None = None
     request_log_id: int | None = None
+    request_payload: dict[str, Any] | None = None
+    response_payload: dict[str, Any] | None = None
 
     @property
     def text(self) -> str:

@@ -1031,6 +1031,14 @@
                 <dd>{{ request.attempt if request.attempt is not none else "—" }}</dd>
                 <dt>{{ t("model_request_repair") }}</dt>
                 <dd>{{ t("active") if request.repair else "—" }}</dd>
+                {% if request.parent_request_url %}
+                  <dt>{{ t("model_request_parent") }}</dt>
+                  <dd>
+                    <a href="{{ request.parent_request_url }}">
+                      {{ t("view_model_request", id=request.parent_request_id) }}
+                    </a>
+                  </dd>
+                {% endif %}
                 <dt>{{ t("model_request_validation") }}</dt>
                 <dd>
                   {{ request.validation_label }}
@@ -1046,16 +1054,37 @@
                 {% endif %}
               </dl>
 
+              {% if request.validation_summary %}
+                <div class="request-log-validator">
+                  <h3>{{ t("model_validator_observation") }}</h3>
+                  <pre><code>{{ request.validation_summary_json }}</code></pre>
+                </div>
+              {% endif %}
+
               <div class="request-log-payloads">
                 <div>
-                  <h3>{{ t("model_request_metadata") }}</h3>
-                  <pre><code>{{ request.request_json }}</code></pre>
+                  <h3>{{ t("model_provider_request") }}</h3>
+                  <pre><code>{{ request.request_payload_json }}</code></pre>
                 </div>
                 <div>
-                  <h3>{{ t("model_response_metadata") }}</h3>
-                  <pre><code>{{ request.response_json }}</code></pre>
+                  <h3>{{ t("model_provider_response") }}</h3>
+                  <pre><code>{{ request.response_payload_json }}</code></pre>
                 </div>
               </div>
+
+              <details class="request-log-metadata">
+                <summary>{{ t("model_compact_metadata") }}</summary>
+                <div class="request-log-payloads">
+                  <div>
+                    <h3>{{ t("model_request_metadata") }}</h3>
+                    <pre><code>{{ request.request_json }}</code></pre>
+                  </div>
+                  <div>
+                    <h3>{{ t("model_response_metadata") }}</h3>
+                    <pre><code>{{ request.response_json }}</code></pre>
+                  </div>
+                </div>
+              </details>
             </details>
           {% else %}
             <div class="empty-state">{{ t("no_model_requests") }}</div>

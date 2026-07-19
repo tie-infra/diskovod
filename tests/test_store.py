@@ -205,7 +205,7 @@ def test_subscription_web_search_capability_is_scoped_to_account_and_model(tmp_p
     store.close()
 
 
-def test_model_request_log_lifecycle_keeps_only_redacted_metadata(tmp_path: Path):
+def test_model_request_log_lifecycle_keeps_diagnostic_payloads_and_repair_links(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
     request_id = store.start_model_request(
         provider="ChatGPT subscription",
@@ -215,6 +215,7 @@ def test_model_request_log_lifecycle_keeps_only_redacted_metadata(tmp_path: Path
         channel_id="dm-1",
         attempt=2,
         repair=True,
+        parent_request_id=99,
         request_summary={"messages": [{"role": "user", "content_characters": 12}]},
         started_at=100,
     )
@@ -223,12 +224,15 @@ def test_model_request_log_lifecycle_keeps_only_redacted_metadata(tmp_path: Path
         status="completed",
         duration_ms=321,
         response_summary={"function_calls": [{"name": "send_messages"}]},
+        request_payload={"instructions": "reply naturally", "input": [{"content": "hello"}]},
+        response_payload={"output": [{"type": "function_call", "arguments": '{"messages":[]}'}]},
         response_id="resp-1",
     )
     store.annotate_model_request(
         request_id,
         "rejected",
         "non_terminal_or_ambiguous_output_after_repair",
+        {"observed": {"function_call_count": 1, "response_text_present": True}},
     )
 
     record = store.model_request_logs()[0]
@@ -237,9 +241,13 @@ def test_model_request_log_lifecycle_keeps_only_redacted_metadata(tmp_path: Path
     assert record["status"] == "completed"
     assert record["duration_ms"] == 321
     assert record["repair"] is True
+    assert record["parent_request_id"] == 99
     assert record["request_summary"]["messages"][0]["content_characters"] == 12
     assert record["response_summary"]["function_calls"][0]["name"] == "send_messages"
     assert record["validation_detail"] == "non_terminal_or_ambiguous_output_after_repair"
+    assert record["request_payload"]["input"][0]["content"] == "hello"
+    assert record["response_payload"]["output"][0]["arguments"] == '{"messages":[]}'
+    assert record["validation_summary"]["observed"]["response_text_present"] is True
     assert set(record["request_summary"]["messages"][0]) == {"role", "content_characters"}
     store.close()
 

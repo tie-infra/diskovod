@@ -484,7 +484,8 @@ small {
   min-width: 0;
 }
 
-.request-log-payloads pre {
+.request-log-payloads pre,
+.request-log-validator pre {
   max-height: 28rem;
   padding: 1rem;
   overflow: auto;
@@ -493,6 +494,10 @@ small {
   background: var(--bs-tertiary-bg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.request-log-validator {
+  margin-top: 1rem;
 }
 
 details {

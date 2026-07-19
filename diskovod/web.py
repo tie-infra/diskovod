@@ -911,6 +911,29 @@ class WebApp:
                 indent=2,
                 sort_keys=True,
             )
+            record["request_payload_json"] = json.dumps(
+                record.get("request_payload") or {},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            record["response_payload_json"] = json.dumps(
+                record.get("response_payload") or {},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            record["validation_summary_json"] = json.dumps(
+                record.get("validation_summary") or {},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            record["parent_request_url"] = (
+                self._url(f"?tab=usage#model-request-{record['parent_request_id']}")
+                if isinstance(record.get("parent_request_id"), int)
+                else None
+            )
             record["is_problem"] = status == "error" or validation in {
                 "rejected",
                 "probe_inconclusive",

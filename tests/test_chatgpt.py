@@ -379,8 +379,10 @@ async def test_custom_provider_uses_chat_completions_and_records_usage(tmp_path:
     assert request_log["request_summary"]["instructions_characters"] == len("system instructions")
     assert request_log["request_summary"]["cache_key_present"] is True
     assert request_log["response_summary"]["text_outputs"] == [{"characters": 5, "annotations": 0}]
-    assert "system instructions" not in str(request_log)
-    assert '"hi"' not in str(request_log)
+    assert request_log["request_payload"]["messages"][0]["content"] == "system instructions"
+    assert request_log["request_payload"]["messages"][1]["content"] == "hi"
+    assert request_log["response_payload"] == payload
+    assert "provider-key" not in str(request_log)
     store.close()
 
 
@@ -606,6 +608,8 @@ async def test_subscription_web_search_probe_is_model_scoped_and_requires_termin
     assert request_log["response_summary"]["hosted_tool_calls"] == [
         {"kind": "web_search_call", "status": "completed"}
     ]
+    assert request_log["request_payload"] == session.last_kwargs["json"]
+    assert request_log["response_payload"] == completed["response"]
     assert client.hosted_web_search_available is False
     store.set_app_settings(AppSettings(model="gpt-model"))
     assert client.hosted_web_search_available is True
@@ -644,6 +648,7 @@ async def test_subscription_web_search_probe_records_inconclusive_response_diagn
     request_log = store.model_request_logs()[0]
     assert request_log["validation_status"] == "probe_inconclusive"
     assert request_log["validation_detail"] == "response_mismatch"
+    assert request_log["response_payload"]["output"][0]["content"][0]["text"] == "OK"
     store.close()
 
 
@@ -669,7 +674,26 @@ async def test_subscription_web_search_probe_records_request_errors_as_inconclus
     request_log = store.model_request_logs()[0]
     assert request_log["status"] == "error"
     assert request_log["validation_status"] == "probe_inconclusive"
+    assert request_log["response_payload"] == event
     store.close()
+
+
+def test_request_trace_removes_credentials_signed_parameters_and_binary_data():
+    trace = ChatGPTClient._trace_payload(
+        {
+            "authorization": "Bearer secret",
+            "input": [
+                {"image_url": "https://cdn.example/file.png?signature=secret#fragment"},
+                {"data": "data:image/png;base64,very-secret-binary"},
+            ],
+            "content": "visible conversation text",
+        }
+    )
+
+    assert trace["authorization"] == "[redacted]"
+    assert trace["input"][0]["image_url"] == "https://cdn.example/file.png"
+    assert trace["input"][1]["data"].startswith("[binary data URL omitted:")
+    assert trace["content"] == "visible conversation text"
 
 
 @pytest.mark.asyncio

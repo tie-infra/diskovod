@@ -325,6 +325,16 @@ async def test_ambiguous_native_repair_rejection_is_annotated_in_request_log(tmp
     assert logs[request_ids[0]]["validation_detail"] == "expected_one_function_call_and_no_text"
     assert logs[request_ids[1]]["validation_status"] == "rejected"
     assert logs[request_ids[1]]["validation_detail"] == ("non_terminal_or_ambiguous_output_after_repair")
+    assert logs[request_ids[0]]["validation_summary"]["observed"] == {
+        "text_output_count": 1,
+        "text_characters": 20,
+        "response_text_present": True,
+        "function_call_count": 0,
+        "function_calls": [],
+        "hosted_tool_call_count": 0,
+        "hosted_tool_calls": [],
+    }
+    assert chatgpt.calls[1]["request_context"]["parent_request_id"] == request_ids[0]
     assert trigger.channel.sent == []
     store.close()
 

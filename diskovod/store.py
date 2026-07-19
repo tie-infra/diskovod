@@ -142,11 +142,15 @@ class Store:
                 channel_id TEXT,
                 attempt INTEGER,
                 repair INTEGER NOT NULL DEFAULT 0,
+                parent_request_id INTEGER,
                 request_summary TEXT NOT NULL,
                 response_summary TEXT,
+                request_payload TEXT,
+                response_payload TEXT,
                 response_id TEXT,
                 validation_status TEXT,
                 validation_detail TEXT,
+                validation_summary TEXT,
                 error_type TEXT,
                 error_detail TEXT
               );
@@ -165,6 +169,17 @@ class Store:
                 self._db.execute(
                     "ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'automatic'"
                 )
+            request_log_columns = {
+                row["name"] for row in self._db.execute("PRAGMA table_info(model_request_logs)").fetchall()
+            }
+            for column, definition in {
+                "parent_request_id": "INTEGER",
+                "request_payload": "TEXT",
+                "response_payload": "TEXT",
+                "validation_summary": "TEXT",
+            }.items():
+                if column not in request_log_columns:
+                    self._db.execute(f"ALTER TABLE model_request_logs ADD COLUMN {column} {definition}")
 
     def close(self) -> None:
         with self._lock:
@@ -343,14 +358,15 @@ class Store:
         channel_id: str | None = None,
         attempt: int | None = None,
         repair: bool = False,
+        parent_request_id: int | None = None,
         started_at: float | None = None,
     ) -> int:
         with self._lock, self._db:
             cursor = self._db.execute(
                 """INSERT INTO model_request_logs
                    (started_at, provider, protocol, model, purpose, status, channel_id,
-                    attempt, repair, request_summary)
-                   VALUES(?,?,?,?,?,'pending',?,?,?,?)""",
+                    attempt, repair, parent_request_id, request_summary)
+                   VALUES(?,?,?,?,?,'pending',?,?,?,?,?)""",
                 (
                     time.time() if started_at is None else started_at,
                     provider,
@@ -360,6 +376,7 @@ class Store:
                     channel_id,
                     attempt,
                     int(repair),
+                    parent_request_id,
                     json.dumps(request_summary, ensure_ascii=False),
                 ),
             )
@@ -367,7 +384,7 @@ class Store:
             self._db.execute(
                 """DELETE FROM model_request_logs
                    WHERE id NOT IN (
-                     SELECT id FROM model_request_logs ORDER BY id DESC LIMIT 500
+                     SELECT id FROM model_request_logs ORDER BY id DESC LIMIT 100
                    )"""
             )
         return request_id
@@ -379,6 +396,8 @@ class Store:
         status: str,
         duration_ms: int,
         response_summary: dict[str, Any] | None = None,
+        request_payload: dict[str, Any] | None = None,
+        response_payload: dict[str, Any] | None = None,
         response_id: str | None = None,
         error_type: str | None = None,
         error_detail: str | None = None,
@@ -389,7 +408,7 @@ class Store:
             self._db.execute(
                 """UPDATE model_request_logs
                    SET completed_at=?, duration_ms=?, status=?, response_summary=?,
-                       response_id=?, error_type=?, error_detail=?
+                       request_payload=?, response_payload=?, response_id=?, error_type=?, error_detail=?
                    WHERE id=?""",
                 (
                     time.time(),
@@ -397,6 +416,10 @@ class Store:
                     status,
                     json.dumps(response_summary, ensure_ascii=False)
                     if response_summary is not None
+                    else None,
+                    json.dumps(request_payload, ensure_ascii=False) if request_payload is not None else None,
+                    json.dumps(response_payload, ensure_ascii=False)
+                    if response_payload is not None
                     else None,
                     response_id,
                     error_type,
@@ -410,14 +433,22 @@ class Store:
         request_id: int | None,
         validation_status: str,
         validation_detail: str,
+        validation_summary: dict[str, Any] | None = None,
     ) -> None:
         if request_id is None:
             return
         with self._lock, self._db:
             self._db.execute(
                 """UPDATE model_request_logs
-                   SET validation_status=?, validation_detail=? WHERE id=?""",
-                (validation_status, validation_detail[:1000], request_id),
+                   SET validation_status=?, validation_detail=?, validation_summary=? WHERE id=?""",
+                (
+                    validation_status,
+                    validation_detail[:1000],
+                    json.dumps(validation_summary, ensure_ascii=False)
+                    if validation_summary is not None
+                    else None,
+                    request_id,
+                ),
             )
 
     def model_request_logs(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -430,7 +461,13 @@ class Store:
         result = []
         for row in rows:
             item = dict(row)
-            for field in ("request_summary", "response_summary"):
+            for field in (
+                "request_summary",
+                "response_summary",
+                "request_payload",
+                "response_payload",
+                "validation_summary",
+            ):
                 try:
                     value = json.loads(item[field]) if item[field] else None
                 except (TypeError, json.JSONDecodeError):

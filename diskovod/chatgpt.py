@@ -10,7 +10,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urlparse, urlsplit, urlunsplit
 
 import aiohttp
 
@@ -38,6 +38,7 @@ CALLBACK_URL = "http://localhost:1455/auth/callback"
 ORIGINATOR = "zed"
 PROVIDERS = frozenset({"chatgpt", "custom"})
 CUSTOM_PROTOCOLS = frozenset({"responses", "chat_completions"})
+TRACE_PAYLOAD_CHARACTER_LIMIT = 1_000_000
 
 
 class ProviderHTTPError(RuntimeError):
@@ -263,6 +264,50 @@ class ChatGPTClient:
             },
         }
 
+    @classmethod
+    def _trace_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        """Copy a provider payload while removing credentials and binary/signed URL data."""
+
+        secret_keys = {
+            "authorization",
+            "api_key",
+            "access_token",
+            "refresh_token",
+            "client_secret",
+        }
+
+        def clean(value: Any, key: str = "") -> Any:
+            if key.casefold() in secret_keys:
+                return "[redacted]"
+            if isinstance(value, dict):
+                return {
+                    str(item_key): clean(item_value, str(item_key)) for item_key, item_value in value.items()
+                }
+            if isinstance(value, list):
+                return [clean(item) for item in value]
+            if isinstance(value, str):
+                if value.startswith("data:"):
+                    return f"[binary data URL omitted: {len(value)} characters]"
+                if value.startswith(("http://", "https://")):
+                    parsed = urlsplit(value)
+                    if parsed.query or parsed.fragment:
+                        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+                return value
+            if value is None or isinstance(value, (bool, int, float)):
+                return value
+            return str(value)
+
+        cleaned = clean(payload)
+        assert isinstance(cleaned, dict)
+        encoded = json.dumps(cleaned, ensure_ascii=False)
+        if len(encoded) <= TRACE_PAYLOAD_CHARACTER_LIMIT:
+            return cleaned
+        return {
+            "_diskovod_trace_truncated": True,
+            "original_characters": len(encoded),
+            "json_prefix": encoded[:TRACE_PAYLOAD_CHARACTER_LIMIT],
+        }
+
     @staticmethod
     def _safe_request_error(exc: Exception) -> str:
         detail = " ".join(str(exc).split())[:2000]
@@ -452,6 +497,7 @@ class ChatGPTClient:
         request_context: dict[str, Any] | None = None,
     ) -> ModelResult:
         provider_name, protocol = self._request_transport()
+        trace: dict[str, dict[str, Any]] = {}
         request_log_id = self.store.start_model_request(
             provider=provider_name,
             protocol=protocol,
@@ -475,6 +521,9 @@ class ChatGPTClient:
             if request_context and isinstance(request_context.get("attempt"), int)
             else None,
             repair=bool(request_context and request_context.get("repair")),
+            parent_request_id=int(request_context["parent_request_id"])
+            if request_context and isinstance(request_context.get("parent_request_id"), int)
+            else None,
         )
         started = time.monotonic()
         try:
@@ -489,6 +538,7 @@ class ChatGPTClient:
                     tools,
                     tool_choice,
                     continuation_items,
+                    trace,
                 )
             else:
                 result = await self._complete_subscription(
@@ -503,6 +553,7 @@ class ChatGPTClient:
                     tools,
                     tool_choice,
                     continuation_items,
+                    trace,
                 )
         except Exception as exc:
             self.last_error = str(exc)
@@ -510,6 +561,8 @@ class ChatGPTClient:
                 request_log_id,
                 status="error",
                 duration_ms=round((time.monotonic() - started) * 1000),
+                request_payload=trace.get("request"),
+                response_payload=trace.get("response"),
                 error_type=type(exc).__name__,
                 error_detail=self._safe_request_error(exc),
             )
@@ -521,8 +574,12 @@ class ChatGPTClient:
             status="completed",
             duration_ms=round((time.monotonic() - started) * 1000),
             response_summary=self._model_response_summary(result),
+            request_payload=trace.get("request"),
+            response_payload=trace.get("response"),
             response_id=result.provider_response_id,
         )
+        result.request_payload = trace.get("request")
+        result.response_payload = trace.get("response")
         return result
 
     async def _complete_subscription(
@@ -538,6 +595,7 @@ class ChatGPTClient:
         tools: list[dict[str, Any]] | None,
         tool_choice: str | dict[str, Any] | None,
         continuation_items: list[dict[str, Any]] | None,
+        trace: dict[str, dict[str, Any]] | None = None,
     ) -> ModelResult:
         creds = await self.credentials()
         assert self.session
@@ -573,12 +631,22 @@ class ChatGPTClient:
             body["tools"] = tools
             body["tool_choice"] = tool_choice or "required"
             body["parallel_tool_calls"] = False
+        if trace is not None:
+            trace["request"] = self._trace_payload(body)
         chunks: list[str] = []
         completed_response: dict[str, Any] | None = None
         async with self.session.post(f"{BACKEND_URL}/responses", headers=headers, json=body) as response:
             if response.status >= 400:
-                detail = (await response.text())[:1000]
-                raise RuntimeError(f"ChatGPT returned HTTP {response.status}: {detail}")
+                raw_detail = await response.text()
+                if trace is not None:
+                    try:
+                        error_body = json.loads(raw_detail)
+                    except json.JSONDecodeError:
+                        error_body = raw_detail
+                    trace["response"] = self._trace_payload(
+                        {"http_status": response.status, "body": error_body}
+                    )
+                raise RuntimeError(f"ChatGPT returned HTTP {response.status}: {raw_detail[:1000]}")
             buffer = ""
             async for raw in response.content.iter_any():
                 buffer += raw.decode(errors="replace").replace("\r\n", "\n")
@@ -591,6 +659,8 @@ class ChatGPTClient:
                         if data == "[DONE]":
                             continue
                         payload = json.loads(data)
+                        if payload.get("type") in ("error", "response.failed") and trace is not None:
+                            trace["response"] = self._trace_payload(payload)
                         if payload.get("type") == "response.output_text.delta":
                             chunks.append(payload.get("delta", ""))
                         if payload.get("type") == "response.completed":
@@ -599,6 +669,10 @@ class ChatGPTClient:
                                 completed_response = candidate
                         if payload.get("type") in ("error", "response.failed"):
                             raise RuntimeError(str(payload.get("error") or payload))
+        if trace is not None:
+            trace["response"] = self._trace_payload(
+                completed_response or {"streamed_output_text": "".join(chunks)}
+            )
         result = self._model_result_from_response(completed_response or {})
         if not result.text and chunks:
             result.text_outputs.append(TextOutput("".join(chunks).strip(), []))
@@ -616,6 +690,7 @@ class ChatGPTClient:
         tools: list[dict[str, Any]] | None,
         tool_choice: str | dict[str, Any] | None,
         continuation_items: list[dict[str, Any]] | None,
+        trace: dict[str, dict[str, Any]] | None = None,
     ) -> ModelResult:
         provider = self.store.custom_provider()
         if provider is None:
@@ -634,6 +709,7 @@ class ChatGPTClient:
                 tools,
                 tool_choice,
                 continuation_items,
+                trace,
             )
         return await self._complete_custom_chat_completions(
             provider,
@@ -646,6 +722,7 @@ class ChatGPTClient:
             tools,
             tool_choice,
             continuation_items,
+            trace,
         )
 
     async def _complete_custom_responses(
@@ -660,6 +737,7 @@ class ChatGPTClient:
         tools: list[dict[str, Any]] | None,
         tool_choice: str | dict[str, Any] | None,
         continuation_items: list[dict[str, Any]] | None,
+        trace: dict[str, dict[str, Any]] | None = None,
     ) -> ModelResult:
         body: dict[str, Any] = {
             "model": model,
@@ -678,7 +756,9 @@ class ChatGPTClient:
                 body["parallel_tool_calls"] = False
         if cache_key and provider.supports("prompt_cache_key"):
             body["prompt_cache_key"] = cache_key[:64]
-        payload = await self._post_custom_json(provider, "/responses", body)
+        if trace is not None:
+            trace["request"] = self._trace_payload(body)
+        payload = await self._post_custom_json(provider, "/responses", body, trace=trace)
         result = self._model_result_from_response(payload)
         self._record_usage(result, model=model, purpose=purpose, provider_base_url=provider.base_url)
         return result
@@ -695,6 +775,7 @@ class ChatGPTClient:
         tools: list[dict[str, Any]] | None,
         tool_choice: str | dict[str, Any] | None,
         continuation_items: list[dict[str, Any]] | None,
+        trace: dict[str, dict[str, Any]] | None = None,
     ) -> ModelResult:
         assert self.session
         provider_messages = [self._custom_message(message, model) for message in messages]
@@ -714,13 +795,20 @@ class ChatGPTClient:
             body["tool_choice"] = self._chat_tool_choice(tool_choice or "required")
             if provider.supports("parallel_tool_control"):
                 body["parallel_tool_calls"] = False
-        payload = await self._post_custom_json(provider, "/chat/completions", body)
+        if trace is not None:
+            trace["request"] = self._trace_payload(body)
+        payload = await self._post_custom_json(provider, "/chat/completions", body, trace=trace)
         result = self._model_result_from_chat_completion(payload)
         self._record_usage(result, model=model, purpose=purpose, provider_base_url=provider.base_url)
         return result
 
     async def _post_custom_json(
-        self, provider: CustomProvider, path: str, body: dict[str, Any]
+        self,
+        provider: CustomProvider,
+        path: str,
+        body: dict[str, Any],
+        *,
+        trace: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         assert self.session
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -732,10 +820,14 @@ class ChatGPTClient:
                 payload = await response.json(content_type=None)
             except (aiohttp.ContentTypeError, json.JSONDecodeError) as exc:
                 detail = (await response.text())[:1000].strip()
+                if trace is not None:
+                    trace["response"] = self._trace_payload({"http_status": response.status, "body": detail})
                 raise RuntimeError(
                     f"{provider.name} returned HTTP {response.status} with invalid JSON"
                     + (f": {detail}" if detail else "")
                 ) from exc
+            if trace is not None and isinstance(payload, dict):
+                trace["response"] = self._trace_payload(payload)
             if response.status >= 400:
                 raise ProviderHTTPError(provider.name, response.status, self._error_detail(payload))
         if not isinstance(payload, dict):
@@ -820,6 +912,7 @@ class ChatGPTClient:
                 None,
             ),
         )
+        trace: dict[str, dict[str, Any]] = {}
         started = time.monotonic()
         try:
             result = await self._complete_subscription(
@@ -834,6 +927,7 @@ class ChatGPTClient:
                 tools,
                 "required",
                 None,
+                trace,
             )
         except Exception as exc:
             detail = self._safe_request_error(exc)
@@ -841,6 +935,8 @@ class ChatGPTClient:
                 request_log_id,
                 status="error",
                 duration_ms=round((time.monotonic() - started) * 1000),
+                request_payload=trace.get("request"),
+                response_payload=trace.get("response"),
                 error_type=type(exc).__name__,
                 error_detail=detail,
             )
@@ -870,6 +966,8 @@ class ChatGPTClient:
             status="completed",
             duration_ms=round((time.monotonic() - started) * 1000),
             response_summary=self._model_response_summary(result),
+            request_payload=trace.get("request"),
+            response_payload=trace.get("response"),
             response_id=result.provider_response_id,
         )
         self.store.annotate_model_request(

@@ -19,7 +19,8 @@ conversations can also be paused.
 - A guarded SQLite explorer with secret redaction, search, pagination, and confirmed row deletion.
 - Personality inference from bounded Discord or pasted message history, with an editable cache.
 - Editable owner details for names, preferences, relationships, plans, and other personal context.
-- Transparent AI-assistant identity with an optional visible robot-emoji marker.
+- Transparent AI-assistant identity with a localized or custom name and an optional visible
+  robot-emoji marker.
 - Rare emoji reactions for lightweight acknowledgements when a written reply is unnecessary.
 - Model-composed multi-message replies with configurable count and timing.
 - Optional Discord suppress-notifications flag for generated replies.
@@ -166,10 +167,13 @@ These details are treated as authoritative when they conflict with an inferred t
 prompt directs the model to use them only when relevant and not to volunteer unrelated personal or
 sensitive information.
 
-The default reply instructions identify Diskovod as an AI assistant helping the account owner,
+The default reply instructions identify the assistant by name as an AI helping the account owner,
 rather than instructing it to impersonate the owner. If asked about its identity or a reply's
-origin, it answers honestly. Installations that still have the exact former default saved migrate
-to the transparent prompt automatically; custom instructions are never rewritten.
+origin, it answers honestly. A blank **Assistant name** follows the prompt language automatically:
+Diskovod in English, Дисковод in Russian and Ukrainian, ディスコヴォド in Japanese, 迪斯科沃德 in
+Chinese, Diskowod in German, and Disquovode in French. The administrator can replace that localized
+default with one installation-wide custom name. The identity instruction is kept separate from the
+editable base prompt so a custom communication prompt does not accidentally remove it.
 
 For lightweight acknowledgements, Diskovod may react to the incoming message with one common emoji
 instead of sending text. Reactions are never combined with a reply. A local limiter permits at most

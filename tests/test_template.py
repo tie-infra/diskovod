@@ -16,6 +16,8 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     template = environment.get_template("index.html")
     context = dict(
         app_settings=AppSettings(),
+        assistant_display_name="Diskovod",
+        default_assistant_name="Diskovod",
         locale="en",
         locales=SUPPORTED_LOCALES,
         t=lambda key, **values: ui_text("en", key, **values),
@@ -212,6 +214,10 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'name="max_human_quiet_minutes"' in rendered
     assert 'name="admin_locale"' in rendered
     assert 'name="prompt_locale"' in rendered
+    assert 'name="assistant_name"' in rendered
+    assert 'placeholder="Diskovod"' in rendered
+    assert "Leave blank to use the localized name Diskovod." in rendered
+    assert "<title>Diskovod</title>" in rendered
     assert 'name="owner_timezone"' in rendered
     assert 'value="uk"' in rendered
     assert 'name="history_limit"' in rendered

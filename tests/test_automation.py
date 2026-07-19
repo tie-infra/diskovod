@@ -501,3 +501,18 @@ def test_profile_cache_key_separates_inline_and_automatic_tools(tmp_path: Path):
 
     assert automatic != inline
     store.close()
+
+
+def test_profile_cache_key_changes_with_effective_assistant_name(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    automation = Automation(store, cast(ChatGPTClient, ReplyingChatGPT([])))
+
+    english = automation._profile_cache_key(AppSettings(prompt_locale="en"), None)
+    russian = automation._profile_cache_key(AppSettings(prompt_locale="ru"), None)
+    custom = automation._profile_cache_key(
+        AppSettings(prompt_locale="en", assistant_name="Helper"),
+        None,
+    )
+
+    assert len({english, russian, custom}) == 3
+    store.close()

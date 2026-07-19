@@ -196,6 +196,7 @@ class AppSettings:
     admin_locale: str = "en"
     admin_theme: str = "system"
     prompt_locale: str = "en"
+    assistant_name: str = ""
     owner_timezone: str = "UTC"
     default_conversation_enabled: bool = True
     provider: str = "chatgpt"

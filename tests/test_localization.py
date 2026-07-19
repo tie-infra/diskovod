@@ -3,11 +3,15 @@ from pathlib import Path
 
 from diskovod.automation import build_reply_instructions
 from diskovod.localization import (
+    ASSISTANT_IDENTITIES,
+    ASSISTANT_NAMES,
+    INLINE_TOOL_TEXT,
     PROMPTS,
     SUPPORTED_LOCALES,
-    INLINE_TOOL_TEXT,
     TOOL_TEXT,
     TOOL_POLICIES,
+    assistant_identity,
+    assistant_name_for,
     prompts_for,
     tool_policy,
 )
@@ -40,6 +44,24 @@ def test_every_supported_locale_has_a_complete_prompt_bundle():
     assert all(TOOL_POLICIES.values())
 
 
+def test_assistant_identity_has_a_localized_default_name_in_every_locale():
+    assert set(ASSISTANT_NAMES) == set(ASSISTANT_IDENTITIES) == set(SUPPORTED_LOCALES)
+    assert ASSISTANT_NAMES == {
+        "en": "Diskovod",
+        "ru": "Дисковод",
+        "uk": "Дисковод",
+        "ja": "ディスコヴォド",
+        "zh": "迪斯科沃德",
+        "de": "Diskowod",
+        "fr": "Disquovode",
+    }
+    for locale, name in ASSISTANT_NAMES.items():
+        assert assistant_name_for(locale) == name
+        assert name in assistant_identity(locale)
+        assert assistant_name_for(locale, " Custom name ") == "Custom name"
+        assert "Custom name" in assistant_identity(locale, "Custom name")
+
+
 def test_reply_instructions_use_the_selected_prompt_locale():
     for locale in SUPPORTED_LOCALES:
         prompts = prompts_for(locale)
@@ -63,6 +85,7 @@ def test_reply_instructions_use_the_selected_prompt_locale():
         assert prompts.base in instructions
         assert prompts.dm_style in instructions
         assert prompts.terminal_roleplay in instructions
+        assert assistant_identity(locale) in instructions
         assert "send_messages" in instructions
         assert "react_to_message" in instructions
         assert tool_policy(locale) in instructions

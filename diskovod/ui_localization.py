@@ -2444,6 +2444,33 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "Conversation introuvable",
     ),
     "save": _text("Save", "Сохранить", "Зберегти", "保存", "保存", "Speichern", "Enregistrer"),
+    "assistant_name": _text(
+        "Assistant name",
+        "Имя ассистента",
+        "Ім’я асистента",
+        "アシスタント名",
+        "助手名称",
+        "Name des Assistenten",
+        "Nom de l’assistant",
+    ),
+    "assistant_name_help": _text(
+        "Leave blank to use the localized name {name}.",
+        "Оставьте пустым, чтобы использовать локализованное имя {name}.",
+        "Залиште порожнім, щоб використовувати локалізоване ім’я {name}.",
+        "空欄の場合はローカライズ名「{name}」を使います。",
+        "留空将使用本地化名称“{name}”。",
+        "Leer lassen, um den lokalisierten Namen {name} zu verwenden.",
+        "Laissez vide pour utiliser le nom localisé {name}.",
+    ),
+    "assistant_name_invalid": _text(
+        "Assistant name must contain at most 80 printable characters",
+        "Имя ассистента должно содержать не более 80 печатных символов",
+        "Ім’я асистента має містити не більше 80 друкованих символів",
+        "アシスタント名は印刷可能な80文字以内にしてください",
+        "助手名称最多可包含 80 个可打印字符",
+        "Der Assistentenname darf höchstens 80 druckbare Zeichen enthalten",
+        "Le nom de l’assistant doit contenir au maximum 80 caractères imprimables",
+    ),
 }
 
 

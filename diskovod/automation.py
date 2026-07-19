@@ -9,7 +9,15 @@ import time
 from typing import Any
 
 from .chatgpt import ChatGPTClient, make_prompt_cache_key
-from .localization import escalation_fallback, inline_tool_text, prompts_for, tool_policy, tool_text
+from .localization import (
+    assistant_identity,
+    assistant_name_for,
+    escalation_fallback,
+    inline_tool_text,
+    prompts_for,
+    tool_policy,
+    tool_text,
+)
 from .models import AppSettings
 from .store import Store
 from .tooling import (
@@ -35,7 +43,10 @@ def build_reply_instructions(
 ) -> str:
     """Build instructions with trusted human style evidence separate from dialogue history."""
     prompts = prompts_for(settings.prompt_locale)
-    sections = [settings.base_instructions]
+    sections = [
+        settings.base_instructions,
+        assistant_identity(settings.prompt_locale, settings.assistant_name),
+    ]
     if settings.owner_details.strip():
         sections.append(prompts.owner_details.format(details=settings.owner_details.strip()))
     if personality:
@@ -346,6 +357,7 @@ class Automation:
                 protocol,
                 settings.model,
                 settings.prompt_locale,
+                assistant_name_for(settings.prompt_locale, settings.assistant_name),
                 REPLY_PROMPT_VERSION,
                 TOOL_SCHEMA_VERSION,
                 settings.base_instructions,

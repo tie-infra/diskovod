@@ -24,7 +24,7 @@ from .chatgpt import (
     normalize_custom_base_url,
 )
 from .discord import DiscordService
-from .localization import SUPPORTED_LOCALES, normalize_locale, prompts_for
+from .localization import SUPPORTED_LOCALES, assistant_name_for, normalize_locale, prompts_for
 from .models import ADMIN_THEMES, AppSettings, CustomProvider
 from .security import password_matches
 from .store import Store
@@ -173,6 +173,11 @@ class WebApp:
                 {
                     "app_settings": app_settings,
                     "active_tab": active_tab,
+                    "assistant_display_name": assistant_name_for(
+                        app_settings.prompt_locale,
+                        app_settings.assistant_name,
+                    ),
+                    "default_assistant_name": assistant_name_for(app_settings.prompt_locale),
                     "locale": app_settings.admin_locale,
                     "locales": SUPPORTED_LOCALES,
                     "t": lambda key, **values: ui_text(app_settings.admin_locale, key, **values),
@@ -472,6 +477,7 @@ class WebApp:
             robot_prefix: str | None = Form(None),
             admin_locale: str = Form("en"),
             prompt_locale: str = Form("en"),
+            assistant_name: str = Form(""),
             owner_timezone: str = Form("UTC"),
             multi_message_replies: str | None = Form(None),
             max_reply_messages: int = Form(3),
@@ -516,6 +522,9 @@ class WebApp:
             model = model.strip()
             if not model:
                 return self._back(tab="assistant", error=self._t("model_name_required"))
+            assistant_name = assistant_name.strip()
+            if len(assistant_name) > 80 or not all(character.isprintable() for character in assistant_name):
+                return self._back(tab="assistant", error=self._t("assistant_name_invalid"))
             owner_details = owner_details.strip()
             if len(owner_details) > 20_000:
                 return self._back(tab="assistant", error=self._t("owner_details_too_long"))
@@ -540,6 +549,7 @@ class WebApp:
                 admin_locale=normalize_locale(admin_locale),
                 admin_theme=previous.admin_theme,
                 prompt_locale=normalized_prompt_locale,
+                assistant_name=assistant_name,
                 owner_timezone=owner_timezone,
                 multi_message_replies=multi_message_replies is not None,
                 max_reply_messages=max(2, min(max_reply_messages, 5)),

@@ -29,12 +29,14 @@ def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
 
     assert store.app_settings().silent_replies is False
     assert store.app_settings().robot_prefix is False
+    assert store.app_settings().assistant_name == ""
     assert store.app_settings().owner_details == ""
     assert store.app_settings().owner_timezone == "UTC"
     store.set_app_settings(
         AppSettings(
             silent_replies=True,
             robot_prefix=True,
+            assistant_name="Helper",
             multi_message_replies=True,
             max_reply_messages=4,
             min_message_gap_seconds=1,
@@ -45,6 +47,7 @@ def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
     )
     assert store.app_settings().silent_replies is True
     assert store.app_settings().robot_prefix is True
+    assert store.app_settings().assistant_name == "Helper"
     assert store.app_settings().multi_message_replies is True
     assert store.app_settings().max_reply_messages == 4
     assert store.app_settings().min_message_gap_seconds == 1

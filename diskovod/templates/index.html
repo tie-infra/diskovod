@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Diskovod</title>
+    <title>{{ assistant_display_name }}</title>
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
       rel="stylesheet"
@@ -50,7 +50,7 @@
 
     <header class="site-header container-xl">
       <span class="text-body-secondary">{{ t("tagline_label") }}</span>
-      <h1 class="h3 mb-1">Diskovod</h1>
+      <h1 class="h3 mb-1">{{ assistant_display_name }}</h1>
       <p class="text-body-secondary mb-0">{{ t("tagline") }}</p>
     </header>
 
@@ -483,6 +483,17 @@
               </label>
             </div>
             <p class="field-help">{{ t("prompt_language_help") }}</p>
+
+            <label>
+              {{ t("assistant_name") }}
+              <input
+                name="assistant_name"
+                value="{{ app_settings.assistant_name }}"
+                maxlength="80"
+                placeholder="{{ default_assistant_name }}"
+              >
+              <small>{{ t("assistant_name_help", name=default_assistant_name) }}</small>
+            </label>
 
             <label class="toggle">
               <input type="checkbox" name="enabled" {% if app_settings.enabled %}checked{% endif %}>

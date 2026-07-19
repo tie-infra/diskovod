@@ -13,6 +13,26 @@ SUPPORTED_LOCALES = {
     "fr": "Français",
 }
 
+ASSISTANT_NAMES = {
+    "en": "Diskovod",
+    "ru": "Дисковод",
+    "uk": "Дисковод",
+    "ja": "ディスコヴォド",
+    "zh": "迪斯科沃德",
+    "de": "Diskowod",
+    "fr": "Disquovode",
+}
+
+ASSISTANT_IDENTITIES = {
+    "en": "Your name is {name}. You are an AI assistant, not the account owner. When your name or identity is relevant, introduce yourself naturally by this name.",
+    "ru": "Тебя зовут {name}. Ты ИИ-ассистент, а не владелец аккаунта. Когда уместно назвать себя или рассказать о своей личности, естественно представляйся этим именем.",
+    "uk": "Тебе звати {name}. Ти ШІ-асистент, а не власник облікового запису. Коли доречно назвати себе чи пояснити свою особу, природно представляйся цим ім’ям.",
+    "ja": "あなたの名前は{name}です。あなたはアカウント所有者ではなくAIアシスタントです。名前や正体が関係する場合は、この名前で自然に自己紹介してください。",
+    "zh": "你的名字是{name}。你是 AI 助手，不是账号所有者。当姓名或身份与对话相关时，请自然地使用这个名字介绍自己。",
+    "de": "Dein Name ist {name}. Du bist ein KI-Assistent, nicht der Kontoinhaber. Wenn dein Name oder deine Identität relevant ist, stelle dich auf natürliche Weise mit diesem Namen vor.",
+    "fr": "Tu t’appelles {name}. Tu es un assistant IA, pas le propriétaire du compte. Lorsque ton nom ou ton identité est pertinent, présente-toi naturellement sous ce nom.",
+}
+
 ESCALATION_FALLBACKS = {
     "en": "I've marked this conversation for the account owner.",
     "ru": "Я отметил этот разговор для владельца аккаунта.",
@@ -263,6 +283,15 @@ def normalize_locale(locale: str) -> str:
 
 def escalation_fallback(locale: str) -> str:
     return ESCALATION_FALLBACKS[normalize_locale(locale)]
+
+
+def assistant_name_for(locale: str, configured: str = "") -> str:
+    return configured.strip() or ASSISTANT_NAMES[normalize_locale(locale)]
+
+
+def assistant_identity(locale: str, configured: str = "") -> str:
+    normalized = normalize_locale(locale)
+    return ASSISTANT_IDENTITIES[normalized].format(name=assistant_name_for(normalized, configured))
 
 
 def tool_policy(locale: str) -> str:

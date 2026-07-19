@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import logging
 from pathlib import Path
+from typing import Any
 
 import uvicorn
+from uvicorn.config import LOGGING_CONFIG
 
 from .config import RuntimeConfig
 from .discord import DiscordService
@@ -15,6 +18,29 @@ from .providers import ModelService, ProviderSetup
 from .runtime import AgentService
 from .store import Store
 from .web import WebApp
+
+
+class _SuccessfulAccessLogFilter(logging.Filter):
+    """Expose successful Uvicorn access records at DEBUG instead of INFO."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 5:
+            status_code = args[4]
+            if isinstance(status_code, int) and 200 <= status_code < 400:
+                record.levelno = logging.DEBUG
+                record.levelname = logging.getLevelName(logging.DEBUG)
+        return True
+
+
+def _uvicorn_log_config(log_level: str) -> dict[str, Any]:
+    config = deepcopy(LOGGING_CONFIG)
+    config["filters"] = {
+        "successful_access": {"()": _SuccessfulAccessLogFilter},
+    }
+    config["loggers"]["uvicorn.access"]["filters"] = ["successful_access"]
+    config["handlers"]["access"]["level"] = log_level
+    return config
 
 
 def build(
@@ -81,6 +107,7 @@ def main() -> None:
         web.app,
         host=config.host,
         port=config.port,
+        log_config=_uvicorn_log_config(config.log_level),
         proxy_headers=False,
     )
 

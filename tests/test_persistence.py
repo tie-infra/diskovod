@@ -44,6 +44,7 @@ def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path):
         (1,),
         (2,),
         (3,),
+        (4,),
     ]
     assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     connection.close()

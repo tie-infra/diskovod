@@ -8,6 +8,7 @@ import uvicorn
 
 from .config import RuntimeConfig
 from .discord import DiscordService
+from .migration import LegacyMigrator
 from .oauth import ChatGPTAccount
 from .providers import ModelService, ProviderSetup
 from .runtime import AgentService
@@ -61,6 +62,7 @@ def main() -> None:
         await account.start()
         web.models.migrate_legacy_selection()
         await runtime.start()
+        await LegacyMigrator(store, runtime).run()
         store.prune()
         await discord.start()
 

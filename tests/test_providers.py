@@ -18,6 +18,7 @@ from diskovod.providers import (
     ProviderRegistry,
     StoredChatGPTTokenProvider,
 )
+from diskovod.store import Store
 
 
 class FakeAdapter(ProviderAdapter):
@@ -142,3 +143,31 @@ def test_subscription_adapter_is_responses_only_and_uses_private_surface_narrowl
     with pytest.raises(ProviderBuildError) as transport:
         adapter.validate(configuration("chatgpt_subscription", "chat_completions"))
     assert transport.value.code == "unsupported_transport"
+
+
+def test_model_configuration_round_trips_as_an_immutable_active_version(tmp_path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    first = configuration("openai", "responses")
+    second = configuration("custom_openai", "chat_completions", endpoint="https://example.test/v1")
+
+    first_id = store.save_agent_configuration(first)
+    second_id = store.save_agent_configuration(second)
+
+    assert second_id > first_id
+    assert store.active_agent_configuration() == second
+    versions = store._db.execute("SELECT active FROM agent_configuration_versions").fetchall()
+    assert sum(int(row["active"]) for row in versions) == 1
+    store.close()
+
+
+def test_provider_credentials_are_encrypted_and_profile_scoped(tmp_path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store.set_provider_credentials("custom_openai_default", {"api_key": "secret-value"})
+
+    assert store.provider_credentials("custom_openai_default") == {"api_key": "secret-value"}
+    raw = store._db.execute(
+        "SELECT value, secret FROM config WHERE key='provider.credentials.custom_openai_default'"
+    ).fetchone()
+    assert raw["secret"] == 1
+    assert "secret-value" not in raw["value"]
+    store.close()

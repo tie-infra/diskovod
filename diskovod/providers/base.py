@@ -22,6 +22,11 @@ class ProviderCapabilities:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> ProviderCapabilities:
+        fields = cls.__dataclass_fields__
+        return cls(**{key: item for key, item in value.items() if key in fields})
+
 
 @dataclass(frozen=True, slots=True)
 class ModelConfiguration:
@@ -40,6 +45,15 @@ class ModelConfiguration:
         value = asdict(self)
         value["capabilities"] = self.capabilities.to_dict()
         return value
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> ModelConfiguration:
+        fields = cls.__dataclass_fields__
+        normalized = {key: item for key, item in value.items() if key in fields}
+        capabilities = normalized.get("capabilities", {})
+        if isinstance(capabilities, dict):
+            normalized["capabilities"] = ProviderCapabilities.from_dict(capabilities)
+        return cls(**normalized)
 
 
 @dataclass(frozen=True, slots=True)

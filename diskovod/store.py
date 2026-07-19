@@ -306,6 +306,36 @@ class Store:
     def clear_custom_provider(self) -> None:
         self._delete("openai_compatible.provider")
 
+    def active_agent_configuration(self):
+        from .providers import ModelConfiguration
+
+        with self._lock:
+            row = self._db.execute(
+                "SELECT configuration FROM agent_configuration_versions WHERE active=1"
+            ).fetchone()
+        return ModelConfiguration.from_dict(json.loads(row["configuration"])) if row else None
+
+    def save_agent_configuration(self, configuration) -> int:
+        payload = json.dumps(configuration.to_dict(), ensure_ascii=False, separators=(",", ":"))
+        with self._lock, self._db:
+            self._db.execute("UPDATE agent_configuration_versions SET active=0 WHERE active=1")
+            cursor = self._db.execute(
+                "INSERT INTO agent_configuration_versions(created_at, configuration, active) VALUES(?, ?, 1)",
+                (time.time(), payload),
+            )
+            return int(cursor.lastrowid)
+
+    def set_provider_credentials(self, profile: str, value: dict[str, Any]) -> None:
+        if not profile or not profile.replace("-", "").replace("_", "").isalnum():
+            raise ValueError("Invalid credential profile")
+        self._set(f"provider.credentials.{profile}", value, secret=True)
+
+    def provider_credentials(self, profile: str) -> dict[str, Any] | None:
+        return self._get(f"provider.credentials.{profile}", None)
+
+    def clear_provider_credentials(self, profile: str) -> None:
+        self._delete(f"provider.credentials.{profile}")
+
     def personality(self) -> dict[str, Any] | None:
         return self._get("personality", None)
 

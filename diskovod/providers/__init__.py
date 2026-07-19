@@ -7,6 +7,7 @@ from .base import (
     ProviderRegistry,
 )
 from .openai import ChatGPTSubscriptionAdapter, OpenAIAdapter, StoredChatGPTTokenProvider
+from .service import ModelService
 
 __all__ = [
     "ChatGPTSubscriptionAdapter",
@@ -18,4 +19,5 @@ __all__ = [
     "ProviderCredentials",
     "ProviderRegistry",
     "StoredChatGPTTokenProvider",
+    "ModelService",
 ]

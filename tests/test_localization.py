@@ -1,5 +1,9 @@
+import copy
+import json
 import re
 from pathlib import Path
+
+import pytest
 
 from diskovod.agent import AgentPrompt
 from diskovod.localization import (
@@ -11,6 +15,7 @@ from diskovod.localization import (
     TOOL_TEXT,
     TOOL_POLICIES,
     UI_TEXT,
+    _validate_catalog,
     assistant_identity,
     assistant_name_for,
     prompts_for,
@@ -123,13 +128,31 @@ def test_every_literal_admin_template_key_exists_in_the_catalog():
     assert referenced <= set(UI_TEXT)
 
 
-def test_admin_strings_use_explicit_locale_maps_in_the_shared_catalog():
+def test_strings_live_in_the_machine_editable_json_catalog():
+    catalog_path = Path(__file__).parents[1] / "diskovod" / "localization.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     source = (Path(__file__).parents[1] / "diskovod" / "localization.py").read_text()
 
+    assert catalog["schema_version"] == 1
+    assert catalog["default_locale"] == "en"
+    assert tuple(catalog["locales"]) == tuple(SUPPORTED_LOCALES)
+    assert catalog["locales"]["zh"]["ui"]["skip"] == "跳到内容"
+    assert catalog["locales"]["en"]["prompts"]["base"] == PROMPTS["en"].base
     assert "_ZH_UI_TEXT" not in source
     assert "def _text(" not in source
-    assert '"zh": "跳到内容"' in source
+    assert "Skip to content" not in source
+    assert "Write as an AI assistant" not in source
     assert not (Path(__file__).parents[1] / "diskovod" / "ui_localization.py").exists()
+
+
+def test_catalog_validation_rejects_placeholder_drift():
+    catalog_path = Path(__file__).parents[1] / "diskovod" / "localization.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    broken = copy.deepcopy(catalog)
+    broken["locales"]["fr"]["assistant_identity"] = "Je suis un assistant sans nom."
+
+    with pytest.raises(ValueError, match="format fields"):
+        _validate_catalog(broken)
 
 
 def test_locale_switch_translates_only_the_stock_base_prompt():

@@ -54,8 +54,8 @@ async def wait_for_idle(service: AgentService) -> None:
 @pytest.mark.asyncio
 async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
-    store.set_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
-    store.upsert_conversation("channel", "peer", "Peer")
+    await store.aset_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
+    await store.aupsert_conversation("channel", "peer", "Peer")
     transport = RecordingTransport()
     model = ScriptedChatModel(
         responses=[
@@ -83,11 +83,15 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp
     await wait_for_idle(service)
 
     assert transport.messages == [("channel", ("Hello from the graph",))]
-    run = store._db.execute("SELECT status, thread_id FROM agent_runs").fetchone()
+    async with store.database.transaction() as connection:
+        run = await (await connection.execute("SELECT status, thread_id FROM agent_runs")).fetchone()
+        queue = await (await connection.execute("SELECT disposition FROM chat_event_queue")).fetchone()
+        checkpoint_count = (await (await connection.execute("SELECT COUNT(*) FROM checkpoints")).fetchone())[
+            0
+        ]
     assert dict(run) == {"status": "completed", "thread_id": "discord:owner:channel:g1"}
-    queue = store._db.execute("SELECT disposition FROM chat_event_queue").fetchone()
     assert queue["disposition"] == "completed"
-    assert store._db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] > 0
+    assert checkpoint_count > 0
 
     await service.close()
     await store.aclose()
@@ -96,8 +100,8 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp
 @pytest.mark.asyncio
 async def test_historical_replay_uses_emulated_discord_actions(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
-    store.set_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
-    store.upsert_conversation("channel", "peer", "Peer")
+    await store.aset_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
+    await store.aupsert_conversation("channel", "peer", "Peer")
     transport = RecordingTransport()
     model = ScriptedChatModel(responses=[AIMessage(content="Initial turn")])
     service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
@@ -126,10 +130,13 @@ async def test_historical_replay_uses_emulated_discord_actions(tmp_path):
     replay_id = await service.replay_checkpoint("discord:owner:channel:g1", checkpoint["checkpoint_id"])
 
     assert transport.messages == []
-    trace = store._db.execute(
-        "SELECT payload FROM agent_trace_events WHERE run_id=? AND kind='emulated_actions'",
-        (replay_id,),
-    ).fetchone()
+    async with store.database.transaction() as connection:
+        trace = await (
+            await connection.execute(
+                "SELECT payload FROM agent_trace_events WHERE run_id=? AND kind='emulated_actions'",
+                (replay_id,),
+            )
+        ).fetchone()
     assert "This must be emulated" in trace["payload"]
     await service.close()
     await store.aclose()
@@ -138,8 +145,8 @@ async def test_historical_replay_uses_emulated_discord_actions(tmp_path):
 @pytest.mark.asyncio
 async def test_model_change_rolls_checkpoint_to_portable_summary(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
-    store.set_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
-    store.upsert_conversation("channel", "peer", "Peer")
+    await store.aset_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
+    await store.aupsert_conversation("channel", "peer", "Peer")
     model = ScriptedChatModel(responses=[AIMessage(content="Initial answer")])
     models = FakeModels(model)
     service = AgentService(store, models, RecordingTransport(), "x" * 32, UnusedPublicHTTP())
@@ -162,10 +169,11 @@ async def test_model_change_rolls_checkpoint_to_portable_summary(tmp_path):
 
     assert await service.apply_configuration_transition(previous) == 1
 
-    thread = store._db.execute(
-        "SELECT generation, thread_id FROM chat_threads WHERE channel_id='channel'"
-    ).fetchone()
-    assert dict(thread) == {"generation": 2, "thread_id": "discord:owner:channel:g2"}
+    thread = await store.achat_thread_for_channel("channel")
+    assert {"generation": thread["generation"], "thread_id": thread["thread_id"]} == {
+        "generation": 2,
+        "thread_id": "discord:owner:channel:g2",
+    }
     snapshot = await service.checkpointer.aget_tuple({"configurable": {"thread_id": thread["thread_id"]}})
     summary = snapshot.checkpoint["channel_values"]["messages"][0]
     assert summary.content == "Portable summary of the prior conversation"
@@ -177,8 +185,8 @@ async def test_model_change_rolls_checkpoint_to_portable_summary(tmp_path):
 @pytest.mark.asyncio
 async def test_agent_service_allows_a_zero_message_turn(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
-    store.set_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
-    store.upsert_conversation("channel", "peer", "Peer")
+    await store.aset_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
+    await store.aupsert_conversation("channel", "peer", "Peer")
     transport = RecordingTransport()
     service = AgentService(
         store,
@@ -202,7 +210,9 @@ async def test_agent_service_allows_a_zero_message_turn(tmp_path):
     await wait_for_idle(service)
 
     assert transport.messages == []
-    assert store._db.execute("SELECT status FROM agent_runs").fetchone()["status"] == "completed"
+    async with store.database.transaction() as connection:
+        run = await (await connection.execute("SELECT status FROM agent_runs")).fetchone()
+    assert run["status"] == "completed"
     await service.close()
     await store.aclose()
 
@@ -210,8 +220,8 @@ async def test_agent_service_allows_a_zero_message_turn(tmp_path):
 @pytest.mark.asyncio
 async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
-    store.set_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
-    store.upsert_conversation("channel", "peer", "Peer")
+    await store.aset_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
+    await store.aupsert_conversation("channel", "peer", "Peer")
     transport = RecordingTransport()
     model = ScriptedChatModel(
         responses=[
@@ -241,7 +251,7 @@ async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tm
     )
     await wait_for_idle(service)
 
-    escalation = store.active_interrupts()[0]
+    escalation = (await store.aactive_interrupts())[0]
     assert transport.messages == [("channel", ("I marked this for the owner.",))]
     assert await service.claim_escalation(escalation["id"]) is True
     assert (
@@ -257,8 +267,10 @@ async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tm
     )
 
     assert transport.messages == [("channel", ("I marked this for the owner.",))]
-    assert store.active_interrupts() == []
-    assert store._db.execute("SELECT status FROM agent_runs").fetchone()["status"] == "completed"
+    assert await store.aactive_interrupts() == []
+    async with store.database.transaction() as connection:
+        run = await (await connection.execute("SELECT status FROM agent_runs")).fetchone()
+    assert run["status"] == "completed"
     thread_id = await service.events.thread_id("owner", "channel")
     checkpoint = await service.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
     owner = next(

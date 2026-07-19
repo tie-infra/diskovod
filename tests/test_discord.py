@@ -140,7 +140,7 @@ async def test_discord_connection_failure_retries_without_stopping_service(
     RetryClient.ready_event = asyncio.Event()
     monkeypatch.setattr(discord_module, "PrivateDiscordClient", RetryClient)
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    store.set_discord_token("discord-token")
+    await store.aset_discord_token("discord-token")
     service = DiscordService(store)
     service.attach_runtime(cast(object, SimpleNamespace()))
     service.retry_initial_seconds = 0
@@ -162,8 +162,8 @@ async def test_discord_connection_failure_retries_without_stopping_service(
 @pytest.mark.asyncio
 async def test_force_reply_fetches_latest_incoming_discord_message(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    store.upsert_conversation("42", "peer", "Peer")
-    store.save_message(
+    await store.aupsert_conversation("42", "peer", "Peer")
+    await store.asave_message(
         id="123",
         channel_id="42",
         author_id="peer",
@@ -217,7 +217,7 @@ async def test_personality_history_is_limited_and_excludes_generated_messages(tm
         for index in range(30)
     ]
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    store.save_message(
+    await store.asave_message(
         id="4",
         channel_id="dm",
         author_id="me",
@@ -313,8 +313,8 @@ async def test_raw_owner_edit_updates_style_history_and_marks_human_activity(
     user = SimpleNamespace(id=999)
     runtime = EditRuntime()
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    store.upsert_conversation("42", "peer", "Peer")
-    store.save_message(
+    await store.aupsert_conversation("42", "peer", "Peer")
+    await store.asave_message(
         id="outgoing",
         channel_id="42",
         author_id="me",
@@ -335,7 +335,7 @@ async def test_raw_owner_edit_updates_style_history_and_marks_human_activity(
 
     await PrivateDiscordClient.on_raw_message_edit(client, payload)
 
-    saved = store.history("42", 1)[0]
+    saved = (await store.ahistory("42", 1))[0]
     assert saved["content"] == "edited by owner"
     assert saved["source"] == "human"
     assert runtime.human_channels == ["42"]
@@ -351,9 +351,9 @@ async def test_raw_owner_edit_reschedules_inline_collaboration(
     user = SimpleNamespace(id=999)
     runtime = EditRuntime()
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    store.upsert_conversation("42", "peer", "Peer")
-    store.set_conversation_mode("42", "inline")
-    store.save_message(
+    await store.aupsert_conversation("42", "peer", "Peer")
+    await store.aset_conversation_mode("42", "inline")
+    await store.asave_message(
         id="outgoing",
         channel_id="42",
         author_id="me",
@@ -389,8 +389,8 @@ async def test_raw_remote_edit_updates_history_and_only_requests_pending_resched
     remote = SimpleNamespace(id=123, bot=False)
     runtime = EditRuntime()
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    store.upsert_conversation("42", "peer", "Peer")
-    store.save_message(
+    await store.aupsert_conversation("42", "peer", "Peer")
+    await store.asave_message(
         id="incoming",
         channel_id="42",
         author_id="peer",
@@ -417,7 +417,7 @@ async def test_raw_remote_edit_updates_history_and_only_requests_pending_resched
         SimpleNamespace(data={"embeds": []}, message=message),
     )
 
-    assert store.history("42", 1)[0]["content"] == "corrected text"
+    assert (await store.ahistory("42", 1))[0]["content"] == "corrected text"
     assert len(runtime.submitted) == 1
     assert runtime.submitted[0]["participant_role"] == "peer"
     assert runtime.submitted[0]["edited"] is True

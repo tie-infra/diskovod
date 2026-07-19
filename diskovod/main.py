@@ -89,7 +89,7 @@ def main() -> None:
     @web.app.on_event("startup")
     async def startup() -> None:
         await account.start()
-        web.models.migrate_legacy_selection()
+        await web.models.migrate_legacy_selection()
         await runtime.start()
         await LegacyMigrator(store, runtime).run()
         await store.aprune()

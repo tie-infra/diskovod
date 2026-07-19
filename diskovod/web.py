@@ -217,7 +217,7 @@ class WebApp:
                     "chat_email": self.account.email,
                     "chat_error": self.account.last_error,
                     "subscription_web_search": self._hosted_search_capability(),
-                    "subscription_web_search_probe": self._subscription_web_search_probe_view(
+                    "subscription_web_search_probe": await self._subscription_web_search_probe_view(
                         model_view["model"]
                     ),
                     "model_connected": self.models.ready,
@@ -232,15 +232,17 @@ class WebApp:
                     "has_discord_token": self.store.discord_token() is not None,
                     "captcha_requests": self.discord.captcha_requests(),
                     "personality": self._personality_view(),
-                    "escalations": self._escalation_views(),
-                    "conversations": self._conversation_views(),
-                    "agent_runs": self._agent_run_views() if active_tab == "usage" else [],
-                    "capability_probes": self._capability_probe_views() if active_tab == "usage" else [],
+                    "escalations": await self._escalation_views(),
+                    "conversations": await self._conversation_views(),
+                    "agent_runs": await self._agent_run_views() if active_tab == "usage" else [],
+                    "capability_probes": (
+                        await self._capability_probe_views() if active_tab == "usage" else []
+                    ),
                     "checkpoint_threads": (
                         await self.runtime.checkpoint_views() if active_tab == "usage" else []
                     ),
-                    "runtime_records": (self._runtime_record_views() if active_tab == "usage" else {}),
-                    "database": self._database_view(db_table, db_page, db_query),
+                    "runtime_records": (await self._runtime_record_views() if active_tab == "usage" else {}),
+                    "database": await self._database_view(db_table, db_page, db_query),
                     "message": request.query_params.get("message"),
                     "error": request.query_params.get("error"),
                 },
@@ -715,7 +717,7 @@ class WebApp:
         @self.app.post("/conversations/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
             self.runtime.cancel(channel_id)
-            escalation = self.store.active_interrupt_for_channel(channel_id)
+            escalation = await self.store.aactive_interrupt_for_channel(channel_id)
             if escalation is not None:
                 await self.runtime.resume_escalation(str(escalation["id"]), action="resolved")
             await self.store.aset_permanent_pause(channel_id, False)
@@ -763,7 +765,7 @@ class WebApp:
             enabled: str | None = Form(None),
             _: str = Depends(auth),
         ):
-            if self.store.conversation(channel_id) is None:
+            if await self.store.aconversation(channel_id) is None:
                 return self._back(tab="conversations", error=self._t("conversation_not_found"))
             await self.runtime.set_live_steering(channel_id, enabled is not None)
             return self._back(tab="conversations", message=self._t("settings_saved"))
@@ -783,7 +785,7 @@ class WebApp:
             if not await self.runtime.resume_escalation(escalation_id, action="resolved"):
                 return self._back(tab="conversations", error=self._t("escalation_not_found"))
             if resume is not None:
-                escalation = self.store.escalation_interrupt(escalation_id)
+                escalation = await self.store.aescalation_interrupt(escalation_id)
                 if escalation:
                     channel_id = str(escalation["channel_id"])
                     await self.store.aset_permanent_pause(channel_id, False)
@@ -872,16 +874,10 @@ class WebApp:
                 return self._back(tab="usage", error=self._t("memory_identity_invalid"))
             return self._back(tab="usage", message=self._t("memory_deleted"))
 
-    def _conversation_views(self) -> list[dict]:
+    async def _conversation_views(self) -> list[dict]:
         now = time.time()
-        result = self.store.conversations()
+        result = await self.store.aconversations_with_steering()
         for conversation in result:
-            with self.store._lock:
-                thread = self.store._db.execute(
-                    "SELECT live_steering FROM chat_threads WHERE channel_id=?",
-                    (conversation["channel_id"],),
-                ).fetchone()
-            conversation["live_steering"] = bool(thread["live_steering"]) if thread else True
             until = conversation["snoozed_until"]
             conversation["snoozed"] = bool(until and until > now)
             conversation["quiet_minutes_remaining"] = (
@@ -889,14 +885,8 @@ class WebApp:
             )
         return result
 
-    def _agent_run_views(self) -> list[dict[str, Any]]:
-        with self.store._lock:
-            runs = self.store._db.execute(
-                "SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT 100"
-            ).fetchall()
-            traces = self.store._db.execute(
-                "SELECT * FROM agent_trace_events ORDER BY run_id, sequence"
-            ).fetchall()
+    async def _agent_run_views(self) -> list[dict[str, Any]]:
+        runs, traces = await self.store.aagent_diagnostics()
         by_run: dict[str, list[dict[str, Any]]] = {}
         for trace in traces:
             item = dict(trace)
@@ -914,11 +904,8 @@ class WebApp:
             result.append(item)
         return result
 
-    def _capability_probe_views(self) -> list[dict[str, Any]]:
-        with self.store._lock:
-            rows = self.store._db.execute(
-                "SELECT * FROM provider_capability_probes ORDER BY completed_at DESC LIMIT 100"
-            ).fetchall()
+    async def _capability_probe_views(self) -> list[dict[str, Any]]:
+        rows = await self.store.acapability_probes()
         result = []
         for row in rows:
             item = dict(row)
@@ -931,34 +918,20 @@ class WebApp:
             result.append(item)
         return result
 
-    def _runtime_record_views(self) -> dict[str, list[dict[str, Any]]]:
-        queries = {
-            "memories": "SELECT namespace, key, value, updated_at FROM langgraph_store_items ORDER BY updated_at DESC LIMIT 100",
-            "attachments": "SELECT r.channel_id, r.message_id, r.filename, r.object_sha256, o.size, o.media_type, r.created_at FROM attachment_references r JOIN attachment_objects o ON o.sha256=r.object_sha256 ORDER BY r.created_at DESC LIMIT 100",
-            "deliveries": "SELECT run_id, tool_call_id, action, state, request, result, claimed_at, completed_at FROM side_effect_deliveries ORDER BY claimed_at DESC LIMIT 100",
-            "events": "SELECT e.id, e.channel_id, e.sequence, e.kind, e.payload, e.observed_at, q.disposition, q.logical_request_id, q.injection_batch FROM discord_events e LEFT JOIN chat_event_queue q ON q.event_id=e.id ORDER BY e.observed_at DESC LIMIT 100",
-        }
+    async def _runtime_record_views(self) -> dict[str, list[dict[str, Any]]]:
+        records = await self.store.aruntime_diagnostics()
         result: dict[str, list[dict[str, Any]]] = {}
-        with self.store._lock:
-            for name, query in queries.items():
-                rows = self.store._db.execute(query).fetchall()
-                values = []
-                for row in rows:
-                    item = dict(row)
-                    item["json"] = json.dumps(item, ensure_ascii=False, indent=2, default=str)
-                    values.append(item)
-                result[name] = values
+        for name, rows in records.items():
+            values = []
+            for row in rows:
+                item = dict(row)
+                item["json"] = json.dumps(item, ensure_ascii=False, indent=2, default=str)
+                values.append(item)
+            result[name] = values
         return result
 
-    def _subscription_web_search_probe_view(self, model: str) -> dict[str, Any] | None:
-        with self.store._lock:
-            report = self.store._db.execute(
-                """
-                SELECT * FROM provider_capability_probes
-                WHERE capability='hosted_web_search'
-                ORDER BY completed_at DESC LIMIT 1
-                """
-            ).fetchone()
+    async def _subscription_web_search_probe_view(self, model: str) -> dict[str, Any] | None:
+        report = await self.store.alatest_capability_probe("hosted_web_search")
         if report is None:
             return None
         configuration = json.loads(report["configuration"])
@@ -991,8 +964,8 @@ class WebApp:
         personality["source_label"] = self._t(f"source_{source}") if source else self._t("inferred_history")
         return personality
 
-    def _escalation_views(self) -> list[dict[str, Any]]:
-        result = self.store.active_interrupts()
+    async def _escalation_views(self) -> list[dict[str, Any]]:
+        result = await self.store.aactive_interrupts()
         for escalation in result:
             payload = escalation["payload"]
             escalation["reason"] = str(payload.get("reason") or "other_explicit_request")
@@ -1009,8 +982,8 @@ class WebApp:
             )
         return result
 
-    def _database_view(self, table: str, page: int, query: str) -> dict:
-        tables = self.store.database_tables()
+    async def _database_view(self, table: str, page: int, query: str) -> dict:
+        tables = await self.store.adatabase_tables()
         locale = self.store.app_settings().admin_locale
         for item in tables:
             item["label"] = ui_text(locale, f"table_{item['name']}")
@@ -1018,7 +991,7 @@ class WebApp:
         selected = table if table in table_names else "messages"
         search = query.strip()[:200]
         current_page = max(1, page)
-        data = self.store.database_rows(
+        data = await self.store.adatabase_rows(
             selected,
             limit=50,
             offset=(current_page - 1) * 50,
@@ -1026,7 +999,7 @@ class WebApp:
         )
         if data["offset"] >= data["total"] and data["total"]:
             current_page = max(1, (data["total"] - 1) // data["limit"] + 1)
-            data = self.store.database_rows(
+            data = await self.store.adatabase_rows(
                 selected,
                 limit=50,
                 offset=(current_page - 1) * 50,
@@ -1073,7 +1046,7 @@ class WebApp:
             target_transport = custom.protocol
         target_provider = "custom_openai" if provider == "custom" else "chatgpt_subscription"
         if previous and self.runtime._affinity(previous) != (target_provider, model, target_transport):
-            self.runtime.ensure_configuration_transition_allowed()
+            await self.runtime.ensure_configuration_transition_allowed()
         if provider == "chatgpt":
             await self.models.asave_subscription(
                 model_id=model,

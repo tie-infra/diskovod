@@ -205,11 +205,11 @@ def test_subscription_adapter_is_responses_only_and_uses_private_surface_narrowl
     assert transport.value.code == "unsupported_transport"
 
 
-def test_subscription_configuration_omits_unsupported_token_limit(tmp_path):
+async def test_subscription_configuration_omits_unsupported_token_limit(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
     models = ModelService(store, SimpleNamespace(connected=True))
 
-    models.save_subscription(
+    await models.asave_subscription(
         model_id="test-model",
         reasoning_effort="low",
         max_output_tokens=256,
@@ -218,38 +218,44 @@ def test_subscription_configuration_omits_unsupported_token_limit(tmp_path):
     configuration = models.configuration
     assert configuration.options == {"reasoning_effort": "low"}
     assert configuration.capabilities.output_token_limit is False
-    store.close()
+    await store.aclose()
 
 
-def test_model_configuration_round_trips_as_an_immutable_active_version(tmp_path):
+async def test_model_configuration_round_trips_as_an_immutable_active_version(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
     first = configuration("openai", "responses")
     second = configuration("custom_openai", "chat_completions", endpoint="https://example.test/v1")
 
-    first_id = store.save_agent_configuration(first)
-    second_id = store.save_agent_configuration(second)
+    first_id = await store.asave_agent_configuration(first)
+    second_id = await store.asave_agent_configuration(second)
 
     assert second_id > first_id
     assert store.active_agent_configuration() == second
-    versions = store._db.execute("SELECT active FROM agent_configuration_versions").fetchall()
+    async with store.database.transaction() as connection:
+        versions = await (
+            await connection.execute("SELECT active FROM agent_configuration_versions")
+        ).fetchall()
     assert sum(int(row["active"]) for row in versions) == 1
-    store.close()
+    await store.aclose()
 
 
-def test_provider_credentials_are_encrypted_and_profile_scoped(tmp_path):
+async def test_provider_credentials_are_encrypted_and_profile_scoped(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
-    store.set_provider_credentials("custom_openai_default", {"api_key": "secret-value"})
+    await store.aset_provider_credentials("custom_openai_default", {"api_key": "secret-value"})
 
     assert store.provider_credentials("custom_openai_default") == {"api_key": "secret-value"}
-    raw = store._db.execute(
-        "SELECT value, secret FROM config WHERE key='provider.credentials.custom_openai_default'"
-    ).fetchone()
+    async with store.database.transaction() as connection:
+        raw = await (
+            await connection.execute(
+                "SELECT value, secret FROM config WHERE key='provider.credentials.custom_openai_default'"
+            )
+        ).fetchone()
     assert raw["secret"] == 1
     assert "secret-value" not in raw["value"]
-    store.close()
+    await store.aclose()
 
 
-def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_personality(tmp_path):
+async def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_personality(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
     models = ModelService(store, SimpleNamespace(connected=False))
     provider = CustomProvider(
@@ -264,7 +270,7 @@ def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_perso
         },
     )
 
-    models.save_custom_openai(
+    await models.asave_custom_openai(
         provider,
         model_id="local-model",
         reasoning_effort="low",
@@ -273,8 +279,8 @@ def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_perso
     first = models.configuration.options["prompt_cache_key"]
     assert models.configuration.options["max_completion_tokens"] == 256
     assert models.configuration.capabilities.output_token_limit is True
-    store.set_personality("A durable style profile", "personality-v2")
-    assert models.refresh_prompt_cache_identity() is not None
+    await store.aset_personality("A durable style profile", "personality-v2")
+    assert await models.arefresh_prompt_cache_identity() is not None
     second = models.configuration.options["prompt_cache_key"]
 
     assert first.startswith("diskovod:")
@@ -282,10 +288,10 @@ def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_perso
     assert first != second
     model = models.build_model()
     assert model.model_kwargs["prompt_cache_key"] == second
-    store.close()
+    await store.aclose()
 
 
-def test_custom_provider_without_token_limit_capability_omits_option(tmp_path):
+async def test_custom_provider_without_token_limit_capability_omits_option(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
     models = ModelService(store, SimpleNamespace(connected=False))
     provider = CustomProvider(
@@ -296,7 +302,7 @@ def test_custom_provider_without_token_limit_capability_omits_option(tmp_path):
         {"native_function_calls": True, "output_token_limit": False},
     )
 
-    models.save_custom_openai(
+    await models.asave_custom_openai(
         provider,
         model_id="local-model",
         reasoning_effort="low",
@@ -305,7 +311,7 @@ def test_custom_provider_without_token_limit_capability_omits_option(tmp_path):
 
     assert "max_completion_tokens" not in models.configuration.options
     assert models.configuration.capabilities.output_token_limit is False
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio
@@ -319,4 +325,4 @@ async def test_provider_probe_capture_includes_v3_stream_events(tmp_path):
     assert "probe complete" in response.text
     assert events
     assert any(event.get("event") == "content-block-delta" for event in events)
-    store.close()
+    await store.aclose()

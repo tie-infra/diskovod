@@ -358,21 +358,32 @@ class SQLiteLangGraphStore(BaseStore):
     supports_ttl = False
 
     def __init__(self, path: Path, database: AsyncSQLite | None = None):
+        self.path = path
         self.database = database or AsyncSQLite(path)
-        self._connection = sqlite3.connect(path, check_same_thread=False)
-        self._connection.row_factory = sqlite3.Row
+        self._connection: sqlite3.Connection | None = None
         self._lock = threading.RLock()
-        with self._connection:
-            initialize_target_schema(self._connection)
+        with sqlite3.connect(path) as connection:
+            initialize_target_schema(connection)
+
+    def _sync_connection(self) -> sqlite3.Connection:
+        if self._connection is None:
+            connection = sqlite3.connect(self.path, check_same_thread=False)
+            connection.row_factory = sqlite3.Row
+            connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA foreign_keys=ON")
+            self._connection = connection
+        return self._connection
 
     def close(self) -> None:
         with self._lock:
-            self._connection.close()
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
 
     def batch(self, ops: Iterable[Op]) -> list[Result]:
         operations = list(ops)
         results: list[Result] = []
-        with self._lock, self._connection:
+        with self._lock, self._sync_connection():
             for operation in operations:
                 if isinstance(operation, GetOp):
                     results.append(self._get(operation))
@@ -514,22 +525,26 @@ class SQLiteLangGraphStore(BaseStore):
 
     def _get(self, operation: GetOp) -> Item | None:
         namespace = self._namespace(operation.namespace)
-        row = self._connection.execute(
-            "SELECT * FROM langgraph_store_items WHERE namespace=? AND key=?",
-            (namespace, operation.key),
-        ).fetchone()
+        row = (
+            self._sync_connection()
+            .execute(
+                "SELECT * FROM langgraph_store_items WHERE namespace=? AND key=?",
+                (namespace, operation.key),
+            )
+            .fetchone()
+        )
         return self._item(row) if row else None
 
     def _put(self, operation: PutOp) -> None:
         namespace = self._namespace(operation.namespace)
         if not operation.key:
             raise ValueError("Store keys cannot be empty")
-        self._connection.execute(
+        self._sync_connection().execute(
             "DELETE FROM langgraph_store_fts WHERE namespace=? AND key=?",
             (namespace, operation.key),
         )
         if operation.value is None:
-            self._connection.execute(
+            self._sync_connection().execute(
                 "DELETE FROM langgraph_store_items WHERE namespace=? AND key=?",
                 (namespace, operation.key),
             )
@@ -537,7 +552,7 @@ class SQLiteLangGraphStore(BaseStore):
         value = self._json(operation.value)
         index_text = self._index_text(operation.value, operation.index)
         now = datetime.now(UTC).timestamp()
-        self._connection.execute(
+        self._sync_connection().execute(
             """
             INSERT INTO langgraph_store_items(namespace, key, value, index_text, created_at, updated_at)
             VALUES(?, ?, ?, ?, ?, ?)
@@ -547,16 +562,18 @@ class SQLiteLangGraphStore(BaseStore):
             (namespace, operation.key, value, index_text, now, now),
         )
         if index_text:
-            self._connection.execute(
+            self._sync_connection().execute(
                 "INSERT INTO langgraph_store_fts(namespace, key, body) VALUES(?, ?, ?)",
                 (namespace, operation.key, index_text),
             )
         return None
 
     def _search(self, operation: SearchOp) -> list[SearchItem]:
-        rows = self._connection.execute(
-            "SELECT * FROM langgraph_store_items ORDER BY updated_at DESC, namespace, key"
-        ).fetchall()
+        rows = (
+            self._sync_connection()
+            .execute("SELECT * FROM langgraph_store_items ORDER BY updated_at DESC, namespace, key")
+            .fetchall()
+        )
         prefix = operation.namespace_prefix
         candidates = [
             row for row in rows if self._decode_namespace(row["namespace"])[: len(prefix)] == prefix
@@ -570,10 +587,14 @@ class SQLiteLangGraphStore(BaseStore):
             query = self._fts_query(operation.query)
             if not query:
                 return []
-            matches = self._connection.execute(
-                "SELECT namespace, key, bm25(langgraph_store_fts) AS rank FROM langgraph_store_fts WHERE body MATCH ?",
-                (query,),
-            ).fetchall()
+            matches = (
+                self._sync_connection()
+                .execute(
+                    "SELECT namespace, key, bm25(langgraph_store_fts) AS rank FROM langgraph_store_fts WHERE body MATCH ?",
+                    (query,),
+                )
+                .fetchall()
+            )
             scores = {(row["namespace"], row["key"]): -float(row["rank"]) for row in matches}
             candidates = [row for row in candidates if (row["namespace"], row["key"]) in scores]
             candidates.sort(
@@ -594,7 +615,9 @@ class SQLiteLangGraphStore(BaseStore):
         ]
 
     def _list_namespaces(self, operation: ListNamespacesOp) -> list[tuple[str, ...]]:
-        rows = self._connection.execute("SELECT DISTINCT namespace FROM langgraph_store_items").fetchall()
+        rows = (
+            self._sync_connection().execute("SELECT DISTINCT namespace FROM langgraph_store_items").fetchall()
+        )
         namespaces = [self._decode_namespace(row["namespace"]) for row in rows]
         if operation.match_conditions:
             namespaces = [

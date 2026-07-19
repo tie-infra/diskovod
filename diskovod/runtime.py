@@ -83,17 +83,20 @@ class AgentService:
         self._trace_buffers: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         self._checkpoint_context: AbstractAsyncContextManager[AsyncSqliteSaver] | None = None
         self.checkpointer: AsyncSqliteSaver | None = None
+        self._closing = False
 
     async def start(self) -> None:
         if self.checkpointer is not None:
             return
+        self._closing = False
         await self.store.database.start()
         self._checkpoint_context = open_checkpointer(self.store.path, self.checkpoint_secret)
         self.checkpointer = await self._checkpoint_context.__aenter__()
-        for channel_id in self._pending_channels():
+        for channel_id in await self.store.apending_channels():
             self._ensure_task(channel_id)
 
     async def close(self) -> None:
+        self._closing = True
         tasks = list(self.tasks.values())
         for task in tasks:
             task.cancel()
@@ -125,7 +128,7 @@ class AgentService:
         return snoozed_until
 
     async def _record_human_activity(self, channel_id: str) -> tuple[float, bool]:
-        conversation = self.store.conversation(channel_id)
+        conversation = await self.store.aconversation(channel_id)
         if conversation and conversation["mode"] == "inline" and not conversation["paused"]:
             return time.time(), False
         settings = self.store.app_settings()
@@ -185,10 +188,10 @@ class AgentService:
         force: bool,
         agent_input: bool | None,
     ) -> tuple[bool, bool]:
-        mode = self._mode(channel_id)
+        mode = await self._mode(channel_id)
         automate = force or (
             self.store.app_settings().enabled
-            and self.store.can_automate(channel_id)
+            and await self.store.acan_automate(channel_id)
             and (participant_role == "peer" or mode == "inline")
         )
         if agent_input is not None:
@@ -245,7 +248,7 @@ class AgentService:
         account_id: str,
         observed_at: float | None,
     ) -> tuple[bool, bool]:
-        automate = self.store.app_settings().enabled and self.store.can_automate(channel_id)
+        automate = self.store.app_settings().enabled and await self.store.acan_automate(channel_id)
         timestamp = observed_at or time.time()
         inserted = await self.events.ingest(
             f"discord:delete:{message_id}:{int(timestamp * 1_000_000)}",
@@ -281,13 +284,12 @@ class AgentService:
         await self.events.thread_id(account_id, channel_id)
 
     async def set_live_steering(self, channel_id: str, enabled: bool) -> None:
-        await self.events.set_live_steering(self._account_id(channel_id), channel_id, enabled)
+        await self.events.set_live_steering(await self._account_id(channel_id), channel_id, enabled)
 
     async def checkpoint_views(self, *, limit_per_thread: int = 20) -> list[dict[str, Any]]:
         if self.checkpointer is None:
             return []
-        with self.store._lock:
-            rows = self.store._db.execute("SELECT * FROM chat_threads ORDER BY updated_at DESC").fetchall()
+        rows = await self.store.achat_threads()
         result: list[dict[str, Any]] = []
         for row in rows:
             thread = dict(row)
@@ -319,17 +321,14 @@ class AgentService:
         )
         if snapshot is None:
             raise ValueError("Unknown checkpoint")
-        with self.store._lock:
-            thread = self.store._db.execute(
-                "SELECT * FROM chat_threads WHERE thread_id=?", (thread_id,)
-            ).fetchone()
+        thread = await self.store.achat_thread_by_id(thread_id)
         if thread is None:
             raise ValueError("Unknown checkpoint thread")
         channel_id = str(thread["channel_id"])
         configuration = self.models.configuration
         assert configuration is not None
         settings = self.store.app_settings()
-        conversation = self.store.conversation(channel_id)
+        conversation = await self.store.aconversation(channel_id)
         replay_id = str(uuid.uuid4())
         trace_id = f"replay:{replay_id}"
         context = AgentRuntimeContext(
@@ -417,20 +416,19 @@ class AgentService:
             return 0
         if any(not task.done() for task in self.tasks.values()):
             raise RuntimeError("Model configuration cannot change while an agent run is active")
-        if self.store.active_interrupts():
+        if await self.store.aactive_interrupts():
             raise RuntimeError("Resolve active owner escalations before changing the model")
-        with self.store._lock:
-            threads = [dict(row) for row in self.store._db.execute("SELECT * FROM chat_threads")]
+        threads = await self.store.achat_threads()
         rolled = 0
         for thread in threads:
             if await self._roll_thread(thread, reason="model_configuration_changed"):
                 rolled += 1
         return rolled
 
-    def ensure_configuration_transition_allowed(self) -> None:
+    async def ensure_configuration_transition_allowed(self) -> None:
         if any(not task.done() for task in self.tasks.values()):
             raise RuntimeError("Model configuration cannot change while an agent run is active")
-        if self.store.active_interrupts():
+        if await self.store.aactive_interrupts():
             raise RuntimeError("Resolve active owner escalations before changing the model")
 
     async def _roll_if_needed(self, channel_id: str, thread_id: str) -> None:
@@ -440,12 +438,9 @@ class AgentService:
         messages = snapshot.checkpoint.get("channel_values", {}).get("messages", []) if snapshot else []
         if len(messages) <= ROLLOVER_MESSAGE_LIMIT:
             return
-        with self.store._lock:
-            row = self.store._db.execute(
-                "SELECT * FROM chat_threads WHERE channel_id=?", (channel_id,)
-            ).fetchone()
+        row = await self.store.achat_thread_for_channel(channel_id)
         if row:
-            await self._roll_thread(dict(row), reason="completed_turn_retention")
+            await self._roll_thread(row, reason="completed_turn_retention")
 
     async def _roll_thread(self, thread: dict[str, Any], *, reason: str) -> bool:
         if self.checkpointer is None:
@@ -531,15 +526,14 @@ class AgentService:
             raise ValueError("Unknown escalation resolution")
         if self.checkpointer is None or not self.models.ready:
             raise RuntimeError("The agent runtime is not ready")
-        escalation = self.store.escalation_interrupt(escalation_id)
+        escalation = await self.store.aescalation_interrupt(escalation_id)
         if escalation is None or escalation["state"] not in {"pending", "claimed"}:
             return False
         payload = escalation["payload"]
         tool_call_id = str(payload.get("tool_call_id") or "")
         suffix = f":{tool_call_id}"
         trace_id = escalation_id[: -len(suffix)] if tool_call_id and escalation_id.endswith(suffix) else ""
-        with self.store._lock:
-            run = self.store._db.execute("SELECT * FROM agent_runs WHERE trace_id=?", (trace_id,)).fetchone()
+        run = await self.store.aagent_run_for_trace(trace_id)
         if run is None:
             raise RuntimeError("The interrupted agent run cannot be found")
         channel_id = str(escalation["channel_id"])
@@ -547,8 +541,8 @@ class AgentService:
         settings = self.store.app_settings()
         configuration = self.models.configuration
         assert configuration is not None
-        conversation = self.store.conversation(channel_id)
-        account_id = self._account_id(channel_id)
+        conversation = await self.store.aconversation(channel_id)
+        account_id = await self._account_id(channel_id)
         context = AgentRuntimeContext(
             account_id=account_id,
             channel_id=channel_id,
@@ -651,7 +645,7 @@ class AgentService:
             str(run["id"]),
             "interrupted" if result.get("__interrupt__") else "completed",
         )
-        if not result.get("__interrupt__") and self._has_pending(channel_id):
+        if not result.get("__interrupt__") and await self.store.ahas_pending_events(channel_id):
             self._ensure_task(channel_id)
         return True
 
@@ -664,7 +658,7 @@ class AgentService:
         author_id: str = "",
         author_name: str = "",
     ) -> bool:
-        escalation = self.store.active_interrupt_for_channel(channel_id)
+        escalation = await self.store.aactive_interrupt_for_channel(channel_id)
         if escalation is None:
             return False
         return await self.resume_escalation(
@@ -677,7 +671,7 @@ class AgentService:
         )
 
     def _ensure_task(self, channel_id: str, *, force: bool = False) -> None:
-        if self.checkpointer is None:
+        if self._closing or self.checkpointer is None:
             return
         running = self.tasks.get(channel_id)
         if running is not None and not running.done():
@@ -696,7 +690,15 @@ class AgentService:
                 error,
                 exc_info=(type(error), error, error.__traceback__),
             )
-        if not self._is_interrupted(channel_id) and self._has_pending(channel_id):
+        if not self._closing:
+            asyncio.create_task(self._resume_pending(channel_id), name=f"agent-resume-{channel_id}")
+
+    async def _resume_pending(self, channel_id: str) -> None:
+        if self._closing:
+            return
+        if not await self.store.ahas_active_interrupt(channel_id) and await self.store.ahas_pending_events(
+            channel_id
+        ):
             self._ensure_task(channel_id)
 
     async def _run(self, channel_id: str, *, force: bool) -> None:
@@ -705,7 +707,7 @@ class AgentService:
         settings = self.store.app_settings()
         if not force:
             await asyncio.sleep(settings.debounce_seconds)
-        account_id = self._account_id(channel_id)
+        account_id = await self._account_id(channel_id)
         thread_id = await self.events.thread_id(account_id, channel_id)
         run_id = str(uuid.uuid4())
         trace_id = str(uuid.uuid4())
@@ -723,7 +725,7 @@ class AgentService:
         )
         configuration = self.models.configuration
         assert configuration is not None
-        conversation = self.store.conversation(channel_id)
+        conversation = await self.store.aconversation(channel_id)
         participant_ids = tuple(
             dict.fromkeys(
                 str(event.payload.get("author_id")) for event in claimed if event.payload.get("author_id")
@@ -877,13 +879,10 @@ class AgentService:
             },
         )
 
-    def _account_id(self, channel_id: str) -> str:
-        with self.store._lock:
-            row = self.store._db.execute(
-                "SELECT account_id FROM chat_threads WHERE channel_id=?", (channel_id,)
-            ).fetchone()
-        if row:
-            return str(row["account_id"])
+    async def _account_id(self, channel_id: str) -> str:
+        thread = await self.store.achat_thread_for_channel(channel_id)
+        if thread:
+            return str(thread["account_id"])
         client = getattr(self.transport, "client", None)
         if client is not None and getattr(client, "user", None) is not None:
             return str(client.user.id)
@@ -891,32 +890,9 @@ class AgentService:
         # one installation-scoped owner label, which remains stable after Discord connects.
         return "discord-owner"
 
-    def _mode(self, channel_id: str) -> str:
-        conversation = self.store.conversation(channel_id)
+    async def _mode(self, channel_id: str) -> str:
+        conversation = await self.store.aconversation(channel_id)
         return str(conversation["mode"] if conversation else "automatic")
-
-    def _has_pending(self, channel_id: str) -> bool:
-        with self.store._lock:
-            row = self.store._db.execute(
-                "SELECT 1 FROM chat_event_queue WHERE channel_id=? AND disposition='pending' LIMIT 1",
-                (channel_id,),
-            ).fetchone()
-        return row is not None
-
-    def _pending_channels(self) -> list[str]:
-        with self.store._lock:
-            rows = self.store._db.execute(
-                "SELECT DISTINCT channel_id FROM chat_event_queue WHERE disposition='pending'"
-            ).fetchall()
-        return [str(row["channel_id"]) for row in rows]
-
-    def _is_interrupted(self, channel_id: str) -> bool:
-        with self.store._lock:
-            row = self.store._db.execute(
-                "SELECT 1 FROM escalation_interrupts WHERE channel_id=? AND state IN ('pending','claimed') LIMIT 1",
-                (channel_id,),
-            ).fetchone()
-        return row is not None
 
     def _buffer_trace(self, trace_id: str, kind: str, payload: dict[str, Any]) -> None:
         self._trace_buffers.setdefault(trace_id, []).append((kind, payload))

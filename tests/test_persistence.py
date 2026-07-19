@@ -123,6 +123,19 @@ def test_sqlite_langgraph_store_conforms_to_sync_and_async_api(tmp_path: Path):
     store.close()
 
 
+async def test_async_langgraph_store_does_not_open_sync_compatibility_connection(tmp_path: Path):
+    store = SQLiteLangGraphStore(tmp_path / "diskovod.sqlite3")
+    namespace = ("chat", "account", "channel", "memory")
+
+    assert store._connection is None
+    await store.aput(namespace, "key", {"text": "async only"})
+    assert (await store.aget(namespace, "key")).value == {"text": "async only"}
+    assert store._connection is None
+
+    await store.database.close()
+    store.close()
+
+
 def test_checkpoint_cipher_rejects_tampering_and_wrong_context():
     cipher = CheckpointCipher(SECRET)
     name, encrypted = cipher.encrypt(b"private checkpoint")

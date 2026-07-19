@@ -16,8 +16,8 @@ from test_runtime import FakeModels, RecordingTransport
 @pytest.mark.asyncio
 async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_path: Path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
-    store.upsert_conversation("channel", "peer", "Peer")
-    store.save_message(
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    await store.asave_message(
         id="peer-message",
         channel_id="channel",
         author_id="peer",
@@ -27,7 +27,7 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
         content="Do you remember this?",
         timestamp=time.time(),
     )
-    store.save_message(
+    await store.asave_message(
         id="owner-message",
         channel_id="channel",
         author_id="owner",
@@ -54,11 +54,17 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
     assert report.conversations == 1
     assert report.events == 2
     assert report.checkpoints == 1
-    assert store._db.execute("SELECT COUNT(*) FROM discord_events").fetchone()[0] == 2
-    assert store._db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] > 0
-    tables = {
-        row[0] for row in store._db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    }
+    async with store.database.transaction() as connection:
+        event_count = (await (await connection.execute("SELECT COUNT(*) FROM discord_events")).fetchone())[0]
+        checkpoint_count = (await (await connection.execute("SELECT COUNT(*) FROM checkpoints")).fetchone())[
+            0
+        ]
+        table_rows = await (
+            await connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        ).fetchall()
+    assert event_count == 2
+    assert checkpoint_count > 0
+    tables = {row[0] for row in table_rows}
     assert "model_request_logs" not in tables
     assert "chatgpt_usage" not in tables
     assert "conversation_escalations" not in tables
@@ -79,8 +85,8 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
 @pytest.mark.asyncio
 async def test_cutover_converts_active_legacy_escalation_to_real_interrupt(tmp_path: Path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
-    store.upsert_conversation("channel", "peer", "Peer")
-    store.save_message(
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    await store.asave_message(
         id="trigger",
         channel_id="channel",
         author_id="peer",
@@ -90,8 +96,8 @@ async def test_cutover_converts_active_legacy_escalation_to_real_interrupt(tmp_p
         content="Please get the owner",
         timestamp=time.time(),
     )
-    with store._db:
-        store._db.executescript(
+    async with store.database.transaction() as connection:
+        await connection.executescript(
             """
             CREATE TABLE conversation_escalations (
               id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL,
@@ -101,7 +107,7 @@ async def test_cutover_converts_active_legacy_escalation_to_real_interrupt(tmp_p
             );
             """
         )
-        store._db.execute(
+        await connection.execute(
             "INSERT INTO conversation_escalations(channel_id, trigger_message_id, state, reason, requested_at, acknowledged_at) VALUES('channel', 'trigger', 'claimed', 'peer_requested_owner', ?, ?)",
             (time.time(), time.time()),
         )
@@ -117,14 +123,13 @@ async def test_cutover_converts_active_legacy_escalation_to_real_interrupt(tmp_p
     report = await LegacyMigrator(store, runtime).run()
 
     assert report.archived_records == 1
-    interrupt = store.active_interrupts()[0]
+    interrupt = (await store.aactive_interrupts())[0]
     assert interrupt["state"] == "claimed"
     assert interrupt["payload"]["trigger_message_id"] == "trigger"
-    assert (
-        store._db.execute("SELECT status FROM agent_runs WHERE id='migration-escalation-run:1'").fetchone()[
-            "status"
-        ]
-        == "interrupted"
-    )
+    async with store.database.transaction() as connection:
+        run = await (
+            await connection.execute("SELECT status FROM agent_runs WHERE id='migration-escalation-run:1'")
+        ).fetchone()
+    assert run["status"] == "interrupted"
     await runtime.close()
     await store.aclose()

@@ -79,18 +79,6 @@ class ModelService:
     def credentials_for(self, configuration: ModelConfiguration) -> ProviderCredentials:
         return self._credentials(configuration)
 
-    def save_subscription(
-        self,
-        *,
-        model_id: str,
-        reasoning_effort: str,
-        max_output_tokens: int,
-        capabilities: ProviderCapabilities | None = None,
-    ) -> int:
-        return self.store.save_agent_configuration(
-            self._subscription_configuration(model_id, reasoning_effort, max_output_tokens, capabilities)
-        )
-
     async def asave_subscription(
         self,
         *,
@@ -129,20 +117,6 @@ class ModelService:
             capabilities=resolved_capabilities,
             integration_version=version("langchain-openai"),
         )
-
-    def save_custom_openai(
-        self,
-        provider: CustomProvider,
-        *,
-        model_id: str,
-        reasoning_effort: str,
-        max_output_tokens: int,
-    ) -> int:
-        profile, configuration = self._custom_openai_configuration(
-            provider, model_id, reasoning_effort, max_output_tokens
-        )
-        self.store.set_provider_credentials(profile, {"api_key": provider.api_key})
-        return self.store.save_agent_configuration(configuration)
 
     async def asave_custom_openai(
         self,
@@ -204,7 +178,7 @@ class ModelService:
             options["max_completion_tokens"] = max_output_tokens
         return options
 
-    def migrate_legacy_selection(self) -> int | None:
+    async def migrate_legacy_selection(self) -> int | None:
         """One-time transformer for installations created before configuration versions."""
         if self.configuration is not None:
             return None
@@ -222,7 +196,7 @@ class ModelService:
             provider = self.store.custom_provider()
             if provider is None:
                 return None
-            return self.save_custom_openai(
+            return await self.asave_custom_openai(
                 provider,
                 model_id=model_id,
                 reasoning_effort=effort,
@@ -233,19 +207,13 @@ class ModelService:
                 native_tools=True,
                 hosted_web_search=False,
             )
-            return self.save_subscription(
+            return await self.asave_subscription(
                 model_id=model_id,
                 reasoning_effort=effort,
                 max_output_tokens=max_output_tokens,
                 capabilities=capabilities,
             )
         return None
-
-    def refresh_prompt_cache_identity(self) -> int | None:
-        configuration = self._refreshed_prompt_cache_configuration()
-        if configuration is None:
-            return None
-        return self.store.save_agent_configuration(configuration)
 
     async def arefresh_prompt_cache_identity(self) -> int | None:
         configuration = self._refreshed_prompt_cache_configuration()

@@ -90,10 +90,10 @@ def test_assistant_settings_defaults_preserve_only_admin_appearance():
     assert reset == AppSettings(admin_locale="fr", admin_theme="black")
 
 
-def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path):
+async def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path):
     store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    with store._db:
-        store._db.execute(
+    async with store.database.transaction() as connection:
+        await connection.execute(
             """INSERT INTO provider_capability_probes
                VALUES(?, ?, 'hosted_web_search', 'unsupported', ?, ?, ?, ?, ?)""",
             (
@@ -117,13 +117,13 @@ def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path
         "https://diskovod.example",
     )
 
-    view = web._subscription_web_search_probe_view("gpt-model")
+    view = await web._subscription_web_search_probe_view("gpt-model")
 
     assert view["result_label"].startswith("Inconclusive")
     assert view["response_id"] == "probe-1"
     assert "web_search_call" in view["observed"]
     assert "access" not in str(view)
-    store.close()
+    await store.aclose()
 
 
 @pytest.mark.asyncio

@@ -143,7 +143,7 @@ class PrivateDiscordClient(discord.Client):
             )
             if resumed:
                 log.info("Manual owner reply resumed the interrupted agent for %s", channel_id)
-            conversation = self.store.conversation(channel_id)
+            conversation = await self.store.aconversation(channel_id)
             await self.runtime.submit_message(
                 message_id=str(message.id),
                 channel_id=channel_id,
@@ -206,7 +206,7 @@ class PrivateDiscordClient(discord.Client):
                 source="human",
             )
             if updated and updated["changed"]:
-                conversation = self.store.conversation(channel_id)
+                conversation = await self.store.aconversation(channel_id)
                 await self.runtime.submit_message(
                     message_id=str(message.id),
                     channel_id=channel_id,
@@ -244,7 +244,7 @@ class PrivateDiscordClient(discord.Client):
         if not self.user:
             return
         channel_id = str(payload.channel_id)
-        if self.store.conversation(channel_id) is None:
+        if await self.store.aconversation(channel_id) is None:
             return
         await self.runtime.submit_delete(
             message_id=str(payload.message_id),
@@ -300,7 +300,7 @@ class DiscordService:
             )
         if channel is None or not hasattr(channel, "fetch_message"):
             raise RuntimeError("Discord conversation is not available")
-        stored = self.store.latest_incoming_message(channel_id)
+        stored = await self.store.alatest_incoming_message(channel_id)
         if stored is None:
             raise RuntimeError("This conversation has no incoming message to answer")
         try:
@@ -323,7 +323,7 @@ class DiscordService:
     ) -> list[DeliveryRecord]:
         channel = self._channel(context.channel_id)
         settings = self.store.app_settings()
-        conversation = self.store.conversation(context.channel_id)
+        conversation = await self.store.aconversation(context.channel_id)
         inline = bool(conversation and conversation["mode"] == "inline")
         records: list[DeliveryRecord] = []
         for index, part in enumerate(messages):
@@ -479,7 +479,7 @@ class DiscordService:
                 is_manual_owner = (
                     message.author == client.user
                     and content
-                    and not self.store.is_assistant_message(str(message.id))
+                    and not await self.store.ais_assistant_message(str(message.id))
                 )
                 if not is_manual_owner:
                     previous_was_manual_owner = False

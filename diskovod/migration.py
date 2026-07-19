@@ -108,14 +108,14 @@ class LegacyMigrator:
         if self.store._get(MIGRATION_KEY, None):
             return MigrationReport(None, 0, 0, 0, 0)
         backup = await asyncio.to_thread(self._backup)
-        conversations = self.store.conversations()
+        conversations = await self.store.aconversations()
         event_count = 0
         checkpoint_count = 0
         for conversation in conversations:
             channel_id = str(conversation["channel_id"])
-            account_id = self.runtime._account_id(channel_id)
+            account_id = await self.runtime._account_id(channel_id)
             thread_id = await self.runtime.events.thread_id(account_id, channel_id)
-            history = self.store.history(channel_id, 100_000)
+            history = await self.store.ahistory(channel_id, 100_000)
             messages = await self._messages(history, conversation, account_id)
             for item in history:
                 payload = {
@@ -177,11 +177,11 @@ class LegacyMigrator:
         while target.exists():
             target = backup_dir / f"pre-langgraph-{stamp}-{suffix}.sqlite3"
             suffix += 1
+        source = sqlite3.connect(self.store.path)
         destination = sqlite3.connect(target)
         destination.row_factory = sqlite3.Row
         try:
-            with self.store._lock:
-                self.store._db.backup(destination)
+            source.backup(destination)
             integrity = destination.execute("PRAGMA integrity_check").fetchone()[0]
             if integrity != "ok":
                 raise RuntimeError(f"Migration backup integrity check failed: {integrity}")
@@ -192,6 +192,7 @@ class LegacyMigrator:
                 ).fetchall()
             ]
         finally:
+            source.close()
             destination.close()
         manifest = {
             "database": target.name,
@@ -217,21 +218,31 @@ class LegacyMigrator:
         return target
 
     async def _validate(self, report: MigrationReport) -> None:
-        with self.store._lock:
-            integrity = self.store._db.execute("PRAGMA integrity_check").fetchone()[0]
+        async with self.store.database.transaction() as connection:
+            integrity = (await (await connection.execute("PRAGMA integrity_check")).fetchone())[0]
             if integrity != "ok":
                 raise RuntimeError(f"Migration integrity check failed: {integrity}")
-            legacy_messages = int(self.store._db.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+            legacy_messages = int(
+                (await (await connection.execute("SELECT COUNT(*) FROM messages")).fetchone())[0]
+            )
             migrated_messages = int(
-                self.store._db.execute(
-                    "SELECT COUNT(*) FROM discord_events WHERE id LIKE 'legacy:message:%'"
-                ).fetchone()[0]
+                (
+                    await (
+                        await connection.execute(
+                            "SELECT COUNT(*) FROM discord_events WHERE id LIKE 'legacy:message:%'"
+                        )
+                    ).fetchone()
+                )[0]
             )
             invalid_deliveries = int(
-                self.store._db.execute(
-                    "SELECT COUNT(*) FROM side_effect_deliveries "
-                    "WHERE state NOT IN ('claimed','completed','ambiguous')"
-                ).fetchone()[0]
+                (
+                    await (
+                        await connection.execute(
+                            "SELECT COUNT(*) FROM side_effect_deliveries "
+                            "WHERE state NOT IN ('claimed','completed','ambiguous')"
+                        )
+                    ).fetchone()
+                )[0]
             )
         if migrated_messages != legacy_messages:
             raise RuntimeError(
@@ -239,13 +250,13 @@ class LegacyMigrator:
             )
         if invalid_deliveries:
             raise RuntimeError("Migration found invalid side-effect ledger states")
-        for conversation in self.store.conversations():
+        for conversation in await self.store.aconversations():
             channel_id = str(conversation["channel_id"])
             thread_id = await self.runtime.events.thread_id(
-                self.runtime._account_id(channel_id),
+                await self.runtime._account_id(channel_id),
                 channel_id,
             )
-            history = self.store.history(channel_id, 1)
+            history = await self.store.ahistory(channel_id, 1)
             checkpoint = await self.runtime.checkpointer.aget_tuple(
                 {"configurable": {"thread_id": thread_id}}
             )
@@ -377,13 +388,17 @@ class LegacyMigrator:
         return archived
 
     async def _migrate_active_escalations(self) -> None:
-        with self.store._lock:
-            exists = self.store._db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_escalations'"
+        async with self.store.database.transaction() as connection:
+            exists = await (
+                await connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_escalations'"
+                )
             ).fetchone()
             rows = (
-                self.store._db.execute(
-                    "SELECT * FROM conversation_escalations WHERE state IN ('pending','claimed')"
+                await (
+                    await connection.execute(
+                        "SELECT * FROM conversation_escalations WHERE state IN ('pending','claimed')"
+                    )
                 ).fetchall()
                 if exists
                 else []
@@ -392,12 +407,12 @@ class LegacyMigrator:
         localized = runtime_context_text(settings.prompt_locale)
         for row in rows:
             channel_id = str(row["channel_id"])
-            account_id = self.runtime._account_id(channel_id)
+            account_id = await self.runtime._account_id(channel_id)
             thread_id = await self.runtime.events.thread_id(account_id, channel_id)
             trace_id = f"migration-escalation:{row['id']}"
             tool_call_id = f"legacy-escalation-{row['id']}"
             escalation_id = f"{trace_id}:{tool_call_id}"
-            if self.store.escalation_interrupt(escalation_id) is not None:
+            if await self.store.aescalation_interrupt(escalation_id) is not None:
                 continue
             run_id = f"migration-escalation-run:{row['id']}"
             context = AgentRuntimeContext(
@@ -470,7 +485,7 @@ class LegacyMigrator:
         details = self.store.app_settings().owner_details.strip()
         if details:
             await self.runtime.memory.aput(
-                ("account", self.runtime._account_id("migration"), "preferences"),
+                ("account", await self.runtime._account_id("migration"), "preferences"),
                 "owner-provided-details",
                 {
                     "value": details,

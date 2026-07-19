@@ -109,6 +109,14 @@ correlation. Search results, prompts beyond the fixed public test, credentials, 
 content are not retained. An inconclusive result does not by itself prove that the model lacks web
 search; it can also indicate backend rollout, account access, or an integration issue.
 
+The **Model request log** in Usage retains the newest 500 redacted request records. It correlates
+ordinary generations, tool continuations, native repairs, hosted-search probes, provider errors,
+and validator decisions. Each record includes transport and model settings, message and instruction
+sizes, tool names and argument keys, output shape, token counters, duration, response ID, and a
+stable acceptance or rejection reason. It does not store DM text, prompt text, tool argument values,
+attachment bodies, raw model responses, cache keys, or credentials. Bounded provider error text is
+stored after common credential patterns are redacted.
+
 ### OpenAI-compatible provider
 
 In **OpenAI-compatible API**, enter a display name, an API base URL that normally ends in `/v1`,

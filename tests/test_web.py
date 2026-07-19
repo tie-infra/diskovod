@@ -127,6 +127,50 @@ def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path
     store.close()
 
 
+def test_model_request_log_view_correlates_validation_with_conversation(tmp_path):
+    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store.upsert_conversation("dm-1", "peer", "Peer")
+    request_id = store.start_model_request(
+        provider="ChatGPT subscription",
+        protocol="responses",
+        model="gpt-model",
+        purpose="dm_reply_tool_continuation",
+        request_summary={"messages": [{"role": "user", "content_characters": 20}]},
+        channel_id="dm-1",
+        attempt=2,
+        repair=True,
+    )
+    store.finish_model_request(
+        request_id,
+        status="completed",
+        duration_ms=500,
+        response_summary={"text_outputs": [{"characters": 10}]},
+    )
+    store.annotate_model_request(
+        request_id,
+        "rejected",
+        "non_terminal_or_ambiguous_output_after_repair",
+    )
+    web = WebApp(
+        store,
+        cast(ChatGPTClient, None),
+        cast(DiscordService, None),
+        cast(Automation, None),
+        "a-long-admin-password",
+        "https://diskovod.example",
+    )
+
+    view = web._model_request_log_views()[0]
+
+    assert view["conversation_label"] == "Peer"
+    assert view["purpose_label"] == "DM tool continuation"
+    assert view["validation_label"] == "Rejected"
+    assert view["is_problem"] is True
+    assert "content_characters" in view["request_json"]
+    assert "characters" in view["response_json"]
+    store.close()
+
+
 @pytest.mark.asyncio
 async def test_security_policy_allows_only_the_pinned_bootstrap_stylesheet_origin():
     web = make_web()

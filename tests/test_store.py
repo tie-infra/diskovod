@@ -205,6 +205,45 @@ def test_subscription_web_search_capability_is_scoped_to_account_and_model(tmp_p
     store.close()
 
 
+def test_model_request_log_lifecycle_keeps_only_redacted_metadata(tmp_path: Path):
+    store = Store(tmp_path / "state.sqlite3", SECRET)
+    request_id = store.start_model_request(
+        provider="ChatGPT subscription",
+        protocol="responses",
+        model="gpt-model",
+        purpose="dm_reply",
+        channel_id="dm-1",
+        attempt=2,
+        repair=True,
+        request_summary={"messages": [{"role": "user", "content_characters": 12}]},
+        started_at=100,
+    )
+    store.finish_model_request(
+        request_id,
+        status="completed",
+        duration_ms=321,
+        response_summary={"function_calls": [{"name": "send_messages"}]},
+        response_id="resp-1",
+    )
+    store.annotate_model_request(
+        request_id,
+        "rejected",
+        "non_terminal_or_ambiguous_output_after_repair",
+    )
+
+    record = store.model_request_logs()[0]
+
+    assert record["id"] == request_id
+    assert record["status"] == "completed"
+    assert record["duration_ms"] == 321
+    assert record["repair"] is True
+    assert record["request_summary"]["messages"][0]["content_characters"] == 12
+    assert record["response_summary"]["function_calls"][0]["name"] == "send_messages"
+    assert record["validation_detail"] == "non_terminal_or_ambiguous_output_after_repair"
+    assert set(record["request_summary"]["messages"][0]) == {"role", "content_characters"}
+    store.close()
+
+
 def test_database_explorer_redacts_secrets_searches_and_deletes_mutable_rows(tmp_path: Path):
     store = Store(tmp_path / "state.sqlite3", SECRET)
     store.set_discord_token("very-secret-token")

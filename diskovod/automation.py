@@ -18,7 +18,7 @@ from .localization import (
     tool_policy,
     tool_text,
 )
-from .models import AppSettings
+from .models import AppSettings, ModelResult
 from .store import Store
 from .tooling import (
     TOOL_SCHEMA_VERSION,
@@ -205,6 +205,7 @@ class Automation:
             messages,
             instructions,
             settings,
+            channel_id=channel_id,
             max_messages=max_messages,
             allow_reaction=allow_reaction,
             allow_silence=inline_mode and not force,
@@ -285,6 +286,7 @@ class Automation:
                 messages,
                 instructions + "\n\n" + tool_text(settings.prompt_locale)["reaction_unavailable"],
                 settings,
+                channel_id=channel_id,
                 max_messages=max_messages,
                 allow_reaction=False,
                 allow_silence=inline_mode and not force,
@@ -375,6 +377,7 @@ class Automation:
         instructions: str,
         settings: AppSettings,
         *,
+        channel_id: str,
         max_messages: int,
         allow_reaction: bool,
         allow_silence: bool = False,
@@ -394,6 +397,7 @@ class Automation:
         repair_used = False
         read_only_calls = 0
         tool_choice: str | dict[str, Any] = "required"
+        last_result: ModelResult | None = None
         for request_index in range(4):
             result = await self.chatgpt.complete_result(
                 messages,
@@ -407,18 +411,39 @@ class Automation:
                 tools=tools,
                 tool_choice=tool_choice,
                 continuation_items=continuation,
+                request_context={
+                    "channel_id": channel_id,
+                    "attempt": request_index + 1,
+                    "repair": repair_used,
+                },
             )
+            last_result = result
             calls = result.function_calls
             if not validate_hosted_web_search_calls(
                 result.hosted_tool_calls,
                 enabled=web_search_enabled,
             ):
+                self.store.annotate_model_request(
+                    result.request_log_id,
+                    "rejected",
+                    "invalid_or_over_budget_hosted_tool_output",
+                )
                 log.error("Rejected invalid or over-budget hosted tool output")
                 return None
             if len(calls) != 1 or result.text:
                 if repair_used:
+                    self.store.annotate_model_request(
+                        result.request_log_id,
+                        "rejected",
+                        "non_terminal_or_ambiguous_output_after_repair",
+                    )
                     log.error("Rejected non-terminal or ambiguous model output after native repair")
                     return None
+                self.store.annotate_model_request(
+                    result.request_log_id,
+                    "repair_requested",
+                    "expected_one_function_call_and_no_text",
+                )
                 repair_used = True
                 tool_choice = {"type": "function", "name": "send_messages"}
                 continue
@@ -431,8 +456,18 @@ class Automation:
             )
             if output is not None:
                 if read_only_calls >= 2:
+                    self.store.annotate_model_request(
+                        result.request_log_id,
+                        "rejected",
+                        "read_only_tool_budget_exceeded",
+                    )
                     log.error("Rejected reply after exceeding the read-only tool budget")
                     return None
+                self.store.annotate_model_request(
+                    result.request_log_id,
+                    "tool_continuation",
+                    f"read_only_tool:{call.name}",
+                )
                 read_only_calls += 1
                 continuation.extend((function_call_item(call), function_output_item(call, output)))
                 tool_choice = "required"
@@ -445,6 +480,11 @@ class Automation:
                 allow_silence=allow_silence,
             )
             if action is not None:
+                self.store.annotate_model_request(
+                    result.request_log_id,
+                    "accepted",
+                    f"discord_action:{action.kind}",
+                )
                 return action
             escalation = validate_escalation_action(
                 call,
@@ -453,10 +493,27 @@ class Automation:
             if escalation is not None:
                 if escalation.invalid_arguments:
                     log.warning("Using fixed acknowledgement for invalid escalation arguments")
+                self.store.annotate_model_request(
+                    result.request_log_id,
+                    "accepted",
+                    "escalation:invalid_arguments_fallback"
+                    if escalation.invalid_arguments
+                    else "escalation:valid",
+                )
                 return escalation
             if repair_used:
+                self.store.annotate_model_request(
+                    result.request_log_id,
+                    "rejected",
+                    "malformed_native_discord_action_after_repair",
+                )
                 log.error("Rejected malformed native Discord action after one repair")
                 return None
+            self.store.annotate_model_request(
+                result.request_log_id,
+                "repair_requested",
+                f"malformed_native_action:{call.name}",
+            )
             repair_used = True
             repair_name = (
                 call.name
@@ -468,6 +525,12 @@ class Automation:
             if repair_name == "stay_silent" and not allow_silence:
                 repair_name = "send_messages"
             tool_choice = {"type": "function", "name": repair_name}
+        if last_result is not None:
+            self.store.annotate_model_request(
+                last_result.request_log_id,
+                "rejected",
+                "total_model_request_budget_exceeded",
+            )
         log.error("Rejected reply after exceeding the total model request budget")
         return None
 

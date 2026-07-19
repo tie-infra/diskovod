@@ -34,6 +34,8 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
             "response_id": "resp-probe",
             "observed": "text_output=false; function_calls=0 []; connection_test_ok=false; hosted_calls=0 []",
             "error": "",
+            "request_log_id": 42,
+            "request_log_url": "http://localhost:3090/?tab=usage#model-request-42",
         },
         model_connected=True,
         automation_ready=True,
@@ -154,6 +156,30 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
                 }
             ],
         },
+        request_logs=[
+            {
+                "id": 42,
+                "started_at_label": "2026-07-19 12:00:00 MSK",
+                "purpose": "dm_reply_tool_continuation",
+                "purpose_label": "DM tool continuation",
+                "model": "gpt-5.4-mini",
+                "provider": "ChatGPT subscription",
+                "protocol": "responses",
+                "status_label": "Completed",
+                "validation_label": "Rejected",
+                "validation_detail": "non_terminal_or_ambiguous_output_after_repair",
+                "duration_ms": 850,
+                "conversation_label": "Peer",
+                "attempt": 2,
+                "repair": True,
+                "response_id": "resp-42",
+                "error_type": None,
+                "error_detail": None,
+                "request_json": '{"tools": ["send_messages"]}',
+                "response_json": '{"function_calls": [], "text_outputs": [{"characters": 12}]}',
+                "is_problem": True,
+            }
+        ],
         database={
             "name": "messages",
             "label": "Messages",
@@ -282,6 +308,12 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "connection_test_ok=false" in rendered
     assert "query results and credentials are not stored" in rendered
     assert "Model token usage" in rendered
+    assert "Model request log" in rendered
+    assert 'id="model-request-42"' in rendered
+    assert "non_terminal_or_ambiguous_output_after_repair" in rendered
+    assert "Redacted request metadata" in rendered
+    assert "DM text, prompts, tool argument values" in rendered
+    assert "View request #42" in rendered
     assert "1,434" in rendered
     assert "DM reply" in rendered
     assert "2026-07-17 12:00:00 MSK" in rendered

@@ -105,6 +105,18 @@ def test_prompt_cache_keys_are_stable_and_do_not_expose_conversation_ids():
     assert len(first) <= 64
 
 
+def test_request_log_error_redaction_removes_common_credentials():
+    detail = ChatGPTClient._safe_request_error(
+        RuntimeError("Bearer access.credential sk-secret access_token=private refresh_token:refresh")
+    )
+
+    assert "access.credential" not in detail
+    assert "sk-secret" not in detail
+    assert "private" not in detail
+    assert ":refresh" not in detail
+    assert detail.count("[redacted]") == 4
+
+
 def test_subscription_messages_use_native_image_and_file_inputs():
     message = ChatGPTClient._responses_message(
         {
@@ -353,6 +365,22 @@ async def test_custom_provider_uses_chat_completions_and_records_usage(tmp_path:
     assert stats["all_time"]["total_tokens"] == 27
     assert stats["all_time"]["cached_input_tokens"] == 5
     assert stats["all_time"]["reasoning_tokens"] == 2
+    request_log = store.model_request_logs()[0]
+    assert request_log["provider"] == "Local"
+    assert request_log["protocol"] == "chat_completions"
+    assert request_log["request_summary"]["messages"] == [
+        {
+            "role": "user",
+            "content_characters": 2,
+            "attachments": 0,
+            "attachment_types": [],
+        }
+    ]
+    assert request_log["request_summary"]["instructions_characters"] == len("system instructions")
+    assert request_log["request_summary"]["cache_key_present"] is True
+    assert request_log["response_summary"]["text_outputs"] == [{"characters": 5, "annotations": 0}]
+    assert "system instructions" not in str(request_log)
+    assert '"hi"' not in str(request_log)
     store.close()
 
 
@@ -388,6 +416,10 @@ async def test_custom_provider_surfaces_api_errors(tmp_path: Path):
         await client.complete([], "instructions", "missing-model", "low")
 
     assert client.last_error == "Gateway returned HTTP 400: unknown model"
+    request_log = store.model_request_logs()[0]
+    assert request_log["status"] == "error"
+    assert request_log["error_type"] == "ProviderHTTPError"
+    assert request_log["error_detail"] == "Gateway returned HTTP 400: unknown model"
     store.close()
 
 
@@ -556,6 +588,7 @@ async def test_subscription_web_search_probe_is_model_scoped_and_requires_termin
     assert await client.detect_subscription_web_search("gpt-model", "low") is True
     assert store.subscription_web_search_capability("gpt-model") is True
     diagnostics = store.subscription_web_search_probe("gpt-model")["diagnostics"]
+    request_log_id = diagnostics.pop("request_log_id")
     assert diagnostics == {
         "outcome": "verified",
         "response_id": "resp-probe",
@@ -567,6 +600,12 @@ async def test_subscription_web_search_probe_is_model_scoped_and_requires_termin
         "hosted_calls": [{"kind": "web_search_call", "status": "completed"}],
         "effort": "low",
     }
+    request_log = store.model_request_logs()[0]
+    assert request_log["id"] == request_log_id
+    assert request_log["validation_status"] == "probe_verified"
+    assert request_log["response_summary"]["hosted_tool_calls"] == [
+        {"kind": "web_search_call", "status": "completed"}
+    ]
     assert client.hosted_web_search_available is False
     store.set_app_settings(AppSettings(model="gpt-model"))
     assert client.hosted_web_search_available is True
@@ -602,6 +641,9 @@ async def test_subscription_web_search_probe_records_inconclusive_response_diagn
     assert diagnostics["function_call_count"] == 0
     assert diagnostics["hosted_call_count"] == 0
     assert diagnostics["effort"] == "medium"
+    request_log = store.model_request_logs()[0]
+    assert request_log["validation_status"] == "probe_inconclusive"
+    assert request_log["validation_detail"] == "response_mismatch"
     store.close()
 
 
@@ -624,6 +666,9 @@ async def test_subscription_web_search_probe_records_request_errors_as_inconclus
     assert diagnostics["outcome"] == "request_error"
     assert diagnostics["effort"] == "high"
     assert "backend tool unavailable" in diagnostics["error"]
+    request_log = store.model_request_logs()[0]
+    assert request_log["status"] == "error"
+    assert request_log["validation_status"] == "probe_inconclusive"
     store.close()
 
 

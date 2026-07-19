@@ -278,6 +278,7 @@ class ModelResult:
     hosted_tool_calls: list[HostedToolCall]
     usage: dict[str, Any] | None = None
     provider_response_id: str | None = None
+    request_log_id: int | None = None
 
     @property
     def text(self) -> str:

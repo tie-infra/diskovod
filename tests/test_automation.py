@@ -293,6 +293,43 @@ async def test_plain_text_is_inert_and_gets_one_forced_native_repair(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_native_repair_rejection_is_annotated_in_request_log(tmp_path: Path):
+    store = reply_store(tmp_path)
+    request_ids = [
+        store.start_model_request(
+            provider="test",
+            protocol="responses",
+            model="model",
+            purpose="dm_reply_tool_continuation" if index else "dm_reply",
+            request_summary={},
+            channel_id="dm",
+            attempt=index + 1,
+            repair=bool(index),
+        )
+        for index in range(2)
+    ]
+    chatgpt = ReplyingChatGPT(
+        [
+            ModelResult([TextOutput("first plain response", [])], [], [], request_log_id=request_ids[0]),
+            ModelResult([TextOutput("second plain response", [])], [], [], request_log_id=request_ids[1]),
+        ]
+    )
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0)
+
+    logs = {record["id"]: record for record in store.model_request_logs()}
+    assert logs[request_ids[0]]["validation_status"] == "repair_requested"
+    assert logs[request_ids[0]]["validation_detail"] == "expected_one_function_call_and_no_text"
+    assert logs[request_ids[1]]["validation_status"] == "rejected"
+    assert logs[request_ids[1]]["validation_detail"] == ("non_terminal_or_ambiguous_output_after_repair")
+    assert trigger.channel.sent == []
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_native_reaction_replaces_reply_and_is_recorded(tmp_path: Path):
     store = reply_store(tmp_path)
     chatgpt = ReplyingChatGPT([function_result("react_to_message", {"emoji": "👍"})])

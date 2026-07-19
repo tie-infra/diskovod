@@ -465,6 +465,36 @@ small {
   white-space: pre-wrap;
 }
 
+.request-log {
+  padding-block: 0.75rem;
+  border-top: 1px solid var(--bs-border-color);
+}
+
+.request-log summary {
+  overflow-wrap: anywhere;
+}
+
+.request-log-payloads {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.request-log-payloads > div {
+  min-width: 0;
+}
+
+.request-log-payloads pre {
+  max-height: 28rem;
+  padding: 1rem;
+  overflow: auto;
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  background: var(--bs-tertiary-bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 details {
   margin-top: 1rem;
 }
@@ -673,6 +703,10 @@ footer {
 
   .usage-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .request-log-payloads {
+    grid-template-columns: 1fr;
   }
 
   .conversation {

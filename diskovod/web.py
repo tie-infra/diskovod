@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import time
 from dataclasses import dataclass, replace
@@ -224,6 +225,7 @@ class WebApp:
                     "escalations": self._escalation_views(),
                     "conversations": self._conversation_views(),
                     "usage_stats": self._usage_views(),
+                    "request_logs": self._model_request_log_views() if active_tab == "usage" else [],
                     "database": self._database_view(db_table, db_page, db_query),
                     "message": request.query_params.get("message"),
                     "error": request.query_params.get("error"),
@@ -821,6 +823,10 @@ class WebApp:
             "response_id": str(diagnostics.get("response_id") or "—"),
             "observed": observed,
             "error": str(diagnostics.get("error") or ""),
+            "request_log_id": diagnostics.get("request_log_id"),
+            "request_log_url": self._url(f"?tab=usage#model-request-{diagnostics['request_log_id']}")
+            if isinstance(diagnostics.get("request_log_id"), int)
+            else None,
         }
 
     def _personality_view(self) -> dict[str, Any] | None:
@@ -859,6 +865,57 @@ class WebApp:
                 datetime.fromtimestamp(record["recorded_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
             )
         return stats
+
+    def _model_request_log_views(self) -> list[dict[str, Any]]:
+        locale = self.store.app_settings().admin_locale
+        conversations = {
+            conversation["channel_id"]: conversation["peer_name"]
+            for conversation in self.store.conversations()
+        }
+        status_keys = {"pending", "completed", "error"}
+        validation_keys = {
+            "accepted",
+            "rejected",
+            "repair_requested",
+            "tool_continuation",
+            "probe_verified",
+            "probe_inconclusive",
+        }
+        result = self.store.model_request_logs(100)
+        for record in result:
+            status = record["status"] if record["status"] in status_keys else "pending"
+            validation = record.get("validation_status")
+            record["status_label"] = ui_text(locale, f"model_request_status_{status}")
+            record["validation_label"] = (
+                ui_text(locale, f"model_validation_{validation}")
+                if validation in validation_keys
+                else ui_text(locale, "model_validation_unreviewed")
+            )
+            record["purpose_label"] = ui_text(locale, f"purpose_{record['purpose']}")
+            record["started_at_label"] = (
+                datetime.fromtimestamp(record["started_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            )
+            record["conversation_label"] = conversations.get(
+                record.get("channel_id"),
+                record.get("channel_id") or "—",
+            )
+            record["request_json"] = json.dumps(
+                record.get("request_summary") or {},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            record["response_json"] = json.dumps(
+                record.get("response_summary") or {},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            record["is_problem"] = status == "error" or validation in {
+                "rejected",
+                "probe_inconclusive",
+            }
+        return result
 
     def _database_view(self, table: str, page: int, query: str) -> dict:
         tables = self.store.database_tables()

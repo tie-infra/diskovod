@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -159,6 +160,121 @@ class ChatGPTClient:
             return provider.name if provider else "Custom API"
         return "ChatGPT subscription"
 
+    def _request_transport(self) -> tuple[str, str]:
+        if self.active_provider == "custom":
+            provider = self.store.custom_provider()
+            return (provider.name if provider else "Custom API", provider.protocol if provider else "unknown")
+        return "ChatGPT subscription", "responses"
+
+    @staticmethod
+    def _model_request_summary(
+        messages: list[dict[str, Any]],
+        instructions: str,
+        effort: str,
+        max_output_tokens: int | None,
+        cache_key: str | None,
+        locale: str,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        continuation_items: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        message_summary = []
+        for message in messages:
+            attachments = message.get("attachments")
+            attachments = attachments if isinstance(attachments, list) else []
+            content = message.get("content")
+            message_summary.append(
+                {
+                    "role": str(message.get("role") or "unknown")[:30],
+                    "content_characters": len(content) if isinstance(content, str) else 0,
+                    "attachments": len(attachments),
+                    "attachment_types": [
+                        str(attachment.get("content_type") or "unknown")[:100]
+                        for attachment in attachments[:10]
+                        if isinstance(attachment, dict)
+                    ],
+                }
+            )
+        tool_names = []
+        for tool in tools or []:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            name = tool.get("name") if isinstance(tool, dict) else None
+            if not name and isinstance(function, dict):
+                name = function.get("name")
+            tool_names.append(str(name or tool.get("type") or "unknown")[:100])
+        if isinstance(tool_choice, dict):
+            choice_summary: str | dict[str, str] | None = {
+                str(key): str(value)[:100] for key, value in tool_choice.items() if key in {"type", "name"}
+            }
+        else:
+            choice_summary = tool_choice
+        return {
+            "messages": message_summary,
+            "instructions_characters": len(instructions),
+            "effort": effort,
+            "locale": locale,
+            "max_output_tokens": max_output_tokens,
+            "cache_key_present": bool(cache_key),
+            "tools": tool_names,
+            "tool_choice": choice_summary,
+            "continuation_items": [
+                str(item.get("type") or "unknown")[:100]
+                for item in (continuation_items or [])[:10]
+                if isinstance(item, dict)
+            ],
+        }
+
+    @staticmethod
+    def _model_response_summary(result: ModelResult) -> dict[str, Any]:
+        usage = result.usage if isinstance(result.usage, dict) else {}
+        return {
+            "text_outputs": [
+                {
+                    "characters": len(output.text),
+                    "annotations": len(output.annotations),
+                }
+                for output in result.text_outputs[:10]
+            ],
+            "function_calls": [
+                {
+                    "name": call.name[:100],
+                    "arguments_characters": len(call.arguments),
+                    "arguments_valid_json_object": call.parsed_arguments is not None,
+                    "argument_keys": sorted(str(key)[:100] for key in (call.parsed_arguments or {}))[:20],
+                }
+                for call in result.function_calls[:10]
+            ],
+            "hosted_tool_calls": [
+                {"kind": call.kind[:100], "status": call.status[:100]}
+                for call in result.hosted_tool_calls[:10]
+            ],
+            "usage": {
+                str(key): value
+                for key, value in usage.items()
+                if key
+                in {
+                    "input_tokens",
+                    "cached_input_tokens",
+                    "output_tokens",
+                    "reasoning_tokens",
+                    "total_tokens",
+                }
+                and isinstance(value, int)
+            },
+        }
+
+    @staticmethod
+    def _safe_request_error(exc: Exception) -> str:
+        detail = " ".join(str(exc).split())[:2000]
+        detail = re.sub(r"(?i)bearer\s+[a-z0-9._~+/=-]+", "Bearer [redacted]", detail)
+        detail = re.sub(r"\bsk-[a-zA-Z0-9_-]+", "sk-[redacted]", detail)
+        detail = re.sub(
+            r'(?i)(access_token|refresh_token|api[_ -]?key)(["\s:=]+)[^,\s}"\]]+',
+            r"\1\2[redacted]",
+            detail,
+        )
+        return detail
+
     @property
     def email(self) -> str | None:
         creds = self.store.chat_credentials()
@@ -298,6 +414,7 @@ class ChatGPTClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         continuation_items: list[dict[str, Any]] | None = None,
+        request_context: dict[str, Any] | None = None,
     ) -> str:
         result = await self.complete_result(
             messages,
@@ -311,6 +428,7 @@ class ChatGPTClient:
             tools=tools,
             tool_choice=tool_choice,
             continuation_items=continuation_items,
+            request_context=request_context,
         )
         text = result.text
         if not text:
@@ -331,7 +449,34 @@ class ChatGPTClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         continuation_items: list[dict[str, Any]] | None = None,
+        request_context: dict[str, Any] | None = None,
     ) -> ModelResult:
+        provider_name, protocol = self._request_transport()
+        request_log_id = self.store.start_model_request(
+            provider=provider_name,
+            protocol=protocol,
+            model=model,
+            purpose=purpose,
+            request_summary=self._model_request_summary(
+                messages,
+                instructions,
+                effort,
+                max_output_tokens,
+                cache_key,
+                locale,
+                tools,
+                tool_choice,
+                continuation_items,
+            ),
+            channel_id=str(request_context.get("channel_id"))
+            if request_context and request_context.get("channel_id") is not None
+            else None,
+            attempt=int(request_context["attempt"])
+            if request_context and isinstance(request_context.get("attempt"), int)
+            else None,
+            repair=bool(request_context and request_context.get("repair")),
+        )
+        started = time.monotonic()
         try:
             if self.active_provider == "custom":
                 result = await self._complete_custom(
@@ -361,8 +506,23 @@ class ChatGPTClient:
                 )
         except Exception as exc:
             self.last_error = str(exc)
+            self.store.finish_model_request(
+                request_log_id,
+                status="error",
+                duration_ms=round((time.monotonic() - started) * 1000),
+                error_type=type(exc).__name__,
+                error_detail=self._safe_request_error(exc),
+            )
             raise
         self.last_error = None
+        result.request_log_id = request_log_id
+        self.store.finish_model_request(
+            request_log_id,
+            status="completed",
+            duration_ms=round((time.monotonic() - started) * 1000),
+            response_summary=self._model_response_summary(result),
+            response_id=result.provider_response_id,
+        )
         return result
 
     async def _complete_subscription(
@@ -641,14 +801,29 @@ class ChatGPTClient:
     ) -> bool:
         """Probe the private subscription transport without assuming public API parity."""
         text = tool_text(locale)
+        messages = [{"role": "user", "content": text["web_test_input"]}]
+        tools = [WEB_SEARCH_TOOL, self._connection_test_tool(locale)]
+        request_log_id = self.store.start_model_request(
+            provider="ChatGPT subscription",
+            protocol="responses",
+            model=model,
+            purpose="web_search_capability_probe",
+            request_summary=self._model_request_summary(
+                messages,
+                text["web_test_system"],
+                effort,
+                64,
+                None,
+                locale,
+                tools,
+                "required",
+                None,
+            ),
+        )
+        started = time.monotonic()
         try:
             result = await self._complete_subscription(
-                [
-                    {
-                        "role": "user",
-                        "content": text["web_test_input"],
-                    }
-                ],
+                messages,
                 text["web_test_system"],
                 model,
                 effort,
@@ -656,22 +831,52 @@ class ChatGPTClient:
                 64,
                 None,
                 locale,
-                [WEB_SEARCH_TOOL, self._connection_test_tool(locale)],
+                tools,
                 "required",
                 None,
             )
         except Exception as exc:
-            detail = " ".join(str(exc).split())[:1000]
+            detail = self._safe_request_error(exc)
+            self.store.finish_model_request(
+                request_log_id,
+                status="error",
+                duration_ms=round((time.monotonic() - started) * 1000),
+                error_type=type(exc).__name__,
+                error_detail=detail,
+            )
+            self.store.annotate_model_request(
+                request_log_id,
+                "probe_inconclusive",
+                "request_error",
+            )
             self.store.set_subscription_web_search_capability(
                 model,
                 None,
-                {"outcome": "request_error", "effort": effort, "error": detail},
+                {
+                    "outcome": "request_error",
+                    "effort": effort,
+                    "error": detail,
+                    "request_log_id": request_log_id,
+                },
             )
             log.warning("Subscription web-search probe request failed for %s: %s", model, detail)
             raise
         diagnostics = self._web_search_probe_diagnostics(result)
         diagnostics["effort"] = effort
+        diagnostics["request_log_id"] = request_log_id
         supported = diagnostics["outcome"] == "verified"
+        self.store.finish_model_request(
+            request_log_id,
+            status="completed",
+            duration_ms=round((time.monotonic() - started) * 1000),
+            response_summary=self._model_response_summary(result),
+            response_id=result.provider_response_id,
+        )
+        self.store.annotate_model_request(
+            request_log_id,
+            "probe_verified" if supported else "probe_inconclusive",
+            diagnostics["outcome"],
+        )
         self.store.set_subscription_web_search_capability(model, supported, diagnostics)
         log.info(
             "Subscription web-search probe for %s: outcome=%s response_id=%s "

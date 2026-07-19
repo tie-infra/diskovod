@@ -47,6 +47,12 @@ DATABASE_TABLES = {
         "order_by": "recorded_at",
         "read_only": False,
     },
+    "model_request_logs": {
+        "label": "Model request logs",
+        "primary_key": "id",
+        "order_by": "started_at",
+        "read_only": False,
+    },
     "bot_nonces": {
         "label": "Pending nonces",
         "primary_key": "nonce",
@@ -123,6 +129,29 @@ class Store:
               );
               CREATE INDEX IF NOT EXISTS chatgpt_usage_recorded_at
                 ON chatgpt_usage(recorded_at DESC);
+              CREATE TABLE IF NOT EXISTS model_request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at REAL NOT NULL,
+                completed_at REAL,
+                duration_ms INTEGER,
+                provider TEXT NOT NULL,
+                protocol TEXT NOT NULL,
+                model TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                status TEXT NOT NULL,
+                channel_id TEXT,
+                attempt INTEGER,
+                repair INTEGER NOT NULL DEFAULT 0,
+                request_summary TEXT NOT NULL,
+                response_summary TEXT,
+                response_id TEXT,
+                validation_status TEXT,
+                validation_detail TEXT,
+                error_type TEXT,
+                error_detail TEXT
+              );
+              CREATE INDEX IF NOT EXISTS model_request_logs_started_at
+                ON model_request_logs(started_at DESC);
             """)
             message_columns = {
                 row["name"] for row in self._db.execute("PRAGMA table_info(messages)").fetchall()
@@ -302,6 +331,114 @@ class Store:
                     max(0, total_tokens),
                 ),
             )
+
+    def start_model_request(
+        self,
+        *,
+        provider: str,
+        protocol: str,
+        model: str,
+        purpose: str,
+        request_summary: dict[str, Any],
+        channel_id: str | None = None,
+        attempt: int | None = None,
+        repair: bool = False,
+        started_at: float | None = None,
+    ) -> int:
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """INSERT INTO model_request_logs
+                   (started_at, provider, protocol, model, purpose, status, channel_id,
+                    attempt, repair, request_summary)
+                   VALUES(?,?,?,?,?,'pending',?,?,?,?)""",
+                (
+                    time.time() if started_at is None else started_at,
+                    provider,
+                    protocol,
+                    model,
+                    purpose,
+                    channel_id,
+                    attempt,
+                    int(repair),
+                    json.dumps(request_summary, ensure_ascii=False),
+                ),
+            )
+            request_id = int(cursor.lastrowid)
+            self._db.execute(
+                """DELETE FROM model_request_logs
+                   WHERE id NOT IN (
+                     SELECT id FROM model_request_logs ORDER BY id DESC LIMIT 500
+                   )"""
+            )
+        return request_id
+
+    def finish_model_request(
+        self,
+        request_id: int | None,
+        *,
+        status: str,
+        duration_ms: int,
+        response_summary: dict[str, Any] | None = None,
+        response_id: str | None = None,
+        error_type: str | None = None,
+        error_detail: str | None = None,
+    ) -> None:
+        if request_id is None:
+            return
+        with self._lock, self._db:
+            self._db.execute(
+                """UPDATE model_request_logs
+                   SET completed_at=?, duration_ms=?, status=?, response_summary=?,
+                       response_id=?, error_type=?, error_detail=?
+                   WHERE id=?""",
+                (
+                    time.time(),
+                    max(0, duration_ms),
+                    status,
+                    json.dumps(response_summary, ensure_ascii=False)
+                    if response_summary is not None
+                    else None,
+                    response_id,
+                    error_type,
+                    error_detail,
+                    request_id,
+                ),
+            )
+
+    def annotate_model_request(
+        self,
+        request_id: int | None,
+        validation_status: str,
+        validation_detail: str,
+    ) -> None:
+        if request_id is None:
+            return
+        with self._lock, self._db:
+            self._db.execute(
+                """UPDATE model_request_logs
+                   SET validation_status=?, validation_detail=? WHERE id=?""",
+                (validation_status, validation_detail[:1000], request_id),
+            )
+
+    def model_request_logs(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT * FROM model_request_logs
+                   ORDER BY started_at DESC LIMIT ?""",
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            for field in ("request_summary", "response_summary"):
+                try:
+                    value = json.loads(item[field]) if item[field] else None
+                except (TypeError, json.JSONDecodeError):
+                    value = None
+                item[field] = value if isinstance(value, dict) else None
+            item["repair"] = bool(item["repair"])
+            result.append(item)
+        return result
 
     def chatgpt_usage_stats(self, now: float | None = None) -> dict[str, Any]:
         current_time = time.time() if now is None else now

@@ -151,6 +151,11 @@
                   {% endif %}
                 </dl>
                 <p class="field-help">{{ t("web_search_probe_interpretation") }}</p>
+                {% if subscription_web_search_probe.request_log_url %}
+                  <a class="btn btn-outline-secondary" href="{{ subscription_web_search_probe.request_log_url }}">
+                    {{ t("view_model_request", id=subscription_web_search_probe.request_log_id) }}
+                  </a>
+                {% endif %}
               </details>
             {% endif %}
           {% endif %}
@@ -980,6 +985,81 @@
               </table>
             </div>
           </details>
+        </article>
+
+        <article class="card mt-4" id="model-requests">
+          <div class="card-header">
+            <div>
+              <h2>{{ t("model_request_log") }}</h2>
+            </div>
+            <span class="pill">{{ t("model_requests_count", count=request_logs | length) }}</span>
+          </div>
+
+          <p>{{ t("model_request_log_help") }}</p>
+          <p class="field-help">{{ t("model_request_log_privacy") }}</p>
+
+          {% for request in request_logs %}
+            <details
+              class="request-log"
+              id="model-request-{{ request.id }}"
+              {% if request.is_problem and loop.first %}open{% endif %}
+            >
+              <summary>
+                <code>#{{ request.id }}</code>
+                · {{ request.started_at_label }}
+                · {{ request.purpose_label }}
+                · {{ request.model }}
+                · <span class="{{ 'text-danger' if request.is_problem else '' }}">{{ request.validation_label }}</span>
+              </summary>
+
+              <dl class="captcha-details">
+                <dt>{{ t("model_request_status") }}</dt>
+                <dd>{{ request.status_label }}</dd>
+                <dt>{{ t("provider") }}</dt>
+                <dd>{{ request.provider }}</dd>
+                <dt>{{ t("api_protocol") }}</dt>
+                <dd><code>{{ request.protocol }}</code></dd>
+                <dt>{{ t("model") }}</dt>
+                <dd><code>{{ request.model }}</code></dd>
+                <dt>{{ t("operation") }}</dt>
+                <dd><code>{{ request.purpose }}</code> · {{ request.purpose_label }}</dd>
+                <dt>{{ t("model_request_duration") }}</dt>
+                <dd>{{ request.duration_ms if request.duration_ms is not none else "—" }} ms</dd>
+                <dt>{{ t("model_request_conversation") }}</dt>
+                <dd>{{ request.conversation_label }}</dd>
+                <dt>{{ t("model_request_attempt") }}</dt>
+                <dd>{{ request.attempt if request.attempt is not none else "—" }}</dd>
+                <dt>{{ t("model_request_repair") }}</dt>
+                <dd>{{ t("active") if request.repair else "—" }}</dd>
+                <dt>{{ t("model_request_validation") }}</dt>
+                <dd>
+                  {{ request.validation_label }}
+                  {% if request.validation_detail %}<code>{{ request.validation_detail }}</code>{% endif %}
+                </dd>
+                {% if request.response_id %}
+                  <dt>{{ t("web_search_probe_response_id") }}</dt>
+                  <dd><code>{{ request.response_id }}</code></dd>
+                {% endif %}
+                {% if request.error_type or request.error_detail %}
+                  <dt>{{ t("errors") }}</dt>
+                  <dd><code>{{ request.error_type }}: {{ request.error_detail }}</code></dd>
+                {% endif %}
+              </dl>
+
+              <div class="request-log-payloads">
+                <div>
+                  <h3>{{ t("model_request_metadata") }}</h3>
+                  <pre><code>{{ request.request_json }}</code></pre>
+                </div>
+                <div>
+                  <h3>{{ t("model_response_metadata") }}</h3>
+                  <pre><code>{{ request.response_json }}</code></pre>
+                </div>
+              </div>
+            </details>
+          {% else %}
+            <div class="empty-state">{{ t("no_model_requests") }}</div>
+          {% endfor %}
         </article>
       </section>
       {% endif %}

@@ -8,23 +8,11 @@
   };
 
   outputs =
-    inputs@{ flake-parts, ... }:
+    inputs:
     let
-      lib = import ./nix/lib.nix { inherit (inputs.nixpkgs) lib; };
-
-      pythonPackagesOverlay =
-        pyFinal: _pyPrev:
-        lib.packagesFromDirectory {
-          directory = ./nix/python-packages;
-          callPackage = pyFinal.callPackage;
-        };
-
-      overlay = final: prev: {
-        pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [ pythonPackagesOverlay ];
-        diskovod = final.python313.pkgs.toPythonApplication final.python313.pkgs.diskovod;
-      };
+      overlay = import ./nix/overlay.nix;
     in
-    flake-parts.lib.mkFlake { inherit inputs; } {
+    inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       imports = [ inputs.treefmt-nix.flakeModule ];
       systems = [
         "aarch64-linux"
@@ -70,7 +58,7 @@
 
       flake = {
         overlays.default = overlay;
-        nixosModules.default = import ./nix/module.nix;
+        nixosModules.default = ./nix/module.nix;
       };
     };
 }

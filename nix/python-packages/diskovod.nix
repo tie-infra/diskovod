@@ -1,6 +1,7 @@
 {
-  aiosqlite,
   buildPythonPackage,
+  setuptools,
+  aiosqlite,
   cryptography,
   discordpy-self,
   fastapi,
@@ -11,12 +12,12 @@
   langgraph-checkpoint-sqlite,
   httpcore2,
   httpx2,
-  pytest,
-  pytest-asyncio,
   pydantic,
   python-multipart,
-  setuptools,
   uvicorn,
+  pytest,
+  pytest-asyncio,
+  pytestCheckHook,
 }:
 
 buildPythonPackage {
@@ -47,8 +48,8 @@ buildPythonPackage {
   nativeCheckInputs = [
     pytest
     pytest-asyncio
+    pytestCheckHook
   ];
-  checkPhase = "pytest -q";
 
   pythonImportsCheck = [ "diskovod" ];
 }

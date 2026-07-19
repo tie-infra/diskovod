@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import html
-import ipaddress
 import re
-import socket
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
-import aiohttp
+import httpx2
+
+from .http_client import PublicAsyncHTTPTransport, PublicNetworkError
 
 MAX_FETCH_BYTES = 1_000_000
 USER_AGENT = "Diskovod/1.0 (+local Discord assistant)"
@@ -49,48 +48,48 @@ async def fetch_url(url: str) -> dict[str, Any]:
 
 
 async def _request_text(url: str) -> tuple[str, dict[str, str]]:
-    await _validate_public_url(url)
-    timeout = aiohttp.ClientTimeout(total=20, connect=8)
-    async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": USER_AGENT}) as session:
-        async with session.get(url, allow_redirects=True, max_redirects=5) as response:
-            await _validate_public_url(str(response.url))
-            if response.status < 200 or response.status >= 300:
-                raise WebAccessError(f"http_status_{response.status}")
-            content_type = response.headers.get("Content-Type", "").split(";", 1)[0].casefold()
-            if not (
-                content_type.startswith("text/") or content_type in {"application/json", "application/xml"}
-            ):
-                raise WebAccessError("unsupported_content_type")
-            body = await response.content.read(MAX_FETCH_BYTES + 1)
-            if len(body) > MAX_FETCH_BYTES:
-                raise WebAccessError("response_too_large")
-            charset = response.charset or "utf-8"
-            try:
-                text = body.decode(charset, errors="replace")
-            except LookupError:
-                text = body.decode("utf-8", errors="replace")
-            return text, {"url": str(response.url), "content_type": content_type}
-
-
-async def _validate_public_url(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
-        raise WebAccessError("invalid_url")
+    timeout = httpx2.Timeout(20, connect=8)
     try:
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    except ValueError as error:
+        async with httpx2.AsyncClient(
+            transport=PublicAsyncHTTPTransport(),
+            timeout=timeout,
+            headers={"User-Agent": USER_AGENT},
+            follow_redirects=True,
+            max_redirects=5,
+            trust_env=False,
+        ) as session:
+            async with session.stream("GET", url) as response:
+                if response.status_code < 200 or response.status_code >= 300:
+                    raise WebAccessError(f"http_status_{response.status_code}")
+                content_type = response.headers.get("Content-Type", "").split(";", 1)[0].casefold()
+                if not (
+                    content_type.startswith("text/")
+                    or content_type in {"application/json", "application/xml"}
+                ):
+                    raise WebAccessError("unsupported_content_type")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > MAX_FETCH_BYTES:
+                        raise WebAccessError("response_too_large")
+                charset = response.encoding or "utf-8"
+                try:
+                    text = body.decode(charset, errors="replace")
+                except LookupError:
+                    text = body.decode("utf-8", errors="replace")
+                return text, {"url": str(response.url), "content_type": content_type}
+    except WebAccessError:
+        raise
+    except PublicNetworkError as error:
+        raise WebAccessError(str(error)) from error
+    except httpx2.InvalidURL as error:
         raise WebAccessError("invalid_url") from error
-    loop = asyncio.get_running_loop()
-    try:
-        addresses = await loop.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
-    except OSError as error:
-        raise WebAccessError("dns_failure") from error
-    if not addresses:
-        raise WebAccessError("dns_failure")
-    for address in addresses:
-        ip = ipaddress.ip_address(address[4][0])
-        if not ip.is_global:
-            raise WebAccessError("private_address_rejected")
+    except httpx2.TooManyRedirects as error:
+        raise WebAccessError("too_many_redirects") from error
+    except httpx2.TimeoutException as error:
+        raise WebAccessError("request_timeout") from error
+    except httpx2.HTTPError as error:
+        raise WebAccessError("request_failed") from error
 
 
 class _SearchParser(HTMLParser):

@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
-import aiohttp
+import httpx2
 
 from .models import ChatCredentials
 from .store import Store
@@ -32,19 +32,19 @@ class ChatGPTAccount:
 
     def __init__(self, store: Store):
         self.store = store
-        self.session: aiohttp.ClientSession | None = None
+        self.session: httpx2.AsyncClient | None = None
         self.oauth: OAuthAttempt | None = None
         self.last_error: str | None = None
         self._refresh_lock = asyncio.Lock()
 
     async def start(self) -> None:
         if self.session is None:
-            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
+            self.session = httpx2.AsyncClient(timeout=60, http2=True)
 
     async def close(self) -> None:
         self.oauth = None
         if self.session is not None:
-            await self.session.close()
+            await self.session.aclose()
             self.session = None
 
     @property
@@ -139,15 +139,15 @@ class ChatGPTAccount:
     ) -> ChatCredentials:
         if self.session is None:
             raise RuntimeError("ChatGPT OAuth service has not started")
-        async with self.session.post(TOKEN_URL, data=data) as response:
-            payload = await response.json(content_type=None)
-            if response.status >= 400:
-                if clear_on_auth_error and response.status in {400, 401, 403}:
-                    self.store.clear_chat_credentials()
-                detail = payload.get("error_description") or payload.get("message") or payload.get("error")
-                raise RuntimeError(
-                    f"OpenAI token exchange returned HTTP {response.status}: {detail or 'unknown error'}"
-                )
+        response = await self.session.post(TOKEN_URL, data=data)
+        payload = response.json()
+        if response.status_code >= 400:
+            if clear_on_auth_error and response.status_code in {400, 401, 403}:
+                self.store.clear_chat_credentials()
+            detail = payload.get("error_description") or payload.get("message") or payload.get("error")
+            raise RuntimeError(
+                f"OpenAI token exchange returned HTTP {response.status_code}: {detail or 'unknown error'}"
+            )
         return self._save_tokens(payload)
 
     def _save_tokens(self, payload: dict) -> ChatCredentials:

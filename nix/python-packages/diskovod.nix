@@ -1,5 +1,4 @@
 {
-  aiohttp,
   aiosqlite,
   buildPythonPackage,
   cryptography,
@@ -10,6 +9,8 @@
   langchain-openai,
   langgraph,
   langgraph-checkpoint-sqlite,
+  httpcore2,
+  httpx2,
   pytest,
   pytest-asyncio,
   pydantic,
@@ -27,7 +28,6 @@ buildPythonPackage {
 
   build-system = [ setuptools ];
   dependencies = [
-    aiohttp
     aiosqlite
     cryptography
     discordpy-self
@@ -37,6 +37,8 @@ buildPythonPackage {
     langchain-openai
     langgraph
     langgraph-checkpoint-sqlite
+    httpcore2
+    httpx2
     pydantic
     python-multipart
     uvicorn

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
+from langgraph.checkpoint.base import empty_checkpoint
 
 from diskovod.agent_actions import DeliveryRecord
 from diskovod.agent_types import AgentRuntimeContext, CapabilityProfile
 from diskovod.durable_actions import DurableActionGateway, SideEffectLedger
 from diskovod.events import DiscordEventQueue
+from diskovod.persistence import open_checkpointer
 
 
 class Transport:
@@ -23,6 +26,17 @@ class Transport:
             DeliveryRecord("accepted", index, discord_message_id=f"message-{index}")
             for index, _ in enumerate(messages)
         ]
+
+
+class ClaimSignalingLedger(SideEffectLedger):
+    def __init__(self, path: Path, loop: asyncio.AbstractEventLoop):
+        super().__init__(path)
+        self.loop = loop
+        self.claim_started = asyncio.Event()
+
+    def claim(self, *args, **kwargs):
+        self.loop.call_soon_threadsafe(self.claim_started.set)
+        return super().claim(*args, **kwargs)
 
 
 def context(trace_id: str = "run-1") -> AgentRuntimeContext:
@@ -71,6 +85,51 @@ async def test_ambiguous_transport_failure_is_recorded_and_never_retried(tmp_pat
     assert second == first
     assert transport.calls == 1
     ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_tool_sends_do_not_block_checkpoint_commits(tmp_path: Path):
+    path = tmp_path / "diskovod.sqlite3"
+    ledger = ClaimSignalingLedger(path, asyncio.get_running_loop())
+    transport = Transport()
+    gateway = DurableActionGateway(ledger, transport)
+
+    try:
+        async with open_checkpointer(path, "x" * 32) as checkpointer:
+            original_commit = checkpointer.conn.commit
+            for index in range(12):
+                ledger.claim_started.clear()
+                commit_started = asyncio.Event()
+
+                async def commit_after_ledger_yields() -> None:
+                    commit_started.set()
+                    await ledger.claim_started.wait()
+                    await original_commit()
+
+                checkpointer.conn.commit = commit_after_ledger_yields
+                checkpoint_task = asyncio.create_task(
+                    checkpointer.aput(
+                        {"configurable": {"thread_id": "thread", "checkpoint_ns": ""}},
+                        empty_checkpoint(),
+                        {"source": "loop", "step": index, "parents": {}},
+                        {},
+                    )
+                )
+                await commit_started.wait()
+                try:
+                    records = await gateway.send_messages(
+                        context(f"run-{index}"),
+                        (f"message {index}",),
+                        tool_call_id=f"call-{index}",
+                    )
+                    assert records[0].accepted
+                finally:
+                    await checkpoint_task
+                    checkpointer.conn.commit = original_commit
+    finally:
+        ledger.close()
+
+    assert transport.calls == 12
 
 
 def test_event_queue_is_ordered_deduplicated_and_isolated_by_chat(tmp_path: Path):

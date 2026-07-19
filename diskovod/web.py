@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
@@ -256,7 +257,10 @@ class WebApp:
             if admin_theme not in ADMIN_THEMES:
                 return self._back(tab=tab, error=self._t("unknown_theme"))
             current = self.store.app_settings()
-            self.store.set_app_settings(replace(current, admin_theme=admin_theme))
+            await asyncio.to_thread(
+                self.store.set_app_settings,
+                replace(current, admin_theme=admin_theme),
+            )
             return self._back(tab=tab, message=self._t("theme_saved"))
 
         @self.app.post("/chatgpt/connect")
@@ -290,7 +294,7 @@ class WebApp:
 
         @self.app.post("/chatgpt/disconnect")
         async def chat_disconnect(_: str = Depends(auth)):
-            self.store.clear_chat_credentials()
+            await asyncio.to_thread(self.store.clear_chat_credentials)
             self.account.last_error = None
             return self._back(message=self._t("chatgpt_disconnected"))
 
@@ -306,13 +310,14 @@ class WebApp:
                 )
             except Exception as exc:
                 return self._back(error=self._t("web_search_probe_failed", detail=exc))
-            self.store.save_agent_configuration(
+            await asyncio.to_thread(
+                self.store.save_agent_configuration,
                 self.provider_setup.configuration_with_capability(
                     configuration,
                     "hosted_web_search",
                     probe.supported,
                     probe.id,
-                )
+                ),
             )
             return self._back(
                 message=(
@@ -365,7 +370,7 @@ class WebApp:
             if self.store.app_settings().enabled and not capabilities["native_function_calls"]:
                 return self._back(error=self._t("disable_automation_for_provider"))
             saved_provider = CustomProvider(name, base_url, api_key, protocol, capabilities)
-            self.store.set_custom_provider(saved_provider)
+            await asyncio.to_thread(self.store.set_custom_provider, saved_provider)
             if draft_token:
                 self.provider_drafts.pop(draft_token, None)
             selected = self._model_view()
@@ -483,8 +488,8 @@ class WebApp:
 
         @self.app.post("/provider/custom/remove")
         async def custom_provider_remove(_: str = Depends(auth)):
-            self.store.clear_custom_provider()
-            self.store.clear_provider_credentials("custom_openai_default")
+            await asyncio.to_thread(self.store.clear_custom_provider)
+            await asyncio.to_thread(self.store.clear_provider_credentials, "custom_openai_default")
             return self._back(message=self._t("custom_provider_removed"))
 
         @self.app.post("/provider/select")
@@ -517,7 +522,7 @@ class WebApp:
             token = token.strip()
             if len(token) < 20:
                 return self._back(error=self._t("discord_token_incomplete"))
-            self.store.set_discord_token(token)
+            await asyncio.to_thread(self.store.set_discord_token, token)
             self.discord.error = None
             await self.discord.restart()
             return self._back(message=self._t("discord_connection_started"))
@@ -525,7 +530,7 @@ class WebApp:
         @self.app.post("/discord/disconnect")
         async def discord_disconnect(_: str = Depends(auth)):
             await self.discord.stop()
-            self.store.clear_discord_token()
+            await asyncio.to_thread(self.store.clear_discord_token)
             return self._back(message=self._t("discord_disconnected"))
 
         @self.app.post("/discord/captcha/{request_id}")
@@ -634,7 +639,7 @@ class WebApp:
                 owner_details=owner_details,
                 base_instructions=base_instructions,
             )
-            self.store.set_app_settings(value)
+            await asyncio.to_thread(self.store.set_app_settings, value)
             await self._save_provider_selection(
                 provider,
                 model=model,
@@ -658,8 +663,8 @@ class WebApp:
                     error=ui_text(current.admin_locale, "assistant_settings_reset_confirm"),
                 )
             value = assistant_settings_defaults(current)
-            self.store.set_app_settings(value)
-            self.models.refresh_prompt_cache_identity()
+            await asyncio.to_thread(self.store.set_app_settings, value)
+            await asyncio.to_thread(self.models.refresh_prompt_cache_identity)
             return self._back(
                 tab="assistant",
                 message=ui_text(value.admin_locale, "assistant_settings_reset"),
@@ -692,13 +697,18 @@ class WebApp:
             if len(profile) < 50:
                 return self._back(tab="assistant", error=self._t("personality_too_short"))
             source_hash = hashlib.sha256(("edited\n" + profile).encode()).hexdigest()
-            self.store.set_personality(profile, source_hash, source="edited")
-            self.models.refresh_prompt_cache_identity()
+            await asyncio.to_thread(
+                self.store.set_personality,
+                profile,
+                source_hash,
+                source="edited",
+            )
+            await asyncio.to_thread(self.models.refresh_prompt_cache_identity)
             return self._back(tab="assistant", message=self._t("personality_updated"))
 
         @self.app.post("/conversations/{channel_id}/pause")
         async def pause(channel_id: str, _: str = Depends(auth)):
-            self.runtime.permanently_pause(channel_id)
+            await self.runtime.permanently_pause(channel_id)
             return self._back(tab="conversations", message=self._t("conversation_paused"))
 
         @self.app.post("/conversations/{channel_id}/resume")
@@ -707,8 +717,8 @@ class WebApp:
             escalation = self.store.active_interrupt_for_channel(channel_id)
             if escalation is not None:
                 await self.runtime.resume_escalation(str(escalation["id"]), action="resolved")
-            self.store.set_permanent_pause(channel_id, False)
-            self.store.clear_snooze(channel_id)
+            await asyncio.to_thread(self.store.set_permanent_pause, channel_id, False)
+            await asyncio.to_thread(self.store.clear_snooze, channel_id)
             return self._back(tab="conversations", message=self._t("conversation_resumed"))
 
         @self.app.post("/conversations/{channel_id}/mode")
@@ -722,7 +732,7 @@ class WebApp:
                     tab="conversations",
                     error=self._t("conversation_mode_invalid"),
                 )
-            if not self.store.set_conversation_mode(channel_id, mode):
+            if not await asyncio.to_thread(self.store.set_conversation_mode, channel_id, mode):
                 return self._back(
                     tab="conversations",
                     error=self._t("conversation_not_found"),
@@ -754,7 +764,7 @@ class WebApp:
         ):
             if self.store.conversation(channel_id) is None:
                 return self._back(tab="conversations", error=self._t("conversation_not_found"))
-            self.runtime.set_live_steering(channel_id, enabled is not None)
+            await self.runtime.set_live_steering(channel_id, enabled is not None)
             return self._back(tab="conversations", message=self._t("settings_saved"))
 
         @self.app.post("/escalations/{escalation_id}/claim")
@@ -774,8 +784,9 @@ class WebApp:
             if resume is not None:
                 escalation = self.store.escalation_interrupt(escalation_id)
                 if escalation:
-                    self.store.set_permanent_pause(str(escalation["channel_id"]), False)
-                    self.store.clear_snooze(str(escalation["channel_id"]))
+                    channel_id = str(escalation["channel_id"])
+                    await asyncio.to_thread(self.store.set_permanent_pause, channel_id, False)
+                    await asyncio.to_thread(self.store.clear_snooze, channel_id)
             return self._back(
                 tab="conversations",
                 message=self._t("escalation_resolved")
@@ -811,7 +822,7 @@ class WebApp:
                     error=self._t("delete_confirmation_required"),
                 )
             try:
-                deleted = self.store.delete_database_row(table, row_key)
+                deleted = await asyncio.to_thread(self.store.delete_database_row, table, row_key)
             except ValueError as exc:
                 key = (
                     "database_table_read_only"
@@ -855,7 +866,7 @@ class WebApp:
                 labels = tuple(json.loads(namespace))
                 if not labels or not all(isinstance(label, str) for label in labels):
                     raise ValueError
-                self.runtime.memory.delete(labels, key)
+                await self.runtime.memory.adelete(labels, key)
             except (TypeError, ValueError, json.JSONDecodeError):
                 return self._back(tab="usage", error=self._t("memory_identity_invalid"))
             return self._back(tab="usage", message=self._t("memory_deleted"))
@@ -1063,7 +1074,8 @@ class WebApp:
         if previous and self.runtime._affinity(previous) != (target_provider, model, target_transport):
             self.runtime.ensure_configuration_transition_allowed()
         if provider == "chatgpt":
-            self.models.save_subscription(
+            await asyncio.to_thread(
+                self.models.save_subscription,
                 model_id=model,
                 reasoning_effort=reasoning_effort,
                 max_output_tokens=max_output_tokens,
@@ -1073,7 +1085,8 @@ class WebApp:
         custom = self.store.custom_provider()
         if provider != "custom" or custom is None:
             raise ValueError("Unknown or unavailable model provider")
-        self.models.save_custom_openai(
+        await asyncio.to_thread(
+            self.models.save_custom_openai,
             custom,
             model_id=model,
             reasoning_effort=reasoning_effort,
@@ -1116,8 +1129,8 @@ class WebApp:
             profile = response.text.strip()
         except Exception as exc:
             return self._back(tab="assistant", error=str(exc))
-        self.store.set_personality(profile, source_hash, source=source)
-        self.models.refresh_prompt_cache_identity()
+        await asyncio.to_thread(self.store.set_personality, profile, source_hash, source=source)
+        await asyncio.to_thread(self.models.refresh_prompt_cache_identity)
         return self._back(tab="assistant", message=self._t("personality_inferred"))
 
     def _url(self, path: str) -> str:

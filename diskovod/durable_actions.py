@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import threading
@@ -133,7 +134,8 @@ class DurableActionGateway(AgentActionGateway):
         *,
         tool_call_id: str,
     ) -> list[DeliveryRecord]:
-        state, recorded = self.ledger.claim(
+        state, recorded = await asyncio.to_thread(
+            self.ledger.claim,
             context.trace_id,
             tool_call_id,
             "send_messages",
@@ -162,12 +164,24 @@ class DurableActionGateway(AgentActionGateway):
                 )
                 for index, _ in enumerate(messages)
             ]
-            self.ledger.finish(context.trace_id, tool_call_id, "ambiguous", records)
+            await asyncio.to_thread(
+                self.ledger.finish,
+                context.trace_id,
+                tool_call_id,
+                "ambiguous",
+                records,
+            )
             return records
         terminal_state = (
             "completed" if all(record.status != "ambiguous" for record in records) else "ambiguous"
         )
-        self.ledger.finish(context.trace_id, tool_call_id, terminal_state, records)
+        await asyncio.to_thread(
+            self.ledger.finish,
+            context.trace_id,
+            tool_call_id,
+            terminal_state,
+            records,
+        )
         return records
 
     async def react_to_message(
@@ -182,7 +196,13 @@ class DurableActionGateway(AgentActionGateway):
             "message_id": context.trigger_message_id,
             "emoji": emoji,
         }
-        state, recorded = self.ledger.claim(context.trace_id, tool_call_id, "react_to_message", request)
+        state, recorded = await asyncio.to_thread(
+            self.ledger.claim,
+            context.trace_id,
+            tool_call_id,
+            "react_to_message",
+            request,
+        )
         if state in {"completed", "ambiguous"} and recorded:
             return recorded[0]
         if state == "claimed":
@@ -196,7 +216,8 @@ class DurableActionGateway(AgentActionGateway):
                 error_code="transport_exception",
                 error_detail=type(error).__name__,
             )
-        self.ledger.finish(
+        await asyncio.to_thread(
+            self.ledger.finish,
             context.trace_id,
             tool_call_id,
             "ambiguous" if result.status == "ambiguous" else "completed",
@@ -211,7 +232,8 @@ class DurableActionGateway(AgentActionGateway):
         *,
         tool_call_id: str,
     ) -> None:
-        self.ledger.record_escalation(
+        await asyncio.to_thread(
+            self.ledger.record_escalation,
             f"{context.trace_id}:{tool_call_id}",
             context.thread_id,
             context.channel_id,

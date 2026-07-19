@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -97,7 +98,8 @@ def localized_agent_tools(
     ) -> dict[str, Any]:
         if attachments is None:
             return {"ok": False, "error": text["memory_unavailable"]}
-        return {"ok": True, "results": attachments.search(runtime.context.channel_id, query)}
+        results = await asyncio.to_thread(attachments.search, runtime.context.channel_id, query)
+        return {"ok": True, "results": results}
 
     async def search_chat_memory(
         query: Annotated[MessageText, Field(description=text["web_query"])],
@@ -106,7 +108,7 @@ def localized_agent_tools(
         if runtime.store is None:
             return {"ok": False, "error": text["memory_unavailable"]}
         namespace = ("chat", runtime.context.account_id, runtime.context.channel_id, "memory")
-        items = runtime.store.search(namespace, query=query, limit=8)
+        items = await runtime.store.asearch(namespace, query=query, limit=8)
         return {
             "ok": True,
             "memories": [{"key": item.key, "value": item.value} for item in items],
@@ -121,7 +123,7 @@ def localized_agent_tools(
             return {"ok": False, "error": text["memory_unavailable"]}
         namespace = ("chat", runtime.context.account_id, runtime.context.channel_id, "memory")
         normalized_key = "-".join(key.casefold().split())[:120]
-        runtime.store.put(
+        await runtime.store.aput(
             namespace,
             normalized_key,
             {
@@ -140,7 +142,7 @@ def localized_agent_tools(
             return {"ok": False, "error": text["memory_unavailable"]}
         namespace = ("chat", runtime.context.account_id, runtime.context.channel_id, "memory")
         normalized_key = "-".join(key.casefold().split())[:120]
-        runtime.store.delete(namespace, normalized_key)
+        await runtime.store.adelete(namespace, normalized_key)
         return {"ok": True, "key": normalized_key}
 
     async def send_messages(

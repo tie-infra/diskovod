@@ -69,7 +69,7 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp
     service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
     await service.start()
 
-    service.submit_message(
+    await service.submit_message(
         message_id="discord-1",
         channel_id="channel",
         account_id="owner",
@@ -102,7 +102,7 @@ async def test_historical_replay_uses_emulated_discord_actions(tmp_path):
     model = ScriptedChatModel(responses=[AIMessage(content="Initial turn")])
     service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
     await service.start()
-    service.submit_message(
+    await service.submit_message(
         message_id="discord-replay",
         channel_id="channel",
         account_id="owner",
@@ -144,7 +144,7 @@ async def test_model_change_rolls_checkpoint_to_portable_summary(tmp_path):
     models = FakeModels(model)
     service = AgentService(store, models, RecordingTransport(), "x" * 32, UnusedPublicHTTP())
     await service.start()
-    service.submit_message(
+    await service.submit_message(
         message_id="discord-rollover",
         channel_id="channel",
         account_id="owner",
@@ -188,7 +188,7 @@ async def test_agent_service_allows_a_zero_message_turn(tmp_path):
         UnusedPublicHTTP(),
     )
     await service.start()
-    service.submit_message(
+    await service.submit_message(
         message_id="discord-2",
         channel_id="channel",
         account_id="owner",
@@ -228,7 +228,7 @@ async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tm
     )
     service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
     await service.start()
-    service.submit_message(
+    await service.submit_message(
         message_id="discord-3",
         channel_id="channel",
         account_id="owner",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -103,7 +104,8 @@ class ProviderSetup:
             supported = False
             conclusion = f"{type(error).__name__}: {error}"[:4000]
             status = "error"
-        self._record(
+        await asyncio.to_thread(
+            self._record,
             probe_id,
             configuration,
             "native_tools",
@@ -161,7 +163,8 @@ class ProviderSetup:
             supported = False
             conclusion = f"{type(error).__name__}: {error}"[:4000]
             status = "error"
-        self._record(
+        await asyncio.to_thread(
+            self._record,
             probe_id,
             configuration,
             "hosted_web_search",

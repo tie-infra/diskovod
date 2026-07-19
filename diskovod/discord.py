@@ -113,12 +113,19 @@ class PrivateDiscordClient(discord.Client):
         )
         if message.author == self.user:
             nonce = str(message.nonce) if message.nonce is not None else ""
-            if (nonce and self.store.consume_nonce(nonce)) or self.store.is_bot_message(str(message.id)):
+            consumed_nonce = bool(nonce) and await asyncio.to_thread(self.store.consume_nonce, nonce)
+            if consumed_nonce or await asyncio.to_thread(self.store.is_bot_message, str(message.id)):
                 return
             peer = message.channel.recipient
             if peer:
-                self.store.upsert_conversation(channel_id, str(peer.id), str(peer))
-            self.store.save_message(
+                await asyncio.to_thread(
+                    self.store.upsert_conversation,
+                    channel_id,
+                    str(peer.id),
+                    str(peer),
+                )
+            await asyncio.to_thread(
+                self.store.save_message,
                 id=str(message.id),
                 channel_id=channel_id,
                 author_id=str(self.user.id),
@@ -139,7 +146,7 @@ class PrivateDiscordClient(discord.Client):
             if resumed:
                 log.info("Manual owner reply resumed the interrupted agent for %s", channel_id)
             conversation = self.store.conversation(channel_id)
-            self.runtime.submit_message(
+            await self.runtime.submit_message(
                 message_id=str(message.id),
                 channel_id=channel_id,
                 account_id=str(self.user.id),
@@ -154,12 +161,18 @@ class PrivateDiscordClient(discord.Client):
             if not resumed and not (
                 conversation and conversation["mode"] == "inline" and not conversation["paused"]
             ):
-                self.runtime.human_activity(channel_id)
+                await self.runtime.human_activity(channel_id)
             return
         if message.author.bot:
             return
-        self.store.upsert_conversation(channel_id, str(message.author.id), str(message.author))
-        self.store.save_message(
+        await asyncio.to_thread(
+            self.store.upsert_conversation,
+            channel_id,
+            str(message.author.id),
+            str(message.author),
+        )
+        await asyncio.to_thread(
+            self.store.save_message,
             id=str(message.id),
             channel_id=channel_id,
             author_id=str(message.author.id),
@@ -170,7 +183,7 @@ class PrivateDiscordClient(discord.Client):
             timestamp=message.created_at.timestamp(),
             attachments=attachments,
         )
-        self.runtime.submit_message(
+        await self.runtime.submit_message(
             message_id=str(message.id),
             channel_id=channel_id,
             account_id=str(self.user.id),
@@ -191,10 +204,15 @@ class PrivateDiscordClient(discord.Client):
         channel_id = str(message.channel.id)
         content = message.content
         if message.author == self.user:
-            updated = self.store.update_message_content(str(message.id), content, source="human")
+            updated = await asyncio.to_thread(
+                self.store.update_message_content,
+                str(message.id),
+                content,
+                source="human",
+            )
             if updated and updated["changed"]:
                 conversation = self.store.conversation(channel_id)
-                self.runtime.submit_message(
+                await self.runtime.submit_message(
                     message_id=str(message.id),
                     channel_id=channel_id,
                     account_id=str(self.user.id),
@@ -207,14 +225,14 @@ class PrivateDiscordClient(discord.Client):
                     edited=True,
                 )
                 if not (conversation and conversation["mode"] == "inline" and not conversation["paused"]):
-                    self.runtime.human_activity(channel_id)
+                    await self.runtime.human_activity(channel_id)
             return
         if message.author.bot:
             return
-        updated = self.store.update_message_content(str(message.id), content)
+        updated = await asyncio.to_thread(self.store.update_message_content, str(message.id), content)
         if not updated or not updated["changed"]:
             return
-        self.runtime.submit_message(
+        await self.runtime.submit_message(
             message_id=str(message.id),
             channel_id=channel_id,
             account_id=str(self.user.id),
@@ -233,7 +251,7 @@ class PrivateDiscordClient(discord.Client):
         channel_id = str(payload.channel_id)
         if self.store.conversation(channel_id) is None:
             return
-        self.runtime.submit_delete(
+        await self.runtime.submit_delete(
             message_id=str(payload.message_id),
             channel_id=channel_id,
             account_id=str(self.user.id),
@@ -297,7 +315,7 @@ class DiscordService:
         await channel.fetch_message(message_id)
         if self.runtime is None:
             raise RuntimeError("The agent runtime is not available")
-        self.runtime.force_reply(
+        await self.runtime.force_reply(
             channel_id=channel_id,
             account_id=str(client.user.id),
             trigger_message_id=str(message_id),
@@ -326,7 +344,7 @@ class DiscordService:
                 async with channel.typing():
                     await asyncio.sleep(min(12.0, max(0.8, len(part) / cps)))
                 nonce = secrets.token_hex(12)
-                self.store.remember_nonce(nonce)
+                await asyncio.to_thread(self.store.remember_nonce, nonce)
                 outbound = f"🤖 {part}" if settings.robot_prefix or inline else part
                 sent = await channel.send(
                     outbound,
@@ -343,36 +361,55 @@ class DiscordService:
                     )
                 )
                 continue
-            self.store.remember_bot_message(str(sent.id))
-            self.store.save_message(
-                id=str(sent.id),
-                channel_id=context.channel_id,
-                author_id=str(sent.author.id),
-                author_name=str(sent.author),
-                direction="out",
-                source="assistant",
-                content=part,
-                timestamp=sent.created_at.timestamp(),
+            await asyncio.to_thread(
+                self._record_sent_message,
+                context,
+                part,
+                str(sent.id),
+                str(sent.author.id),
+                str(sent.author),
+                sent.created_at.timestamp(),
             )
-            if self.runtime is not None:
-                self.runtime.events.ingest(
-                    f"discord:message:{sent.id}",
-                    context.channel_id,
-                    "message",
-                    {
-                        "message_id": str(sent.id),
-                        "account_id": context.account_id,
-                        "author_id": str(sent.author.id),
-                        "author_name": str(sent.author),
-                        "participant_role": "assistant",
-                        "content": part,
-                        "attachments": [],
-                    },
-                    observed_at=sent.created_at.timestamp(),
-                    enqueue=False,
-                )
             records.append(DeliveryRecord("accepted", index, discord_message_id=str(sent.id)))
         return records
+
+    def _record_sent_message(
+        self,
+        context: AgentRuntimeContext,
+        content: str,
+        message_id: str,
+        author_id: str,
+        author_name: str,
+        timestamp: float,
+    ) -> None:
+        self.store.remember_bot_message(message_id)
+        self.store.save_message(
+            id=message_id,
+            channel_id=context.channel_id,
+            author_id=author_id,
+            author_name=author_name,
+            direction="out",
+            source="assistant",
+            content=content,
+            timestamp=timestamp,
+        )
+        if self.runtime is not None:
+            self.runtime.events.ingest(
+                f"discord:message:{message_id}",
+                context.channel_id,
+                "message",
+                {
+                    "message_id": message_id,
+                    "account_id": context.account_id,
+                    "author_id": author_id,
+                    "author_name": author_name,
+                    "participant_role": "assistant",
+                    "content": content,
+                    "attachments": [],
+                },
+                observed_at=timestamp,
+                enqueue=False,
+            )
 
     async def react_to_message(
         self,
@@ -391,7 +428,8 @@ class DiscordService:
                 error_code="discord_reaction_failed",
                 error_detail=f"{type(error).__name__}: {error}"[:1000],
             )
-        self.store.record_assistant_reaction(
+        await asyncio.to_thread(
+            self.store.record_assistant_reaction,
             trigger_message_id=message_id,
             channel_id=context.channel_id,
             emoji=emoji,

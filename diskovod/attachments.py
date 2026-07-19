@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -96,12 +97,28 @@ class AttachmentRepository:
                 if text:
                     metadata["text"] = text[:MAX_INLINE_TEXT_CHARACTERS]
                     inline_bytes += len(body)
-            digest = self.put_object(body, str(metadata.get("content_type") or ""))
+            digest = await asyncio.to_thread(
+                self._store_capture,
+                channel_id,
+                message_id,
+                metadata,
+                body,
+            )
             metadata["sha256"] = digest
-            self.add_reference(channel_id, message_id, metadata, digest)
-            if text := metadata.get("text"):
-                self.index_text(digest, str(text), {"filename": metadata.get("filename")})
         return captured
+
+    def _store_capture(
+        self,
+        channel_id: str,
+        message_id: str,
+        metadata: dict[str, Any],
+        body: bytes,
+    ) -> str:
+        digest = self.put_object(body, str(metadata.get("content_type") or ""))
+        self.add_reference(channel_id, message_id, metadata, digest)
+        if text := metadata.get("text"):
+            self.index_text(digest, str(text), {"filename": metadata.get("filename")})
+        return digest
 
     def put_object(self, body: bytes, media_type: str) -> str:
         digest = hashlib.sha256(body).hexdigest()

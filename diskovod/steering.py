@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
@@ -34,7 +35,7 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
         state: DiskovodAgentState,
         runtime: Runtime[AgentRuntimeContext],
     ) -> dict[str, Any] | None:
-        return self.before_model(state, runtime)
+        return await asyncio.to_thread(self._inject, state, runtime, cancel_tools=False)
 
     @hook_config(can_jump_to=["model"])
     def after_model(
@@ -50,7 +51,7 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
         state: DiskovodAgentState,
         runtime: Runtime[AgentRuntimeContext],
     ) -> dict[str, Any] | None:
-        return self.after_model(state, runtime)
+        return await asyncio.to_thread(self._inject, state, runtime, cancel_tools=True)
 
     def _inject(
         self,

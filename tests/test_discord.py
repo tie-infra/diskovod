@@ -82,10 +82,10 @@ class EditRuntime:
         self.human_channels: list[str] = []
         self.submitted: list[dict] = []
 
-    def human_activity(self, channel_id: str):
+    async def human_activity(self, channel_id: str):
         self.human_channels.append(channel_id)
 
-    def submit_message(self, **values):
+    async def submit_message(self, **values):
         self.submitted.append(values)
 
 
@@ -93,7 +93,7 @@ class ForceRuntime:
     def __init__(self):
         self.requests: list[dict] = []
 
-    def force_reply(self, **values):
+    async def force_reply(self, **values):
         self.requests.append(values)
 
 

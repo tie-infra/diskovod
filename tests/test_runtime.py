@@ -246,10 +246,28 @@ async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tm
     escalation = store.active_interrupts()[0]
     assert transport.messages == [("channel", ("I marked this for the owner.",))]
     assert await service.claim_escalation(escalation["id"]) is True
-    assert await service.resume_escalation(escalation["id"], action="resolved") is True
+    assert (
+        await service.resume_escalation(
+            escalation["id"],
+            action="owner_reply",
+            owner_message="I am here now.",
+            owner_message_id="owner-message",
+            owner_author_id="owner",
+            owner_author_name="Owner",
+        )
+        is True
+    )
 
     assert transport.messages == [("channel", ("I marked this for the owner.",))]
     assert store.active_interrupts() == []
     assert store._db.execute("SELECT status FROM agent_runs").fetchone()["status"] == "completed"
+    thread_id = service.events.thread_id("owner", "channel")
+    checkpoint = await service.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+    owner = next(
+        message
+        for message in checkpoint.checkpoint["channel_values"]["messages"]
+        if message.id == "owner-message"
+    )
+    assert owner.additional_kwargs["diskovod_participant"]["role"] == "owner"
     await service.close()
     store.close()

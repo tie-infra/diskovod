@@ -447,6 +447,9 @@ class AgentService:
         *,
         action: str,
         owner_message: str = "",
+        owner_message_id: str = "",
+        owner_author_id: str = "",
+        owner_author_name: str = "",
     ) -> bool:
         if action not in {"resolved", "dismissed", "owner_reply"}:
             raise ValueError("Unknown escalation resolution")
@@ -514,10 +517,37 @@ class AgentService:
             "resolved_at": time.time(),
         }
         self.store.record_agent_trace(str(run["id"]), "interrupt_resume", resume_payload)
+        invocation_config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": 40,
+        }
+        if action == "owner_reply" and owner_message.strip():
+            await agent.aupdate_state(
+                invocation_config,
+                {
+                    "messages": [
+                        HumanMessage(
+                            owner_message[:4000],
+                            id=owner_message_id or f"owner-reply:{time.time_ns()}",
+                            additional_kwargs={
+                                "diskovod_participant": {
+                                    "id": owner_author_id or account_id,
+                                    "name": owner_author_name
+                                    or runtime_context_text(settings.prompt_locale)["account_owner"],
+                                    "role": "owner",
+                                    "discord_event_id": (
+                                        f"discord:message:{owner_message_id}" if owner_message_id else ""
+                                    ),
+                                }
+                            },
+                        )
+                    ]
+                },
+            )
         try:
             result = await agent.ainvoke(
                 Command(resume=resume_payload),
-                config={"configurable": {"thread_id": thread_id}, "recursion_limit": 40},
+                config=invocation_config,
                 context=context,
             )
         except Exception as error:
@@ -544,6 +574,10 @@ class AgentService:
         self,
         channel_id: str,
         owner_message: str,
+        *,
+        message_id: str = "",
+        author_id: str = "",
+        author_name: str = "",
     ) -> bool:
         escalation = self.store.active_interrupt_for_channel(channel_id)
         if escalation is None:
@@ -552,6 +586,9 @@ class AgentService:
             str(escalation["id"]),
             action="owner_reply",
             owner_message=owner_message,
+            owner_message_id=message_id,
+            owner_author_id=author_id,
+            owner_author_name=author_name,
         )
 
     def _ensure_task(self, channel_id: str, *, force: bool = False) -> None:
@@ -735,6 +772,7 @@ class AgentService:
                     "name": str(event.payload.get("author_name") or text_bundle["unknown_participant"]),
                     "role": str(event.payload.get("participant_role") or "peer"),
                     "discord_event_id": event.id,
+                    "observed_at": event.observed_at,
                     "edited": event.kind == "edit",
                 },
                 "diskovod_attachments": attachments,
@@ -751,8 +789,9 @@ class AgentService:
         client = getattr(self.transport, "client", None)
         if client is not None and getattr(client, "user", None) is not None:
             return str(client.user.id)
-        credentials = self.store.chat_credentials()
-        return str(credentials.account_id if credentials and credentials.account_id else "discord-owner")
+        # A model-provider account is unrelated to the Discord identity. Offline migration uses
+        # one installation-scoped owner label, which remains stable after Discord connects.
+        return "discord-owner"
 
     def _mode(self, channel_id: str) -> str:
         conversation = self.store.conversation(channel_id)

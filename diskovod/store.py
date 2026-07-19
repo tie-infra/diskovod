@@ -12,7 +12,6 @@ from .localization import normalize_locale
 from .models import (
     ADMIN_THEMES,
     DEFAULT_BASE_INSTRUCTIONS,
-    REASONING_EFFORTS,
     AppSettings,
     ChatCredentials,
     CustomProvider,
@@ -205,11 +204,6 @@ class Store:
             str(saved.get("admin_theme", "system")) if saved.get("admin_theme") in ADMIN_THEMES else "system"
         )
         saved["prompt_locale"] = normalize_locale(str(saved.get("prompt_locale", "en")))
-        saved["reasoning_effort"] = (
-            str(saved.get("reasoning_effort", "low"))
-            if saved.get("reasoning_effort") in REASONING_EFFORTS
-            else "low"
-        )
         defaults = AppSettings().to_dict()
         known = {key: value for key, value in saved.items() if key in defaults}
         return AppSettings(**(defaults | known))

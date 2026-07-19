@@ -35,6 +35,28 @@ class InjectingModel(ScriptedChatModel):
         return result
 
 
+class InjectingGateway(RecordingGateway):
+    def __init__(self, queue):
+        super().__init__()
+        self.queue = queue
+
+    async def send_messages(self, context, messages, *, tool_call_id):
+        result = await super().send_messages(context, messages, tool_call_id=tool_call_id)
+        self.queue.ingest(
+            "steer-after-send",
+            "channel",
+            "message",
+            {
+                "message_id": "discord-after-send",
+                "author_id": "peer",
+                "author_name": "Peer",
+                "participant_role": "peer",
+                "content": "One more thing",
+            },
+        )
+        return result
+
+
 @pytest.mark.asyncio
 async def test_new_input_cancels_unstarted_tool_and_returns_to_model(tmp_path: Path):
     queue = DiscordEventQueue(tmp_path / "diskovod.sqlite3")
@@ -95,4 +117,43 @@ def test_recovery_reapplies_claimed_but_uncheckpointed_events(tmp_path: Path):
 
     assert update["claimed_event_ids"] == ["event"]
     assert update["messages"][0].content == "recovered"
+    queue.close()
+
+
+@pytest.mark.asyncio
+async def test_live_input_wins_race_with_explicit_send_termination(tmp_path: Path):
+    queue = DiscordEventQueue(tmp_path / "diskovod.sqlite3")
+    queue.thread_id("account", "channel")
+    gateway = InjectingGateway(queue)
+    model = ScriptedChatModel(
+        responses=[
+            tool_call(
+                "send_messages",
+                {"messages": ["Initial final answer"], "continue_after_sending": False},
+                "final-send",
+            ),
+            AIMessage(content="observed the racing input"),
+        ]
+    )
+    agent = build_agent(
+        model,
+        gateway,
+        prompt(),
+        extra_middleware=[LiveConversationMiddleware(queue, "en")],
+    )
+
+    result = await agent.ainvoke(
+        {
+            "messages": [HumanMessage("Start")],
+            "logical_request_id": "request-race",
+        },
+        context=runtime_context(),
+    )
+
+    assert model.index == 2
+    assert any(
+        isinstance(message, HumanMessage) and message.id == "discord-after-send"
+        for message in result["messages"]
+    )
+    assert result["terminate_after_send"] is False
     queue.close()

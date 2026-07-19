@@ -45,16 +45,18 @@ class OpenAIAdapter(ProviderAdapter):
         configuration: ModelConfiguration,
         credentials: ProviderCredentials,
     ) -> BaseChatModel:
-        if not credentials.api_key:
+        if credentials.api_key is None and not self.custom_endpoint:
             raise ProviderBuildError("missing_credentials", "An OpenAI API key is required")
         options = _model_options(configuration.options)
+        prompt_cache_key = options.pop("prompt_cache_key", None)
         return ChatOpenAI(
             model=configuration.model_id,
-            api_key=credentials.api_key,
+            api_key=credentials.api_key or "diskovod-keyless-endpoint",
             base_url=configuration.endpoint,
             use_responses_api=configuration.transport_profile == RESPONSES,
             output_version=("responses/v1" if configuration.transport_profile == RESPONSES else None),
             max_retries=0,
+            model_kwargs=({"prompt_cache_key": prompt_cache_key} if prompt_cache_key is not None else {}),
             **options,
         )
 
@@ -81,12 +83,14 @@ class ChatGPTSubscriptionAdapter(ProviderAdapter):
                 "missing_credentials", "Encrypted ChatGPT Subscription credentials are required"
             )
         options = _model_options(configuration.options)
+        prompt_cache_key = options.pop("prompt_cache_key", None)
         return _ChatOpenAICodex(
             model=configuration.model_id,
             token_provider=credentials.oauth_token_provider,
             output_version="responses/v1",
             max_retries=0,
             originator="diskovod",
+            model_kwargs=({"prompt_cache_key": prompt_cache_key} if prompt_cache_key is not None else {}),
             **options,
         )
 

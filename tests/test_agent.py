@@ -161,6 +161,24 @@ async def test_failed_final_send_does_not_terminate_the_agent():
     assert '"termination_honored":false' in tool_result.content
 
 
+@pytest.mark.asyncio
+async def test_verified_hosted_search_is_bound_as_a_server_tool():
+    model = ScriptedChatModel(responses=[AIMessage(content="server search completed")])
+    agent = build_agent(
+        model,
+        RecordingGateway(),
+        prompt(),
+        hosted_web_search=True,
+    )
+
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage("Search for this")]},
+        context=runtime_context(),
+    )
+
+    assert result["messages"][-1].content == "server search completed"
+
+
 def test_tool_schemas_and_validation_messages_are_localized():
     gateway = RecordingGateway()
     for locale in SUPPORTED_LOCALES:

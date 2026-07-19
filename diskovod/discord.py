@@ -132,6 +132,9 @@ class PrivateDiscordClient(discord.Client):
             resumed = await self.runtime.resume_escalation_for_owner_reply(
                 channel_id,
                 message.content,
+                message_id=str(message.id),
+                author_id=str(self.user.id),
+                author_name=str(self.user),
             )
             if resumed:
                 log.info("Manual owner reply resumed the interrupted agent for %s", channel_id)

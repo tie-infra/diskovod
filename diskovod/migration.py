@@ -295,6 +295,7 @@ class LegacyMigrator:
                             "name": str(item["author_name"]),
                             "role": role,
                             "migrated": True,
+                            "observed_at": float(item["timestamp"]),
                         },
                         "diskovod_attachments": item.get("attachments") or [],
                         "diskovod_account_id": account_id,

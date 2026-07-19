@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import time
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
-from diskovod.models import ChatCredentials
+from diskovod.models import ChatCredentials, CustomProvider
 from diskovod.providers import (
     ChatGPTSubscriptionAdapter,
     ModelConfiguration,
@@ -16,6 +17,7 @@ from diskovod.providers import (
     ProviderBuildError,
     ProviderCredentials,
     ProviderRegistry,
+    ModelService,
     StoredChatGPTTokenProvider,
 )
 from diskovod.store import Store
@@ -90,6 +92,17 @@ def test_custom_openai_adapter_requires_and_preserves_endpoint():
     assert str(model.openai_api_base).rstrip("/") == "https://models.example/v1"
     with pytest.raises(ProviderBuildError, match="endpoint"):
         adapter.validate(configuration("custom_openai", "responses"))
+
+
+def test_custom_openai_adapter_supports_keyless_local_endpoints():
+    adapter = OpenAIAdapter("custom_openai", custom_endpoint=True)
+    model = adapter.build_model(
+        configuration("custom_openai", "responses", endpoint="http://localhost:8000/v1"),
+        ProviderCredentials(api_key=""),
+    )
+
+    assert isinstance(model, BaseChatModel)
+    assert model.openai_api_key.get_secret_value() == "diskovod-keyless-endpoint"
 
 
 def test_provider_options_are_allowlisted_instead_of_forwarded_blindly():
@@ -170,4 +183,34 @@ def test_provider_credentials_are_encrypted_and_profile_scoped(tmp_path):
     ).fetchone()
     assert raw["secret"] == 1
     assert "secret-value" not in raw["value"]
+    store.close()
+
+
+def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_personality(tmp_path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    models = ModelService(store, SimpleNamespace(connected=False))
+    provider = CustomProvider(
+        "Local",
+        "http://localhost:8000/v1",
+        "",
+        "responses",
+        {"native_function_calls": True, "prompt_cache_key": True},
+    )
+
+    models.save_custom_openai(
+        provider,
+        model_id="local-model",
+        reasoning_effort="low",
+        max_output_tokens=256,
+    )
+    first = models.configuration.options["prompt_cache_key"]
+    store.set_personality("A durable style profile", "personality-v2")
+    assert models.refresh_prompt_cache_identity() is not None
+    second = models.configuration.options["prompt_cache_key"]
+
+    assert first.startswith("diskovod:")
+    assert second.startswith("diskovod:")
+    assert first != second
+    model = models.build_model()
+    assert model.model_kwargs["prompt_cache_key"] == second
     store.close()

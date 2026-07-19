@@ -98,6 +98,8 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
             "messages": messages,
             "claimed_event_ids": [event.id for event in events],
             "live_injection_batches": 1,
+            # Newly claimed conversation input wins a race with an explicit final send.
+            "terminate_after_send": False,
             "jump_to": "model"
             if cancel_tools and isinstance(latest, AIMessage) and latest.tool_calls
             else None,
@@ -123,6 +125,7 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
                     "name": str(event.payload.get("author_name") or self.runtime_text["unknown_participant"]),
                     "role": str(event.payload.get("participant_role") or "peer"),
                     "discord_event_id": event.id,
+                    "observed_at": event.observed_at,
                     "edited": event.kind == "edit",
                 },
                 "diskovod_attachments": attachments,

@@ -396,6 +396,7 @@ RUNTIME_CONTEXT_TEXT = {
         "rollover_summary": "The previous checkpoint generation contained {count} messages. Its encrypted history remains available to the owner, but an automatic semantic summary could not be generated.",
         "migration_escalation_event": "Restore the pending owner escalation from the pre-migration conversation state.",
         "migration_escalation_ack": "This conversation was already marked for the account owner before the migration.",
+        "account_owner": "Account owner",
     },
     "ru": {
         "mode": "Режим автоматизации: {mode}.",
@@ -406,6 +407,7 @@ RUNTIME_CONTEXT_TEXT = {
         "rollover_summary": "Предыдущее поколение контрольных точек содержало {count} сообщений. Его зашифрованная история доступна владельцу, но автоматическое смысловое резюме создать не удалось.",
         "migration_escalation_event": "Восстанови ожидающее обращение к владельцу из состояния беседы до миграции.",
         "migration_escalation_ack": "Эта беседа уже была отмечена для владельца аккаунта до миграции.",
+        "account_owner": "Владелец аккаунта",
     },
     "uk": {
         "mode": "Режим автоматизації: {mode}.",
@@ -416,6 +418,7 @@ RUNTIME_CONTEXT_TEXT = {
         "rollover_summary": "Попереднє покоління контрольних точок містило {count} повідомлень. Його зашифрована історія доступна власнику, але автоматичний змістовий підсумок створити не вдалося.",
         "migration_escalation_event": "Віднови очікуване звернення до власника зі стану розмови до міграції.",
         "migration_escalation_ack": "Цю розмову вже було позначено для власника облікового запису до міграції.",
+        "account_owner": "Власник облікового запису",
     },
     "ja": {
         "mode": "自動化モード: {mode}。",
@@ -426,6 +429,7 @@ RUNTIME_CONTEXT_TEXT = {
         "rollover_summary": "以前のチェックポイント世代には{count}件のメッセージがありました。暗号化された履歴は所有者が確認できますが、自動の意味的要約は生成できませんでした。",
         "migration_escalation_event": "移行前の会話状態から保留中の所有者エスカレーションを復元してください。",
         "migration_escalation_ack": "この会話は移行前にすでにアカウント所有者向けとして記録されています。",
+        "account_owner": "アカウント所有者",
     },
     "zh": {
         "mode": "自动化模式：{mode}。",
@@ -436,6 +440,7 @@ RUNTIME_CONTEXT_TEXT = {
         "rollover_summary": "上一个检查点世代包含 {count} 条消息。所有者仍可查看其加密历史，但未能生成自动语义摘要。",
         "migration_escalation_event": "从迁移前的对话状态恢复待处理的所有者升级。",
         "migration_escalation_ack": "此对话在迁移前已标记给账号所有者。",
+        "account_owner": "账号所有者",
     },
     "de": {
         "mode": "Automatisierungsmodus: {mode}.",
@@ -446,6 +451,7 @@ RUNTIME_CONTEXT_TEXT = {
         "rollover_summary": "Die vorherige Checkpoint-Generation enthielt {count} Nachrichten. Ihr verschlüsselter Verlauf bleibt für den Inhaber verfügbar, aber eine automatische semantische Zusammenfassung konnte nicht erstellt werden.",
         "migration_escalation_event": "Stelle die ausstehende Eskalation an den Inhaber aus dem Gesprächszustand vor der Migration wieder her.",
         "migration_escalation_ack": "Diese Unterhaltung war bereits vor der Migration für den Kontoinhaber markiert.",
+        "account_owner": "Kontoinhaber",
     },
     "fr": {
         "mode": "Mode d’automatisation : {mode}.",
@@ -456,6 +462,7 @@ RUNTIME_CONTEXT_TEXT = {
         "rollover_summary": "La génération précédente de points de contrôle contenait {count} messages. Son historique chiffré reste accessible au propriétaire, mais aucun résumé sémantique automatique n’a pu être généré.",
         "migration_escalation_event": "Restaure l’escalade en attente vers le propriétaire depuis l’état de la conversation antérieur à la migration.",
         "migration_escalation_ack": "Cette conversation avait déjà été signalée au propriétaire du compte avant la migration.",
+        "account_owner": "Propriétaire du compte",
     },
 }
 

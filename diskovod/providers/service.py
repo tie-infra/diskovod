@@ -235,6 +235,6 @@ class ModelService:
             )
         stored = self.store.provider_credentials(configuration.credential_profile) or {}
         api_key = stored.get("api_key")
-        if not isinstance(api_key, str) or not api_key:
+        if not isinstance(api_key, str) or (not api_key and configuration.provider_id != "custom_openai"):
             raise ProviderBuildError("missing_credentials", "The selected API key is unavailable")
         return ProviderCredentials(api_key=api_key)

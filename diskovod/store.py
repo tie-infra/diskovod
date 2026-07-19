@@ -1103,25 +1103,6 @@ class Store:
             ).fetchone()
         return row is not None
 
-    async def aconversations_with_steering(self) -> list[dict[str, Any]]:
-        async with self.database.transaction() as connection:
-            rows = await (
-                await connection.execute(
-                    """
-                    SELECT c.*, t.live_steering
-                    FROM conversations c
-                    LEFT JOIN chat_threads t ON t.channel_id=c.channel_id
-                    ORDER BY c.updated_at DESC LIMIT 200
-                    """
-                )
-            ).fetchall()
-        result = []
-        for row in rows:
-            item = self._conversation_dict(row)
-            item["live_steering"] = bool(row["live_steering"]) if row["live_steering"] is not None else True
-            result.append(item)
-        return result
-
     async def alatest_capability_probe(self, capability: str) -> dict[str, Any] | None:
         async with self.database.transaction() as connection:
             row = await (

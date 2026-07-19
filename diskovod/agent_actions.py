@@ -34,3 +34,19 @@ class AgentActionGateway(Protocol):
         tool_call_id: str,
     ) -> list[DeliveryRecord]:
         """Deliver messages and return one stable record for every requested message."""
+
+    async def react_to_message(
+        self,
+        context: AgentRuntimeContext,
+        emoji: str,
+        *,
+        tool_call_id: str,
+    ) -> DeliveryRecord: ...
+
+    async def record_escalation(
+        self,
+        context: AgentRuntimeContext,
+        payload: dict[str, object],
+        *,
+        tool_call_id: str,
+    ) -> None: ...

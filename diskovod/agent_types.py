@@ -39,6 +39,7 @@ class AgentRuntimeContext:
     capabilities: CapabilityProfile
     trace_id: str
     owner_timezone: str = "UTC"
+    trigger_message_id: str = ""
     permissions: frozenset[str] = frozenset()
 
 

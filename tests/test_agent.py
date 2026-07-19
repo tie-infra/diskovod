@@ -50,6 +50,12 @@ class RecordingGateway:
             for index, _ in enumerate(messages)
         ]
 
+    async def react_to_message(self, context, emoji, *, tool_call_id):
+        return DeliveryRecord("accepted", 0, discord_message_id=f"reaction:{emoji}")
+
+    async def record_escalation(self, context, payload, *, tool_call_id):
+        return None
+
 
 def runtime_context(locale: str = "en") -> AgentRuntimeContext:
     return AgentRuntimeContext(

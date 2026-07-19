@@ -19,6 +19,13 @@ class DiscordActionTransport(Protocol):
         messages: tuple[str, ...],
     ) -> list[DeliveryRecord]: ...
 
+    async def react_to_message(
+        self,
+        context: AgentRuntimeContext,
+        message_id: str,
+        emoji: str,
+    ) -> DeliveryRecord: ...
+
 
 class SideEffectLedger:
     """At-most-once claim and result storage for externally visible actions."""
@@ -90,6 +97,25 @@ class SideEffectLedger:
             if changed != 1:
                 raise RuntimeError("Side-effect claim is missing or already terminal")
 
+    def record_escalation(
+        self,
+        escalation_id: str,
+        thread_id: str,
+        channel_id: str,
+        payload: dict[str, object],
+    ) -> None:
+        now = time.time()
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO escalation_interrupts(
+                  id, thread_id, channel_id, state, payload, created_at, updated_at
+                ) VALUES(?, ?, ?, 'pending', ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at
+                """,
+                (escalation_id, thread_id, channel_id, _json(payload), now, now),
+            )
+
 
 class DurableActionGateway(AgentActionGateway):
     def __init__(self, ledger: SideEffectLedger, transport: DiscordActionTransport):
@@ -139,6 +165,54 @@ class DurableActionGateway(AgentActionGateway):
         )
         self.ledger.finish(context.trace_id, tool_call_id, terminal_state, records)
         return records
+
+    async def react_to_message(
+        self,
+        context: AgentRuntimeContext,
+        emoji: str,
+        *,
+        tool_call_id: str,
+    ) -> DeliveryRecord:
+        request = {
+            "channel_id": context.channel_id,
+            "message_id": context.trigger_message_id,
+            "emoji": emoji,
+        }
+        state, recorded = self.ledger.claim(context.trace_id, tool_call_id, "react_to_message", request)
+        if state in {"completed", "ambiguous"} and recorded:
+            return recorded[0]
+        if state == "claimed":
+            return DeliveryRecord("ambiguous", 0, error_code="incomplete_prior_attempt")
+        try:
+            result = await self.transport.react_to_message(context, context.trigger_message_id, emoji)
+        except Exception as error:
+            result = DeliveryRecord(
+                "ambiguous",
+                0,
+                error_code="transport_exception",
+                error_detail=type(error).__name__,
+            )
+        self.ledger.finish(
+            context.trace_id,
+            tool_call_id,
+            "ambiguous" if result.status == "ambiguous" else "completed",
+            [result],
+        )
+        return result
+
+    async def record_escalation(
+        self,
+        context: AgentRuntimeContext,
+        payload: dict[str, object],
+        *,
+        tool_call_id: str,
+    ) -> None:
+        self.ledger.record_escalation(
+            f"{context.trace_id}:{tool_call_id}",
+            context.trace_id,
+            context.channel_id,
+            payload,
+        )
 
 
 def _json(value: object) -> str:

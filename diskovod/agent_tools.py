@@ -1,12 +1,12 @@
 import json
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 from pydantic import Field, StringConstraints
 
 from .agent_actions import AgentActionGateway
@@ -17,6 +17,10 @@ from .localization import tool_text
 
 MessageText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
 ExpressionText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+EscalationReason = Literal["peer_requested_owner", "owner_only_information", "other_explicit_request"]
+ReactionEmoji = Literal[
+    "👍", "❤️", "😂", "🔥", "🎉", "😮", "😢", "🙏", "👀", "✅", "💯", "🤝", "👌", "😊", "😅", "🤔", "🙌"
+]
 
 
 def localized_agent_tools(locale: str, gateway: AgentActionGateway) -> list[BaseTool]:
@@ -99,6 +103,45 @@ def localized_agent_tools(locale: str, gateway: AgentActionGateway) -> list[Base
             update["terminate_after_send"] = True
         return Command(update=update)
 
+    async def react_to_message(
+        emoji: Annotated[ReactionEmoji, Field(description=text["emoji"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> dict[str, Any]:
+        delivery = await gateway.react_to_message(
+            runtime.context,
+            emoji,
+            tool_call_id=runtime.tool_call_id or "missing-tool-call-id",
+        )
+        return {"ok": delivery.accepted, "delivery": delivery.to_dict()}
+
+    async def escalate_to_owner(
+        reason: Annotated[EscalationReason, Field(description=text["escalation_reason"])],
+        acknowledgement: Annotated[MessageText, Field(description=text["acknowledgement"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> dict[str, Any]:
+        call_id = runtime.tool_call_id or "missing-tool-call-id"
+        deliveries = await gateway.send_messages(
+            runtime.context,
+            (acknowledgement,),
+            tool_call_id=call_id,
+        )
+        if not deliveries or not all(delivery.accepted for delivery in deliveries):
+            return {"ok": False, "deliveries": [item.to_dict() for item in deliveries]}
+        payload: dict[str, object] = {
+            "channel_id": runtime.context.channel_id,
+            "trigger_message_id": runtime.context.trigger_message_id,
+            "reason": reason,
+            "acknowledgement": acknowledgement,
+            "tool_call_id": call_id,
+        }
+        await gateway.record_escalation(runtime.context, payload, tool_call_id=call_id)
+        resolution = interrupt(payload)
+        return {
+            "ok": True,
+            "resolution": resolution,
+            "deliveries": [item.to_dict() for item in deliveries],
+        }
+
     return [
         StructuredTool.from_function(
             coroutine=get_current_datetime,
@@ -116,6 +159,18 @@ def localized_agent_tools(locale: str, gateway: AgentActionGateway) -> list[Base
             coroutine=send_messages,
             name="send_messages",
             description=text["send_messages"],
+            handle_validation_error=invalid,
+        ),
+        StructuredTool.from_function(
+            coroutine=react_to_message,
+            name="react_to_message",
+            description=text["react"],
+            handle_validation_error=invalid,
+        ),
+        StructuredTool.from_function(
+            coroutine=escalate_to_owner,
+            name="escalate_to_owner",
+            description=text["escalate"],
             handle_validation_error=invalid,
         ),
     ]

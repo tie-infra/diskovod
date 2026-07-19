@@ -15,7 +15,15 @@
     <link rel="stylesheet" href="/static/style.css">
     <script src="/static/app.js" defer></script>
   </head>
-  <body data-live-topic="{{ live_topic|default('jobs') }}">
+  <body
+    data-live-topic="{{ live_topic|default('jobs') }}"
+    data-live-label="{{ t('live') }}"
+    data-reconnecting-label="{{ t('reconnecting') }}"
+    data-offline-label="{{ t('offline') }}"
+    data-deleted-message-label="{{ t('deleted_message') }}"
+    data-new-messages-label="{{ t('new_messages') }}"
+    data-edited-label="{{ t('edited') }}"
+  >
     <a class="visually-hidden-focusable" href="#main-content">{{ t("skip") }}</a>
     <div class="admin-layout">
       <aside class="sidebar" id="admin-sidebar" aria-label="{{ t('admin_navigation') }}">
@@ -29,7 +37,7 @@
           </a>
           <a class="nav-link {{ 'active' if active_section == 'inbox' }}" href="/inbox">
             <span aria-hidden="true">◎</span> {{ t("inbox") }}
-            {% if inbox_count %}<span class="badge text-bg-danger ms-auto">{{ inbox_count }}</span>{% endif %}
+            <span class="badge text-bg-danger ms-auto" data-inbox-indicator {{ 'hidden' if not inbox_count }}>{{ inbox_count }}</span>
           </a>
           <a class="nav-link {{ 'active' if active_section == 'chats' }}" href="/chats">
             <span aria-hidden="true">◌</span> {{ t("chats") }}

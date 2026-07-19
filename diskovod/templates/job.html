@@ -3,9 +3,10 @@
 {% block title %}{{ job.type }}{% endblock %}
 {% block content %}
 <section class="card mb-4"><div class="card-body">
-  <div class="d-flex justify-content-between align-items-start"><div><span class="badge status-{{ job.status }}" data-job-status>{{ job.status }}</span><p class="mt-2 mb-0" data-job-stage>{{ job.progress_stage or '—' }}</p></div>{% if job.status in ('queued','running','cancellation_requested') %}<form method="post" action="/activity/jobs/{{ job.id }}/cancel"><button class="btn btn-outline-danger" {{ 'disabled' if job.status == 'cancellation_requested' }}>{{ t("cancel") }}</button></form>{% endif %}</div>
-  {% if job.error_summary %}<div class="alert alert-danger mt-3">{{ job.error_summary }}</div>{% endif %}
-  {% if job.result_id %}<p class="mt-3">{{ t("result") }}: <code>{{ job.result_kind }}:{{ job.result_id }}</code></p>{% endif %}
+  <div class="d-flex justify-content-between align-items-start"><div><span class="badge status-{{ job.status }}" data-job-status>{{ job.status }}</span><p class="mt-2 mb-0" data-job-stage>{{ job.progress_stage or '—' }}</p></div>{% if job.status in ('queued','running','cancellation_requested') %}<form data-job-cancel method="post" action="/activity/jobs/{{ job.id }}/cancel"><button class="btn btn-outline-danger" {{ 'disabled' if job.status == 'cancellation_requested' }}>{{ t("cancel") }}</button></form>{% endif %}</div>
+  <div class="alert alert-danger mt-3" data-job-error {{ 'hidden' if not job.error_summary }}>{{ job.error_summary or '' }}</div>
+  <p class="mt-3" data-job-result {{ 'hidden' if not job.result_id }}>{{ t("result") }}: {% if job.result_id %}{% if job.result_url %}<a href="{{ job.result_url }}">{{ job.result_kind }}:{{ job.result_id }}</a>{% else %}<code>{{ job.result_kind }}:{{ job.result_id }}</code>{% endif %}{% endif %}</p>
+  {% if job.target_url %}<p><a href="{{ job.target_url }}">{{ t("open_related") }}</a></p>{% endif %}
 </div></section>
 <section class="card"><div class="card-header"><h2 class="h5 mb-0">{{ t("timeline") }}</h2></div><div class="timeline">{% for event in job_events %}<article class="timeline-event"><div class="timeline-marker"></div><div><strong>{{ event.kind }}</strong><small class="d-block text-body-secondary">{{ event.occurred_at }}</small>{% if event.payload %}<code>{{ event.payload }}</code>{% endif %}</div></article>{% endfor %}</div></section>
 {% endblock %}

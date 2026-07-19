@@ -9,14 +9,16 @@
       <span>{{ t("conversation_transcript") }}</span>
       <span class="live-indicator" data-live-status>{{ t("live") }}</span>
     </div>
-    <div class="messages">
+    <div class="messages" data-chat-messages data-channel-id="{{ chat.conversation.channel_id }}">
+      {% if chat.older_messages_before is not none %}<button class="btn btn-sm btn-outline-secondary align-self-center" type="button" data-load-older data-before="{{ chat.older_messages_before }}">{{ t("load_older") }}</button>{% endif %}
       {% for message in chat.messages %}
-      <article class="message {{ 'message-out' if message.direction == 'out' }} {{ 'is-deleted' if message.deleted_at }}">
-        <div class="message-meta"><strong>{{ message.author_name }}</strong><span>{{ message.timestamp|int }}</span>{% if message.edited_at %}<span>{{ t("edited") }}</span>{% endif %}</div>
+      <article id="message-{{ message.id }}" data-message-id="{{ message.id }}" class="message message-{{ message.role }} {{ 'message-out' if message.direction == 'out' }} {{ 'is-deleted' if message.deleted_at }}">
+        <div class="message-meta"><strong>{{ message.author_name }}</strong><time data-timestamp="{{ message.timestamp }}" data-local-time>{{ message.timestamp_label }}</time>{% if message.edited_at %}<span>{{ t("edited") }}</span>{% endif %}</div>
         <div class="message-bubble">{{ t("deleted_message") if message.deleted_at else message.content }}</div>
         {% for attachment in message.attachments %}<span class="attachment-chip">📎 {{ attachment.filename }}</span>{% endfor %}
       </article>
       {% else %}<div class="empty-state">{{ t("no_messages") }}</div>{% endfor %}
+      <button class="btn btn-primary new-messages" type="button" data-new-messages hidden></button>
     </div>
   </section>
   <aside class="inspector vstack gap-3">

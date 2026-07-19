@@ -17,4 +17,5 @@
   </a>
   {% else %}<div class="empty-state">{{ t("no_dms") }}</div>{% endfor %}
 </div>
+{% if chats.previous_offset is not none or chats.next_offset is not none %}<nav class="pagination-bar" aria-label="{{ t('pagination') }}">{% if chats.previous_offset is not none %}<a class="btn btn-outline-secondary" href="/chats?q={{ chats.query|urlencode }}&mode={{ chats.mode|urlencode }}&offset={{ chats.previous_offset }}">{{ t("previous") }}</a>{% endif %}<span>{{ chats.offset + 1 }}–{{ [chats.offset + chats.items|length, chats.total]|min }} / {{ chats.total }}</span>{% if chats.next_offset is not none %}<a class="btn btn-outline-secondary" href="/chats?q={{ chats.query|urlencode }}&mode={{ chats.mode|urlencode }}&offset={{ chats.next_offset }}">{{ t("next") }}</a>{% endif %}</nav>{% endif %}
 {% endblock %}

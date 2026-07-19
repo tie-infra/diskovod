@@ -2,7 +2,7 @@
 {% block subtitle %}<p class="text-body-secondary">{{ t("escalation_help") }}</p>{% endblock %}
 {% block content %}
 <div class="vstack gap-3">
-  {% for escalation in escalations %}
+  {% for escalation in escalations.items %}
   <article class="card">
     <div class="card-body">
       <div class="d-flex justify-content-between"><h2 class="h5">{{ escalation.channel_id }}</h2><span class="badge text-bg-warning">{{ escalation.state }}</span></div>
@@ -17,4 +17,5 @@
   </article>
   {% else %}<div class="empty-state card">{{ t("no_escalations") }}</div>{% endfor %}
 </div>
+{% if escalations.previous_offset is not none or escalations.next_offset is not none %}<nav class="pagination-bar" aria-label="{{ t('pagination') }}">{% if escalations.previous_offset is not none %}<a class="btn btn-outline-secondary" href="/inbox?offset={{ escalations.previous_offset }}">{{ t("previous") }}</a>{% endif %}<span>{{ escalations.offset + 1 }}–{{ [escalations.offset + escalations.items|length, escalations.total]|min }} / {{ escalations.total }}</span>{% if escalations.next_offset is not none %}<a class="btn btn-outline-secondary" href="/inbox?offset={{ escalations.next_offset }}">{{ t("next") }}</a>{% endif %}</nav>{% endif %}
 {% endblock %}

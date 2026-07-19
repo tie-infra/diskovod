@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -56,6 +57,7 @@ SECTION_DESTINATIONS = {
 }
 PROVIDERS = frozenset({"chatgpt", "custom"})
 CUSTOM_PROTOCOLS = frozenset({"responses", "chat_completions"})
+LIVE_TOPIC_PATTERN = re.compile(r"^(?:jobs|inbox|(?:chat|run|job):[A-Za-z0-9_.:-]{1,500})$")
 
 
 @dataclass(slots=True)
@@ -107,6 +109,7 @@ class WebApp:
         self.jobs = jobs
         self.job_worker = job_worker
         self.queries = AdminQueryService(store) if store is not None else None
+        self.server_epoch = secrets.token_urlsafe(12)
         self.security = HTTPBasic()
         base = Path(__file__).parent
         self.templates = Jinja2Templates(directory=base / "templates")
@@ -172,9 +175,9 @@ class WebApp:
             )
 
         @self.app.get("/inbox")
-        async def inbox(request: Request, _: str = Depends(auth)):
+        async def inbox(request: Request, offset: int = 0, _: str = Depends(auth)):
             return await self._render(
-                request, "inbox.html", "inbox", "inbox", escalations=await self.queries.inbox()
+                request, "inbox.html", "inbox", "inbox", escalations=await self.queries.inbox(offset=offset)
             )
 
         @self.app.get("/chats")
@@ -235,10 +238,38 @@ class WebApp:
             )
 
         @self.app.get("/activity/jobs")
-        async def jobs(request: Request, job_status: str = "", _: str = Depends(auth)):
-            items = await self.jobs.repository.list(status=job_status or None) if self.jobs else []
+        async def jobs(
+            request: Request,
+            job_status: str = "",
+            offset: int = 0,
+            _: str = Depends(auth),
+        ):
+            page_limit = 50
+            page_offset = max(0, offset)
+            items = (
+                await self.jobs.repository.list(
+                    limit=page_limit,
+                    offset=page_offset,
+                    status=job_status or None,
+                )
+                if self.jobs
+                else []
+            )
+            total = await self.jobs.repository.count(status=job_status or None) if self.jobs else 0
             return await self._render(
-                request, "jobs.html", "activity", "jobs", jobs=items, job_status=job_status
+                request,
+                "jobs.html",
+                "activity",
+                "jobs",
+                jobs={
+                    "items": [self._job_view(item) for item in items],
+                    "status": job_status,
+                    "offset": page_offset,
+                    "limit": page_limit,
+                    "total": total,
+                    "previous_offset": max(0, page_offset - page_limit) if page_offset else None,
+                    "next_offset": page_offset + page_limit if page_offset + page_limit < total else None,
+                },
             )
 
         @self.app.get("/activity/jobs/{job_id}")
@@ -252,29 +283,47 @@ class WebApp:
                 "job.html",
                 "activity",
                 "job_detail",
-                job=job,
+                job=self._job_view(job),
                 job_events=events,
                 live_topic=f"job:{job_id}",
             )
 
         @self.app.get("/knowledge/memories")
-        async def memories(request: Request, _: str = Depends(auth)):
+        async def memories(
+            request: Request,
+            q: str = "",
+            scope: str = "",
+            offset: int = 0,
+            _: str = Depends(auth),
+        ):
             return await self._render(
                 request,
                 "memories.html",
                 "knowledge",
                 "memories",
-                memories=await self.queries.memories(),
+                memories=await self.queries.memories(query=q, scope=scope, offset=offset),
             )
 
         @self.app.get("/knowledge/attachments")
-        async def attachments(request: Request, _: str = Depends(auth)):
+        async def attachments(
+            request: Request,
+            q: str = "",
+            channel_id: str = "",
+            media_type: str = "",
+            offset: int = 0,
+            _: str = Depends(auth),
+        ):
             return await self._render(
                 request,
                 "attachments.html",
                 "knowledge",
                 "attachments",
-                attachments=await self.queries.attachments(),
+                attachments=await self.queries.attachments(
+                    query=q,
+                    channel_id=channel_id,
+                    media_type=media_type,
+                    offset=offset,
+                ),
             )
 
         @self.app.get("/settings/connections")
@@ -373,24 +422,152 @@ class WebApp:
             job = await self.jobs.get(job_id) if self.jobs else None
             if job is None:
                 raise HTTPException(404, "Job not found")
-            return JSONResponse(job)
+            return JSONResponse(self._job_view(job))
+
+        @self.app.get("/api/inbox")
+        async def inbox_api(offset: int = 0, limit: int = 50, _: str = Depends(auth)):
+            return JSONResponse(await self.queries.inbox(offset=offset, limit=limit))
+
+        @self.app.get("/api/jobs")
+        async def jobs_api(
+            limit: int = 20,
+            offset: int = 0,
+            job_status: str = "",
+            _: str = Depends(auth),
+        ):
+            if self.jobs is None:
+                return JSONResponse({"items": [], "active_count": 0, "next_offset": None})
+            try:
+                items = await self.jobs.repository.list(
+                    limit=limit,
+                    offset=offset,
+                    status=job_status or None,
+                )
+                total = await self.jobs.repository.count(status=job_status or None)
+            except ValueError as error:
+                raise HTTPException(400, str(error)) from error
+            bounded_limit = max(1, min(limit, 500))
+            bounded_offset = max(0, offset)
+            return JSONResponse(
+                {
+                    "items": [self._job_view(item) for item in items],
+                    "active_count": await self.jobs.repository.active_count(),
+                    "next_offset": (
+                        bounded_offset + bounded_limit
+                        if bounded_offset + bounded_limit < total
+                        else None
+                    ),
+                }
+            )
+
+        @self.app.get("/api/chats")
+        async def chats_api(
+            q: str = "",
+            mode: str = "",
+            limit: int = 50,
+            offset: int = 0,
+            _: str = Depends(auth),
+        ):
+            return JSONResponse(await self.queries.chats(query=q, mode=mode, limit=limit, offset=offset))
+
+        @self.app.get("/api/chats/{channel_id}/messages")
+        async def chat_messages_api(
+            channel_id: str,
+            before: float | None = None,
+            limit: int = 50,
+            _: str = Depends(auth),
+        ):
+            result = await self.queries.messages(channel_id, before=before, limit=limit)
+            if result is None:
+                raise HTTPException(404, self._t("conversation_not_found"))
+            return JSONResponse(result)
+
+        @self.app.get("/api/chats/{channel_id}/timeline")
+        async def chat_timeline_api(
+            channel_id: str,
+            after: int = 0,
+            limit: int = 100,
+            _: str = Depends(auth),
+        ):
+            return JSONResponse(await self.queries.chat_timeline(channel_id, after=after, limit=limit))
+
+        @self.app.get("/api/runs")
+        async def runs_api(
+            run_status: str = "",
+            channel_id: str = "",
+            limit: int = 50,
+            offset: int = 0,
+            _: str = Depends(auth),
+        ):
+            return JSONResponse(
+                await self.queries.runs(
+                    status=run_status,
+                    channel_id=channel_id,
+                    limit=limit,
+                    offset=offset,
+                )
+            )
+
+        @self.app.get("/api/runs/{run_id}/events")
+        async def run_events_api(
+            run_id: str,
+            after: int = 0,
+            limit: int = 100,
+            _: str = Depends(auth),
+        ):
+            result = await self.queries.run_events(run_id, after=after, limit=limit)
+            if result is None:
+                raise HTTPException(404, self._t("run_not_found"))
+            return JSONResponse(result)
+
+        @self.app.get("/api/runs/{run_id}")
+        async def run_api(run_id: str, _: str = Depends(auth)):
+            result = await self.queries.run(run_id)
+            if result is None:
+                raise HTTPException(404, self._t("run_not_found"))
+            return JSONResponse(result)
+
+        @self.app.get("/api/search")
+        async def search_api(q: str = "", limit: int = 10, _: str = Depends(auth)):
+            return JSONResponse(await self.queries.search(q, limit=limit))
 
         @self.app.get("/api/events/stream")
         async def event_stream(request: Request, topics: str = "jobs", _: str = Depends(auth)):
+            if request.headers.get("sec-fetch-site") not in {None, "same-origin"}:
+                raise HTTPException(403, self._t("cross_origin_rejected", url=self.public_url))
             selected = {value for value in topics.split(",") if value}
+            if not selected:
+                selected = {"jobs"}
+            if len(selected) > 8 or any(not LIVE_TOPIC_PATTERN.fullmatch(value) for value in selected):
+                raise HTTPException(400, self._t("invalid_live_topics"))
 
             async def records():
-                previous = ""
+                previous: dict[str, str] = {}
                 deadline = time.monotonic() + 25
+                heartbeat_at = 0.0
+                yield json.dumps(
+                    {"type": "hello", "server_epoch": self.server_epoch},
+                    separators=(",", ":"),
+                ) + "\n"
                 while time.monotonic() < deadline and not await request.is_disconnected():
-                    payload: dict[str, Any] = {"kind": "snapshot", "topics": sorted(selected)}
-                    if self.jobs and ("jobs" in selected or any(x.startswith("job:") for x in selected)):
-                        payload["jobs"] = await self.jobs.repository.list(limit=20)
-                        payload["active_job_count"] = await self.jobs.repository.active_count()
-                    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-                    if encoded != previous:
-                        previous = encoded
-                        yield encoded + "\n"
+                    versions = await self.queries.resource_versions(selected)
+                    for topic, version in versions.items():
+                        if previous.get(topic) == version:
+                            continue
+                        previous[topic] = version
+                        kind, _, identifier = topic.partition(":")
+                        payload: dict[str, Any] = {
+                            "type": f"{kind}.updated",
+                            "version": version,
+                        }
+                        if identifier:
+                            payload["id"] = identifier
+                        if topic == "jobs" and self.jobs:
+                            payload["active_count"] = await self.jobs.repository.active_count()
+                        yield json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+                    if time.monotonic() >= heartbeat_at:
+                        heartbeat_at = time.monotonic() + 10
+                        yield '{"type":"heartbeat"}\n'
                     await asyncio.sleep(1)
 
             return StreamingResponse(
@@ -1141,7 +1318,7 @@ class WebApp:
             "error": request.query_params.get("error"),
             "active_job_count": active_jobs,
             "recent_jobs": jobs,
-            "inbox_count": len(await self.store.aactive_interrupts()),
+            "inbox_count": await self.queries.inbox_count(),
         }
         return self.templates.TemplateResponse(request, template, base | context)
 
@@ -1398,6 +1575,31 @@ class WebApp:
             "reasoning_effort": str(options.get("reasoning_effort") or "low"),
             "max_output_tokens": int(options.get("max_completion_tokens") or 256),
         }
+
+    def _job_view(self, job: dict[str, Any]) -> dict[str, Any]:
+        item = dict(job)
+        result_kind = str(item.get("result_kind") or "")
+        result_id = str(item.get("result_id") or "")
+        item["result_url"] = (
+            self._url(f"/activity/runs/{result_id}")
+            if result_kind == "agent_run" and result_id
+            else (
+                self._url("/settings/assistant")
+                if result_kind == "assistant_personality"
+                else (
+                    self._url("/system/diagnostics")
+                    if result_kind == "provider_capability_probe"
+                    else None
+                )
+            )
+        )
+        if item.get("target_kind") == "provider_setup_draft" and item.get("target_id"):
+            item["target_url"] = self._url("/settings/connections") + "?" + urlencode(
+                {"provider_draft": str(item["target_id"])}
+            )
+        else:
+            item["target_url"] = None
+        return item
 
     def _active_provider(self) -> str:
         configuration = self.models.configuration

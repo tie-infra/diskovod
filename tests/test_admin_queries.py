@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from diskovod.admin_queries import AdminQueryService
+from diskovod.redaction import REDACTED, redact_sensitive
+from diskovod.store import Store
+
+
+async def test_chat_projection_is_bounded_and_supports_loading_older_messages(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    for index in range(1, 61):
+        await store.asave_message(
+            id=f"message-{index:02}",
+            channel_id="channel",
+            author_id="peer" if index % 2 else "owner",
+            author_name="Peer" if index % 2 else "Owner",
+            direction="in" if index % 2 else "out",
+            source="remote" if index % 2 else "human",
+            content=f"message {index}",
+            timestamp=float(index),
+        )
+    queries = AdminQueryService(store)
+
+    chat = await queries.chat("channel")
+    assert [item["id"] for item in chat["messages"]] == [
+        f"message-{index:02}" for index in range(11, 61)
+    ]
+    assert chat["messages"][0]["role"] == "peer"
+    assert chat["messages"][1]["role"] == "owner"
+    assert chat["older_messages_before"] == 11
+
+    older = await queries.messages("channel", before=chat["older_messages_before"], limit=50)
+    assert [item["id"] for item in older["items"]] == [
+        f"message-{index:02}" for index in range(1, 11)
+    ]
+    assert older["next_before"] is None
+    await store.aclose()
+
+
+async def test_run_projection_redacts_nested_credentials_but_preserves_usage_counts(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    await store.astart_agent_run(
+        run_id="run",
+        thread_id="thread",
+        channel_id="channel",
+        trace_id="trace",
+    )
+    await store.arecord_agent_trace(
+        "run",
+        "model_request",
+        {
+            "headers": {"Authorization": "Bearer private", "x-request-id": "visible"},
+            "api_key": "private-key",
+            "usage": {"input_tokens": 12, "output_tokens": 3},
+        },
+    )
+
+    view = await AdminQueryService(store).run("run")
+
+    assert "private" not in repr(view)
+    payload = view["timeline"][0]["payload_value"]
+    assert payload["headers"]["Authorization"] == REDACTED
+    assert payload["api_key"] == REDACTED
+    assert payload["usage"] == {"input_tokens": 12, "output_tokens": 3}
+    await store.aclose()
+
+
+async def test_live_resource_version_changes_with_authoritative_chat_state(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    queries = AdminQueryService(store)
+    before = await queries.resource_versions({"chat:channel", "jobs", "inbox"})
+
+    await store.asave_message(
+        id="message",
+        channel_id="channel",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="Hello",
+        timestamp=100,
+    )
+    after = await queries.resource_versions({"chat:channel", "jobs", "inbox"})
+
+    assert before["chat:channel"] != after["chat:channel"]
+    assert before["jobs"] == after["jobs"]
+    assert before["inbox"] == after["inbox"]
+    await store.aclose()
+
+
+def test_recursive_redaction_does_not_hide_non_secret_token_metrics():
+    assert redact_sensitive(
+        {
+            "access_token": "secret",
+            "password": "secret",
+            "input_tokens": 10,
+            "nested": [{"cookie": "secret", "token_count": 4}],
+        }
+    ) == {
+        "access_token": REDACTED,
+        "password": REDACTED,
+        "input_tokens": 10,
+        "nested": [{"cookie": REDACTED, "token_count": 4}],
+    }

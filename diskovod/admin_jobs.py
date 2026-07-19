@@ -299,7 +299,13 @@ class AdminJobRepository:
             row = await self._get(connection, job_id)
         return self._job(row) if row is not None else None
 
-    async def list(self, *, limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
+    async def list(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
         parameters: list[Any] = []
         where = ""
         if status:
@@ -307,15 +313,29 @@ class AdminJobRepository:
                 raise ValueError("Unknown administrative job state")
             where = " WHERE status=?"
             parameters.append(status)
-        parameters.append(max(1, min(limit, 500)))
+        parameters.extend((max(1, min(limit, 500)), max(0, offset)))
         async with self.database.transaction() as connection:
             rows = await (
                 await connection.execute(
-                    f"SELECT * FROM admin_jobs{where} ORDER BY requested_at DESC LIMIT ?",
+                    f"SELECT * FROM admin_jobs{where} ORDER BY requested_at DESC, id DESC LIMIT ? OFFSET ?",
                     parameters,
                 )
             ).fetchall()
         return [self._job(row) for row in rows]
+
+    async def count(self, *, status: str | None = None) -> int:
+        parameters: list[Any] = []
+        where = ""
+        if status:
+            if status not in JOB_STATES:
+                raise ValueError("Unknown administrative job state")
+            where = " WHERE status=?"
+            parameters.append(status)
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute(f"SELECT COUNT(*) FROM admin_jobs{where}", parameters)
+            ).fetchone()
+        return int(row[0])
 
     async def events(self, job_id: str, *, after: int = 0) -> list[dict[str, Any]]:
         async with self.database.transaction() as connection:

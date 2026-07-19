@@ -76,6 +76,16 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/system/diagnostics" in route_paths
     assert "/system/database" in route_paths
     assert "/api/events/stream" in route_paths
+    assert "/api/inbox" in route_paths
+    assert "/api/chats" in route_paths
+    assert "/api/chats/{channel_id}/messages" in route_paths
+    assert "/api/chats/{channel_id}/timeline" in route_paths
+    assert "/api/runs" in route_paths
+    assert "/api/runs/{run_id}" in route_paths
+    assert "/api/runs/{run_id}/events" in route_paths
+    assert "/api/jobs" in route_paths
+    assert "/api/jobs/{job_id}" in route_paths
+    assert "/api/search" in route_paths
     assert "/discord/settings" not in route_paths
     assert "/discord/captcha/{request_id}" in route_paths
     assert "/system/database/delete" in route_paths

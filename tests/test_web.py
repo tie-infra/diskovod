@@ -10,7 +10,7 @@ from starlette.requests import Request
 
 from diskovod.discord import DiscordService
 from diskovod.store import Store
-from diskovod.models import AssistantProfile
+from diskovod.models import AssistantProfile, AutomationSettings
 from diskovod.web import (
     PERSONALITY_INSTRUCTIONS,
     WebApp,
@@ -58,7 +58,10 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/provider/select" in route_paths
     assert "/discord/connect" in route_paths
     assert "/settings/theme" not in route_paths
-    assert "/settings/reset" in route_paths
+    assert "/settings/reset" not in route_paths
+    assert "/settings/assistant/reset" in route_paths
+    assert "/settings/automation/reset" in route_paths
+    assert "/settings/interface/reset" in route_paths
     assert "/inbox" in route_paths
     assert "/inbox/escalations/{escalation_id}" in route_paths
     assert "/search" in route_paths
@@ -122,7 +125,12 @@ def test_assistant_settings_defaults_reset_the_assistant_domain():
     assert reset == AssistantProfile()
 
 
-async def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path):
+def test_automation_presets_are_explicit_values_and_custom_changes_remain_custom():
+    assert WebApp._automation_preset(AutomationSettings()) == "natural"
+    assert WebApp._automation_preset(AutomationSettings(debounce_seconds=9)) == "custom"
+
+
+async def test_subscription_probe_summary_defers_payload_to_diagnostics(tmp_path):
     store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     async with store.database.transaction() as connection:
         await connection.execute(
@@ -153,8 +161,10 @@ async def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tm
 
     assert view["result_label"].startswith("Inconclusive")
     assert view["response_id"] == "probe-1"
-    assert "web_search_call" in view["observed"]
+    assert "observed" not in view
     assert "access" not in str(view)
+    detail = await web.queries.capability_probe("probe-1")
+    assert detail["response_payload"]["content_blocks"][0]["type"] == "web_search_call"
     await store.aclose()
 
 

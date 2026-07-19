@@ -12,6 +12,33 @@
   applySystemTheme();
   colorScheme.addEventListener("change", applySystemTheme);
 
+  const preset = document.querySelector("[data-automation-preset]");
+  const timingFields = document.querySelectorAll("[data-timing-field]");
+  const applyAutomationPreset = () => {
+    if (!(preset instanceof HTMLSelectElement)) return;
+    const selected = preset.selectedOptions[0];
+    const custom = preset.value === "custom";
+    let values = {};
+    if (!custom && selected?.dataset.values) values = JSON.parse(selected.dataset.values);
+    timingFields.forEach((field) => {
+      if (!(field instanceof HTMLInputElement)) return;
+      field.readOnly = !custom;
+      if (!custom && field.dataset.timingField in values) {
+        field.value = String(values[field.dataset.timingField]);
+      }
+    });
+  };
+  preset?.addEventListener("change", applyAutomationPreset);
+  applyAutomationPreset();
+
+  const timezoneMode = document.querySelector("[data-timezone-mode]");
+  const namedTimezone = document.querySelector("[data-named-timezone]");
+  const updateTimezoneField = () => {
+    if (namedTimezone) namedTimezone.hidden = timezoneMode?.value !== "named";
+  };
+  timezoneMode?.addEventListener("change", updateTimezoneField);
+  updateTimezoneField();
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey) {
       const target = event.target;
@@ -26,7 +53,14 @@
   });
 
   const locale = root.lang || "en";
-  const dateFormatter = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" });
+  const displayTimezone = body.dataset.displayTimezone || "browser";
+  const dateOptions = { dateStyle: "medium", timeStyle: "short" };
+  const fullDateOptions = { dateStyle: "full", timeStyle: "long" };
+  if (displayTimezone !== "browser") {
+    dateOptions.timeZone = displayTimezone;
+    fullDateOptions.timeZone = displayTimezone;
+  }
+  const dateFormatter = new Intl.DateTimeFormat(locale, dateOptions);
   const localizeTimes = (scope = document) => {
     scope.querySelectorAll("[data-local-time][data-timestamp]").forEach((element) => {
       const timestamp = Number(element.dataset.timestamp);
@@ -34,7 +68,7 @@
         const date = new Date(timestamp * 1000);
         element.dateTime = date.toISOString();
         element.textContent = dateFormatter.format(date);
-        element.title = date.toLocaleString(locale, { dateStyle: "full", timeStyle: "long" });
+        element.title = date.toLocaleString(locale, fullDateOptions);
       }
     });
   };

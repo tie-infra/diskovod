@@ -807,6 +807,24 @@ class AdminQueryService:
             result["sqlite_version"] = str(sqlite_version[0])
         return result
 
+    async def configuration_versions(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        async with self.store.database.transaction() as connection:
+            rows = await (
+                await connection.execute(
+                    "SELECT * FROM agent_configuration_versions "
+                    "ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (max(1, min(limit, 50)),),
+                )
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["configuration"] = redact_sensitive(self._payload(item["configuration"]))
+            item["created_at_label"] = self._time(float(item["created_at"]))
+            item["active"] = bool(item["active"])
+            result.append(item)
+        return result
+
     async def inbox_count(self) -> int:
         async with self.store.database.transaction() as connection:
             row = await (

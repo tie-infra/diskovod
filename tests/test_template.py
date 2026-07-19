@@ -78,6 +78,10 @@ def test_admin_pages_keep_settings_in_their_owned_domains():
     assert 'name="locale"' in interface
     assert 'name="theme"' in interface
     assert 'name="density"' in interface
+    assert 'name="display_timezone_mode"' in interface
+    assert 'name="named_timezone"' in interface
+    assert 'name="preset"' in automation
+    assert 'action="/personality/infer"' in assistant
     assert 'name="model"' in model
     assert 'name="reasoning_effort"' in model
     assert set(SUPPORTED_LOCALES) == {"en", "ru", "uk", "ja", "zh", "de", "fr"}

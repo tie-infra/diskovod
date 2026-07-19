@@ -9,7 +9,6 @@ import re
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -61,6 +60,22 @@ SECTION_DESTINATIONS = {
 PROVIDERS = frozenset({"chatgpt", "custom"})
 CUSTOM_PROTOCOLS = frozenset({"responses", "chat_completions"})
 LIVE_TOPIC_PATTERN = re.compile(r"^(?:jobs|inbox|(?:chat|run|job):[A-Za-z0-9_.:-]{1,500})$")
+AUTOMATION_TIMING_FIELDS = (
+    "debounce_seconds",
+    "min_delay_seconds",
+    "max_delay_seconds",
+    "min_typing_cps",
+    "max_typing_cps",
+    "min_human_quiet_minutes",
+    "max_human_quiet_minutes",
+    "min_message_gap_seconds",
+    "max_message_gap_seconds",
+)
+AUTOMATION_PRESETS = {
+    "responsive": (0.8, 0.8, 2.5, 24.0, 40.0, 5.0, 12.0, 0.3, 0.9),
+    "natural": (1.8, 2.2, 6.5, 18.0, 32.0, 15.0, 30.0, 0.7, 2.0),
+    "reserved": (3.0, 5.0, 12.0, 14.0, 24.0, 30.0, 60.0, 1.2, 3.0),
+}
 
 
 @dataclass(slots=True)
@@ -453,6 +468,13 @@ class WebApp:
 
         @self.app.get("/settings/model")
         async def model_settings(request: Request, _: str = Depends(auth)):
+            probe_jobs = []
+            if self.jobs:
+                probe_jobs = [
+                    self._job_view(job)
+                    for job in await self.jobs.repository.list(limit=20)
+                    if job["type"] == "provider.capability_probe"
+                ][:5]
             return await self._render(
                 request,
                 "settings_model.html",
@@ -463,6 +485,9 @@ class WebApp:
                 provider_label=self.models.provider_label,
                 subscription_web_search=self._hosted_search_capability(),
                 latest_probe=await self._subscription_web_search_probe_view(self._model_view()["model"]),
+                configuration_versions=await self.queries.configuration_versions(),
+                probe_jobs=probe_jobs,
+                live_topic="jobs",
             )
 
         @self.app.get("/settings/assistant")
@@ -481,12 +506,18 @@ class WebApp:
 
         @self.app.get("/settings/automation")
         async def automation_settings(request: Request, _: str = Depends(auth)):
+            settings = self.store.automation_settings()
             return await self._render(
                 request,
                 "settings_automation.html",
                 "settings",
                 "automation_settings",
-                automation_settings=self.store.automation_settings(),
+                automation_settings=settings,
+                automation_preset=self._automation_preset(settings),
+                automation_presets={
+                    name: dict(zip(AUTOMATION_TIMING_FIELDS, values, strict=True))
+                    for name, values in AUTOMATION_PRESETS.items()
+                },
             )
 
         @self.app.get("/settings/interface")
@@ -497,6 +528,7 @@ class WebApp:
                 "settings",
                 "interface_settings",
                 interface_settings=self.store.interface_settings(),
+                owner_timezone=self.store.assistant_profile().owner_timezone,
             )
 
         @self.app.get("/system/diagnostics")
@@ -749,7 +781,8 @@ class WebApp:
             locale: str = Form("en"),
             theme: str = Form("system"),
             density: str = Form("comfortable"),
-            display_timezone: str = Form("browser"),
+            display_timezone_mode: str = Form("browser"),
+            named_timezone: str = Form("UTC"),
             show_advanced_ids: str | None = Form(None),
             _: str = Depends(auth),
         ):
@@ -758,8 +791,12 @@ class WebApp:
             if theme not in ADMIN_THEMES:
                 return self._redirect("/settings/interface", error=self._t("unknown_theme"))
             if density not in {"comfortable", "compact"}:
-                return self._redirect("/settings/interface", error="Unknown display density")
-            if display_timezone != "browser":
+                return self._redirect("/settings/interface", error=self._t("unknown_density"))
+            if display_timezone_mode not in {"browser", "owner", "named"}:
+                return self._redirect("/settings/interface", error=self._t("timezone_invalid"))
+            display_timezone = display_timezone_mode
+            if display_timezone_mode == "named":
+                display_timezone = named_timezone.strip()
                 try:
                     ZoneInfo(display_timezone)
                 except (KeyError, ValueError):
@@ -813,6 +850,7 @@ class WebApp:
 
         @self.app.post("/settings/automation")
         async def automation_save(
+            preset: str = Form("natural"),
             enabled: str | None = Form(None),
             silent_replies: str | None = Form(None),
             robot_prefix: str | None = Form(None),
@@ -828,6 +866,22 @@ class WebApp:
             max_message_gap_seconds: float = Form(2),
             _: str = Depends(auth),
         ):
+            if preset in AUTOMATION_PRESETS:
+                (
+                    debounce_seconds,
+                    min_delay_seconds,
+                    max_delay_seconds,
+                    min_typing_cps,
+                    max_typing_cps,
+                    min_human_quiet_minutes,
+                    max_human_quiet_minutes,
+                    min_message_gap_seconds,
+                    max_message_gap_seconds,
+                ) = AUTOMATION_PRESETS[preset]
+            elif preset != "custom":
+                return self._redirect(
+                    "/settings/automation", error=self._t("unknown_automation_preset")
+                )
             if (
                 min_delay_seconds > max_delay_seconds
                 or min_typing_cps > max_typing_cps
@@ -1182,23 +1236,44 @@ class WebApp:
                 return self._redirect("/inbox", error=self._t("captcha_expired"))
             return self._redirect("/inbox", message=self._t("captcha_submitted"))
 
-        @self.app.post("/settings/reset")
-        async def settings_reset(
+        @self.app.post("/settings/assistant/reset")
+        async def assistant_reset(
             confirm: str = Form(""),
             _: str = Depends(auth),
         ):
             interface = self.store.interface_settings()
             if confirm != "reset":
-                return self._back(
-                    tab="assistant",
+                return self._redirect(
+                    "/settings/assistant",
                     error=ui_text(interface.locale, "assistant_settings_reset_confirm"),
                 )
             await self.store.aset_assistant_profile(assistant_settings_defaults())
-            await self.store.aset_automation_settings(AutomationSettings())
             await self.models.arefresh_prompt_cache_identity()
-            return self._back(
-                tab="assistant",
+            return self._redirect(
+                "/settings/assistant",
                 message=ui_text(interface.locale, "assistant_settings_reset"),
+            )
+
+        @self.app.post("/settings/automation/reset")
+        async def automation_reset(confirm: str = Form(""), _: str = Depends(auth)):
+            if confirm != "reset":
+                return self._redirect(
+                    "/settings/automation", error=self._t("settings_reset_confirm")
+                )
+            await self.store.aset_automation_settings(AutomationSettings())
+            return self._redirect(
+                "/settings/automation", message=self._t("automation_settings_reset")
+            )
+
+        @self.app.post("/settings/interface/reset")
+        async def interface_reset(confirm: str = Form(""), _: str = Depends(auth)):
+            if confirm != "reset":
+                return self._redirect(
+                    "/settings/interface", error=self._t("settings_reset_confirm")
+                )
+            await self.store.aset_interface_settings(InterfaceSettings())
+            return self._redirect(
+                "/settings/interface", message=ui_text("en", "interface_settings_reset")
             )
 
         @self.app.post("/personality/infer")
@@ -1484,12 +1559,16 @@ class WebApp:
         **context: Any,
     ):
         interface = self.store.interface_settings()
+        display_timezone = interface.display_timezone
+        if display_timezone == "owner":
+            display_timezone = self.store.assistant_profile().owner_timezone
         jobs = await self.jobs.repository.list(limit=5) if self.jobs else []
         active_jobs = await self.jobs.repository.active_count() if self.jobs else 0
         base = {
             "active_section": active_section,
             "page_title": ui_text(interface.locale, title_key),
             "interface_settings": interface,
+            "resolved_display_timezone": display_timezone,
             "automation_settings": self.store.automation_settings(),
             "locale": interface.locale,
             "locales": SUPPORTED_LOCALES,
@@ -1565,6 +1644,18 @@ class WebApp:
             except importlib.metadata.PackageNotFoundError:
                 versions[label] = "—"
         return versions
+
+    @staticmethod
+    def _automation_preset(settings: AutomationSettings) -> str:
+        current = tuple(float(getattr(settings, field)) for field in AUTOMATION_TIMING_FIELDS)
+        return next(
+            (
+                name
+                for name, values in AUTOMATION_PRESETS.items()
+                if all(abs(actual - expected) < 1e-9 for actual, expected in zip(current, values, strict=True))
+            ),
+            "custom",
+        )
 
     @classmethod
     def _checkpoint_view(cls, metadata: dict[str, Any], snapshot, parent) -> dict[str, Any]:
@@ -1666,19 +1757,12 @@ class WebApp:
             if status == "supported"
             else ("request_error" if status == "error" else "response_mismatch")
         )
-        response = json.loads(report["response_payload"]) if report["response_payload"] else {}
         return {
             "model": str(configuration.get("model_id") or model),
             "effort": str(configuration.get("options", {}).get("reasoning_effort") or "—"),
-            "checked_at_label": datetime.fromtimestamp(report["completed_at"])
-            .astimezone()
-            .strftime("%Y-%m-%d %H:%M:%S %Z"),
             "result_label": self._t(f"web_search_probe_result_{outcome}"),
             "response_id": str(report["id"]),
-            "observed": json.dumps(response, ensure_ascii=False)[:2000] or "—",
             "error": str(report["conclusion"] if status == "error" else ""),
-            "request_log_id": None,
-            "request_log_url": None,
         }
 
     def _personality_view(self) -> dict[str, Any] | None:

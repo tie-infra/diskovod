@@ -142,6 +142,54 @@ async def test_escalation_projection_includes_bounded_conversation_context(tmp_p
     await store.aclose()
 
 
+async def test_chat_list_searches_messages_and_filters_actionable_states(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    await store.aupsert_conversation("alpha", "peer-a", "Alice")
+    await store.aupsert_conversation("beta", "peer-b", "Bob")
+    await store.asave_message(
+        id="message",
+        channel_id="beta",
+        author_id="peer-b",
+        author_name="Bob",
+        direction="in",
+        source="remote",
+        content="The unusual invoice reference",
+        timestamp=100,
+    )
+    await store.asnooze("alpha", 600)
+    queries = AdminQueryService(store)
+
+    search = await queries.chats(query="unusual invoice")
+    snoozed = await queries.chats(state="snoozed")
+
+    assert [item["channel_id"] for item in search["items"]] == ["beta"]
+    assert [item["channel_id"] for item in snoozed["items"]] == ["alpha"]
+    await store.aclose()
+
+
+async def test_checkpoint_lookup_supports_historical_thread_generations(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    async with store.database.transaction() as connection:
+        await connection.execute(
+            "INSERT INTO chat_thread_generations("
+            "thread_id, channel_id, account_id, generation, created_at, closed_at, close_reason"
+            ") VALUES(?, ?, ?, ?, ?, ?, ?)",
+            ("thread:g1", "channel", "owner", 1, 10.0, 20.0, "model_changed"),
+        )
+        await connection.execute(
+            "INSERT INTO checkpoint_index VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            ("thread:g1", "checkpoint", None, None, 15.0, 2, "loop", 4),
+        )
+
+    checkpoint = await AdminQueryService(store).checkpoint("channel", 1, "checkpoint")
+    thread = await store.achat_thread_by_id("thread:g1")
+
+    assert checkpoint["message_count"] == 4
+    assert checkpoint["generation"] == 1
+    assert thread["channel_id"] == "channel"
+    await store.aclose()
+
+
 def test_recursive_redaction_does_not_hide_non_secret_token_metrics():
     assert redact_sensitive(
         {

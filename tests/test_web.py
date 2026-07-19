@@ -64,6 +64,10 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/search" in route_paths
     assert "/chats" in route_paths
     assert "/chats/{channel_id}" in route_paths
+    assert (
+        "/chats/{channel_id}/generations/{generation}/checkpoints/{checkpoint_id}"
+        in route_paths
+    )
     assert "/activity/runs" in route_paths
     assert "/activity/runs/{run_id}" in route_paths
     assert "/activity/runs/{run_id}/diagnostic.json" in route_paths

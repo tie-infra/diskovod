@@ -1053,7 +1053,9 @@ class Store:
     async def achat_thread_by_id(self, thread_id: str) -> dict[str, Any] | None:
         async with self.database.transaction() as connection:
             row = await (
-                await connection.execute("SELECT * FROM chat_threads WHERE thread_id=?", (thread_id,))
+                await connection.execute(
+                    "SELECT * FROM chat_thread_generations WHERE thread_id=?", (thread_id,)
+                )
             ).fetchone()
         return dict(row) if row else None
 

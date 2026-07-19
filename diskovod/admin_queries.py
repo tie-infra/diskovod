@@ -77,18 +77,39 @@ class AdminQueryService:
         self,
         *,
         query: str = "",
-        mode: str = "",
+        state: str = "",
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
         clauses: list[str] = []
         parameters: list[Any] = []
         if query:
-            clauses.append("(peer_name LIKE ? OR channel_id LIKE ?)")
-            parameters.extend((f"%{query[:200]}%", f"%{query[:200]}%"))
-        if mode in {"automatic", "inline", "paused"}:
-            clauses.append("mode=?")
-            parameters.append(mode)
+            clauses.append(
+                "(c.peer_name LIKE ? OR c.channel_id LIKE ? OR EXISTS ("
+                "SELECT 1 FROM messages search_message "
+                "WHERE search_message.channel_id=c.channel_id AND search_message.content LIKE ?))"
+            )
+            pattern = f"%{query[:200]}%"
+            parameters.extend((pattern, pattern, pattern))
+        if state in {"automatic", "inline"}:
+            clauses.append("c.mode=? AND c.paused=0")
+            parameters.append(state)
+        elif state == "paused":
+            clauses.append("c.paused=1")
+        elif state == "snoozed":
+            clauses.append("c.snoozed_until>?")
+            parameters.append(time.time())
+        elif state == "escalated":
+            clauses.append(
+                "EXISTS (SELECT 1 FROM escalation_interrupts filter_escalation "
+                "WHERE filter_escalation.channel_id=c.channel_id "
+                "AND filter_escalation.state IN ('pending','claimed'))"
+            )
+        elif state == "failed":
+            clauses.append(
+                "EXISTS (SELECT 1 FROM agent_runs filter_run "
+                "WHERE filter_run.channel_id=c.channel_id AND filter_run.status='failed')"
+            )
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         page_limit = max(1, min(limit, 100))
         page_offset = max(0, offset)
@@ -96,7 +117,9 @@ class AdminQueryService:
             total = int(
                 (
                     await (
-                        await connection.execute(f"SELECT COUNT(*) FROM conversations{where}", parameters)
+                        await connection.execute(
+                            f"SELECT COUNT(*) FROM conversations c{where}", parameters
+                        )
                     ).fetchone()
                 )[0]
             )
@@ -110,7 +133,15 @@ class AdminQueryService:
                        ORDER BY timestamp DESC LIMIT 1) AS latest_message_at,
                       (SELECT COUNT(*) FROM escalation_interrupts e
                        WHERE e.channel_id=c.channel_id AND e.state IN ('pending','claimed'))
-                       AS escalation_count
+                       AS escalation_count,
+                      (SELECT COUNT(*) FROM attachment_references a
+                       WHERE a.channel_id=c.channel_id) AS attachment_count,
+                      (SELECT COUNT(*) FROM agent_runs active_run
+                       WHERE active_run.channel_id=c.channel_id AND active_run.status='running')
+                       AS active_run_count,
+                      (SELECT COUNT(*) FROM agent_runs failed_run
+                       WHERE failed_run.channel_id=c.channel_id AND failed_run.status='failed')
+                       AS failed_run_count
                     FROM conversations c LEFT JOIN chat_threads t ON t.channel_id=c.channel_id
                     {where} ORDER BY COALESCE(latest_message_at, c.updated_at) DESC
                     LIMIT ? OFFSET ?
@@ -118,13 +149,23 @@ class AdminQueryService:
                     (*parameters, page_limit, page_offset),
                 )
             ).fetchall()
+        items = [dict(row) for row in rows]
+        now = time.time()
+        for item in items:
+            item["effective_mode"] = (
+                "paused"
+                if item["paused"]
+                else "snoozed"
+                if item.get("snoozed_until") and float(item["snoozed_until"]) > now
+                else item["mode"]
+            )
         return {
-            "items": [dict(row) for row in rows],
+            "items": items,
             "total": total,
             "limit": page_limit,
             "offset": page_offset,
             "query": query,
-            "mode": mode,
+            "state": state,
             "previous_offset": max(0, page_offset - page_limit) if page_offset else None,
             "next_offset": page_offset + page_limit if page_offset + page_limit < total else None,
         }
@@ -133,6 +174,8 @@ class AdminQueryService:
         conversation = await self.store.aconversation(channel_id)
         if conversation is None:
             return None
+        active_thread = await self.store.achat_thread_for_channel(channel_id)
+        conversation["effective_mode"] = "paused" if conversation["paused"] else conversation["mode"]
         generations = await self.store.achat_thread_generations(channel_id)
         selected = next(
             (item for item in generations if generation is None or item["generation"] == generation),
@@ -163,9 +206,61 @@ class AdminQueryService:
                 if selected
                 else []
             )
+            reactions = await (
+                await connection.execute(
+                    "SELECT trigger_message_id, emoji FROM assistant_reactions WHERE channel_id=?",
+                    (channel_id,),
+                )
+            ).fetchall()
+            attachments = await (
+                await connection.execute(
+                    """
+                    SELECT r.*, o.size, o.media_type,
+                      (SELECT state FROM attachment_artifacts artifact
+                       WHERE artifact.object_sha256=r.object_sha256
+                       ORDER BY updated_at DESC LIMIT 1) AS extraction_state
+                    FROM attachment_references r
+                    JOIN attachment_objects o ON o.sha256=r.object_sha256
+                    WHERE r.channel_id=? ORDER BY r.created_at DESC LIMIT 10
+                    """,
+                    (channel_id,),
+                )
+            ).fetchall()
+            memory_rows = []
+            if selected:
+                namespace = json.dumps(
+                    ["chat", selected["account_id"], channel_id, "memory"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                memory_rows = await (
+                    await connection.execute(
+                        "SELECT key, value, updated_at FROM langgraph_store_items "
+                        "WHERE namespace=? ORDER BY updated_at DESC LIMIT 10",
+                        (namespace,),
+                    )
+                ).fetchall()
+            configuration = (
+                await (
+                    await connection.execute(
+                        "SELECT configuration FROM agent_configuration_versions WHERE id=?",
+                        (selected["configuration_version_id"],),
+                    )
+                ).fetchone()
+                if selected and selected.get("configuration_version_id") is not None
+                else None
+            )
         has_older_messages = len(messages) > 50
         bounded_messages = messages[:50]
+        reaction_map = {str(row["trigger_message_id"]): str(row["emoji"]) for row in reactions}
         transcript = [self._message(row) for row in reversed(bounded_messages)]
+        for message in transcript:
+            message["assistant_reaction"] = reaction_map.get(str(message["id"]))
+        memories = []
+        for row in memory_rows:
+            item = dict(row)
+            item["value"] = redact_sensitive(self._payload(item["value"]))
+            memories.append(item)
         return {
             "conversation": conversation,
             "generations": generations,
@@ -176,7 +271,39 @@ class AdminQueryService:
             ),
             "runs": [self._run_summary(row) for row in runs],
             "checkpoints": [dict(row) for row in checkpoints],
+            "attachments": [dict(row) for row in attachments],
+            "memories": memories,
+            "configuration": redact_sensitive(
+                self._payload(configuration["configuration"]) if configuration else None
+            ),
+            "historical": bool(
+                selected and generations and selected["generation"] != generations[0]["generation"]
+            ),
+            "live_steering": bool(active_thread.get("live_steering", 1)) if active_thread else True,
         }
+
+    async def checkpoint(
+        self,
+        channel_id: str,
+        generation: int,
+        checkpoint_id: str,
+    ) -> dict[str, Any] | None:
+        async with self.store.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    """
+                    SELECT checkpoint.*, generation.generation, generation.channel_id,
+                      generation.configuration_version_id
+                    FROM checkpoint_index checkpoint
+                    JOIN chat_thread_generations generation
+                      ON generation.thread_id=checkpoint.thread_id
+                    WHERE generation.channel_id=? AND generation.generation=?
+                      AND checkpoint.checkpoint_id=?
+                    """,
+                    (channel_id, generation, checkpoint_id),
+                )
+            ).fetchone()
+        return dict(row) if row else None
 
     async def runs(
         self, *, status: str = "", channel_id: str = "", limit: int = 50, offset: int = 0

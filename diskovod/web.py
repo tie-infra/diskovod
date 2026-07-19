@@ -38,6 +38,7 @@ from .models import (
 )
 from .oauth import ChatGPTAccount
 from .personality import assistant_profile_fingerprint, personality_source_hash
+from .redaction import redact_sensitive
 from .providers import (
     ModelConfiguration,
     ModelService,
@@ -239,7 +240,7 @@ class WebApp:
         async def chats(
             request: Request,
             q: str = "",
-            mode: str = "",
+            state: str = "",
             offset: int = 0,
             _: str = Depends(auth),
         ):
@@ -248,7 +249,7 @@ class WebApp:
                 "chats.html",
                 "chats",
                 "chats",
-                chats=await self.queries.chats(query=q, mode=mode, offset=offset),
+                chats=await self.queries.chats(query=q, state=state, offset=offset),
             )
 
         @self.app.get("/chats/{channel_id}")
@@ -256,6 +257,7 @@ class WebApp:
             view = await self.queries.chat(channel_id)
             if view is None:
                 raise HTTPException(404, self._t("conversation_not_found"))
+            await self._prepare_chat_view(view)
             return await self._render(
                 request, "chat.html", "chats", "chat", chat=view, live_topic=f"chat:{channel_id}"
             )
@@ -265,7 +267,43 @@ class WebApp:
             view = await self.queries.chat(channel_id, generation=generation)
             if view is None:
                 raise HTTPException(404, self._t("conversation_not_found"))
+            await self._prepare_chat_view(view)
             return await self._render(request, "chat.html", "chats", "chat", chat=view)
+
+        @self.app.get(
+            "/chats/{channel_id}/generations/{generation}/checkpoints/{checkpoint_id}"
+        )
+        async def checkpoint_detail(
+            request: Request,
+            channel_id: str,
+            generation: int,
+            checkpoint_id: str,
+            _: str = Depends(auth),
+        ):
+            metadata = await self.queries.checkpoint(channel_id, generation, checkpoint_id)
+            if metadata is None or self.runtime.checkpointer is None:
+                raise HTTPException(404, self._t("checkpoint_not_found"))
+            config = {
+                "configurable": {
+                    "thread_id": metadata["thread_id"],
+                    "checkpoint_id": checkpoint_id,
+                }
+            }
+            snapshot = await self.runtime.checkpointer.aget_tuple(config)
+            if snapshot is None:
+                raise HTTPException(404, self._t("checkpoint_not_found"))
+            parent = (
+                await self.runtime.checkpointer.aget_tuple(snapshot.parent_config)
+                if snapshot.parent_config
+                else None
+            )
+            return await self._render(
+                request,
+                "checkpoint.html",
+                "chats",
+                "checkpoint_detail",
+                checkpoint=self._checkpoint_view(metadata, snapshot, parent),
+            )
 
         @self.app.get("/activity/runs")
         async def runs(
@@ -559,12 +597,14 @@ class WebApp:
         @self.app.get("/api/chats")
         async def chats_api(
             q: str = "",
-            mode: str = "",
+            state: str = "",
             limit: int = 50,
             offset: int = 0,
             _: str = Depends(auth),
         ):
-            return JSONResponse(await self.queries.chats(query=q, mode=mode, limit=limit, offset=offset))
+            return JSONResponse(
+                await self.queries.chats(query=q, state=state, limit=limit, offset=offset)
+            )
 
         @self.app.get("/api/chats/{channel_id}/messages")
         async def chat_messages_api(
@@ -1243,7 +1283,9 @@ class WebApp:
         @self.app.post("/chats/{channel_id}/pause")
         async def pause(channel_id: str, _: str = Depends(auth)):
             await self.runtime.permanently_pause(channel_id)
-            return self._back(tab="conversations", message=self._t("conversation_paused"))
+            return self._redirect(
+                f"/chats/{channel_id}", message=self._t("conversation_paused")
+            )
 
         @self.app.post("/chats/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
@@ -1253,7 +1295,9 @@ class WebApp:
                 await self.runtime.resume_escalation(str(escalation["id"]), action="resolved")
             await self.store.aset_permanent_pause(channel_id, False)
             await self.store.aclear_snooze(channel_id)
-            return self._back(tab="conversations", message=self._t("conversation_resumed"))
+            return self._redirect(
+                f"/chats/{channel_id}", message=self._t("conversation_resumed")
+            )
 
         @self.app.post("/chats/{channel_id}/mode")
         async def conversation_mode(
@@ -1262,33 +1306,37 @@ class WebApp:
             _: str = Depends(auth),
         ):
             if mode not in {"automatic", "inline", "paused"}:
-                return self._back(
-                    tab="conversations",
+                return self._redirect(
+                    f"/chats/{channel_id}",
                     error=self._t("conversation_mode_invalid"),
                 )
             if not await self.store.aset_conversation_mode(channel_id, mode):
-                return self._back(
-                    tab="conversations",
+                return self._redirect(
+                    f"/chats/{channel_id}",
                     error=self._t("conversation_not_found"),
                 )
             self.runtime.cancel(channel_id)
-            return self._back(
-                tab="conversations",
+            return self._redirect(
+                f"/chats/{channel_id}",
                 message=self._t("conversation_mode_saved"),
             )
 
         @self.app.post("/chats/{channel_id}/force-reply")
         async def force_reply(channel_id: str, _: str = Depends(auth)):
             if not self.runtime.ready:
-                return self._back(
-                    tab="conversations",
+                return self._redirect(
+                    f"/chats/{channel_id}",
                     error=self._t("connect_provider_before_force"),
                 )
             try:
                 await self.discord.force_reply(channel_id)
             except Exception as exc:
-                return self._back(tab="conversations", error=self._localized_known_error(exc))
-            return self._back(tab="conversations", message=self._t("forced_reply_scheduled"))
+                return self._redirect(
+                    f"/chats/{channel_id}", error=self._localized_known_error(exc)
+                )
+            return self._redirect(
+                f"/chats/{channel_id}", message=self._t("forced_reply_scheduled")
+            )
 
         @self.app.post("/chats/{channel_id}/steering")
         async def live_steering(
@@ -1297,9 +1345,13 @@ class WebApp:
             _: str = Depends(auth),
         ):
             if await self.store.aconversation(channel_id) is None:
-                return self._back(tab="conversations", error=self._t("conversation_not_found"))
+                return self._redirect(
+                    f"/chats/{channel_id}", error=self._t("conversation_not_found")
+                )
             await self.runtime.set_live_steering(channel_id, enabled is not None)
-            return self._back(tab="conversations", message=self._t("settings_saved"))
+            return self._redirect(
+                f"/chats/{channel_id}", message=self._t("settings_saved")
+            )
 
         @self.app.post("/inbox/escalations/{escalation_id}/claim")
         async def escalation_claim(escalation_id: str, _: str = Depends(auth)):
@@ -1513,6 +1565,95 @@ class WebApp:
             except importlib.metadata.PackageNotFoundError:
                 versions[label] = "—"
         return versions
+
+    @classmethod
+    def _checkpoint_view(cls, metadata: dict[str, Any], snapshot, parent) -> dict[str, Any]:
+        values = snapshot.checkpoint.get("channel_values", {})
+        messages = list(values.get("messages") or [])
+        parent_messages = (
+            list(parent.checkpoint.get("channel_values", {}).get("messages") or [])
+            if parent is not None
+            else []
+        )
+        current_ids = {str(getattr(message, "id", "")) for message in messages}
+        parent_ids = {str(getattr(message, "id", "")) for message in parent_messages}
+        state = {
+            str(key): redact_sensitive(cls._serializable(value))
+            for key, value in values.items()
+            if key != "messages"
+        }
+        return {
+            "metadata": metadata,
+            "messages": [cls._checkpoint_message(message) for message in messages],
+            "state": state,
+            "added_messages": len(current_ids - parent_ids),
+            "removed_messages": len(parent_ids - current_ids),
+            "checkpoint_metadata": redact_sensitive(cls._serializable(snapshot.metadata)),
+        }
+
+    async def _prepare_chat_view(self, view: dict[str, Any]) -> None:
+        view["runtime_ready"] = self.runtime.ready
+        if not view["historical"] or not view["checkpoints"] or self.runtime.checkpointer is None:
+            return
+        checkpoint = view["checkpoints"][0]
+        snapshot = await self.runtime.checkpointer.aget_tuple(
+            {
+                "configurable": {
+                    "thread_id": checkpoint["thread_id"],
+                    "checkpoint_id": checkpoint["checkpoint_id"],
+                }
+            }
+        )
+        if snapshot is None:
+            return
+        values = snapshot.checkpoint.get("channel_values", {})
+        view["messages"] = [
+            self._checkpoint_message(message) for message in values.get("messages") or []
+        ]
+        view["older_messages_before"] = None
+
+    @classmethod
+    def _checkpoint_message(cls, message: Any) -> dict[str, Any]:
+        additional = getattr(message, "additional_kwargs", {}) or {}
+        participant = additional.get("diskovod_participant") or {}
+        message_type = str(getattr(message, "type", type(message).__name__)).lower()
+        role = str(
+            participant.get("role")
+            or {"human": "peer", "ai": "assistant"}.get(message_type, message_type)
+        )
+        content = getattr(message, "content", "")
+        if not isinstance(content, str):
+            content = json.dumps(
+                redact_sensitive(cls._serializable(content)),
+                ensure_ascii=False,
+                indent=2,
+            )
+        return {
+            "id": str(getattr(message, "id", "") or ""),
+            "role": role,
+            "author": str(participant.get("name") or role),
+            "author_name": str(participant.get("name") or role),
+            "content": content,
+            "direction": "in" if role == "peer" else "out",
+            "timestamp": None,
+            "timestamp_label": "",
+            "edited_at": None,
+            "deleted_at": None,
+            "attachments": [],
+            "assistant_reaction": None,
+        }
+
+    @staticmethod
+    def _serializable(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json")
+        if isinstance(value, dict):
+            return {str(key): WebApp._serializable(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [WebApp._serializable(item) for item in value]
+        return str(value)
 
     async def _subscription_web_search_probe_view(self, model: str) -> dict[str, Any] | None:
         report = await self.store.alatest_capability_probe("hosted_web_search")

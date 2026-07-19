@@ -19,6 +19,7 @@ def test_multipage_admin_templates_parse_and_use_the_shared_shell():
         "search.html",
         "chats.html",
         "chat.html",
+        "checkpoint.html",
         "runs.html",
         "run.html",
         "jobs.html",

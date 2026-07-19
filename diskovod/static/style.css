@@ -454,6 +454,15 @@ article.card {
   font-size: 0.75rem;
 }
 
+.reaction-chip {
+  display: inline-flex;
+  margin-top: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 999px;
+  background: var(--bs-tertiary-bg);
+}
+
 .empty-state {
   padding: 2.5rem 1rem;
   color: var(--bs-secondary-color);

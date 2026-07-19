@@ -2,13 +2,27 @@
 {% block subtitle %}<p class="text-body-secondary">{{ t("escalation_help") }}</p>{% endblock %}
 {% block content %}
 <div class="vstack gap-3">
+  {% for challenge in captcha_requests %}
+  <article class="card border-warning"><div class="card-body">
+    <div class="d-flex justify-content-between"><h2 class="h5">{{ t("captcha_requests") }}</h2><span class="badge text-bg-warning">{{ challenge.expires_in_seconds }}s</span></div>
+    <p>{{ t("captcha_help", service=challenge.service, seconds=challenge.expires_in_seconds) }}</p>
+    <form method="post" action="/discord/captcha/{{ challenge.id }}" class="d-flex gap-2"><label class="visually-hidden" for="captcha-{{ challenge.id }}">{{ t("captcha_solution") }}</label><input id="captcha-{{ challenge.id }}" class="form-control" name="solution" required placeholder="{{ t('captcha_solution') }}"><button class="btn btn-primary">{{ t("submit_captcha") }}</button></form>
+  </div></article>
+  {% endfor %}
+  {% for problem in connection_errors %}
+  <article class="alert alert-danger mb-0"><strong>{{ t("connections") }} · {{ problem.kind }}</strong><div>{{ problem.summary }}</div><a href="/settings/connections">{{ t("open_related") }}</a></article>
+  {% endfor %}
+  {% for run in failed_runs %}
+  <article class="card border-danger"><div class="card-body d-flex justify-content-between gap-3"><div><h2 class="h6">{{ t("failed_runs") }} · {{ run.channel_id }}</h2><p class="small text-danger mb-0">{{ run.error or t("status_" ~ run.status) }}</p></div><a href="/activity/runs/{{ run.id }}">{{ t("inspect") }}</a></div></article>
+  {% endfor %}
   {% for escalation in escalations.items %}
   <article class="card">
     <div class="card-body">
-      <div class="d-flex justify-content-between"><h2 class="h5">{{ escalation.channel_id }}</h2><span class="badge text-bg-warning">{{ escalation.state }}</span></div>
+      <div class="d-flex justify-content-between"><h2 class="h5">{{ escalation.peer_name or escalation.channel_id }}</h2><span class="badge text-bg-warning">{{ t(escalation.state) }}</span></div>
       <p>{{ t("reason_" ~ escalation.reason) }}</p>
       {% if escalation.acknowledgement %}<blockquote class="blockquote fs-6">{{ escalation.acknowledgement }}</blockquote>{% endif %}
       <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-primary" href="/inbox/escalations/{{ escalation.id }}">{{ t("inspect") }}</a>
         <a class="btn btn-outline-primary" href="/chats/{{ escalation.channel_id }}">{{ t("open_chat") }}</a>
         <form method="post" action="/inbox/escalations/{{ escalation.id }}/resolve"><button class="btn btn-primary">{{ t("resolve_keep_paused") }}</button></form>
         <form method="post" action="/inbox/escalations/{{ escalation.id }}/dismiss"><button class="btn btn-outline-secondary">{{ t("dismiss_keep_paused") }}</button></form>

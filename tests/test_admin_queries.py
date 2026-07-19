@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from diskovod.admin_queries import AdminQueryService
 from diskovod.redaction import REDACTED, redact_sensitive
@@ -88,6 +89,50 @@ async def test_live_resource_version_changes_with_authoritative_chat_state(tmp_p
     assert before["chat:channel"] != after["chat:channel"]
     assert before["jobs"] == after["jobs"]
     assert before["inbox"] == after["inbox"]
+    await store.aclose()
+
+
+async def test_escalation_projection_includes_bounded_conversation_context(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    for index in range(35):
+        await store.asave_message(
+            id=f"message-{index}",
+            channel_id="channel",
+            author_id="peer",
+            author_name="Peer",
+            direction="in",
+            source="remote",
+            content=f"context {index}",
+            timestamp=float(index),
+        )
+    async with store.database.transaction() as connection:
+        await connection.execute(
+            "INSERT INTO escalation_interrupts VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (
+                "escalation",
+                "thread",
+                "channel",
+                "pending",
+                json.dumps(
+                    {
+                        "reason": "peer_requested_owner",
+                        "acknowledgement": "I marked this for the owner.",
+                    }
+                ),
+                40.0,
+                40.0,
+            ),
+        )
+
+    detail = await AdminQueryService(store).escalation("escalation")
+
+    assert detail is not None
+    assert detail["conversation"]["peer_name"] == "Peer"
+    assert detail["escalation"]["reason"] == "peer_requested_owner"
+    assert len(detail["messages"]) == 30
+    assert detail["messages"][0]["content"] == "context 5"
+    assert detail["messages"][-1]["content"] == "context 34"
     await store.aclose()
 
 

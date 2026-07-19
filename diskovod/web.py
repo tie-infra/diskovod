@@ -166,18 +166,71 @@ class WebApp:
 
         @self.app.get("/")
         async def overview(request: Request, _: str = Depends(auth)):
+            view = await self.queries.overview()
+            view.update(
+                model_ready=self.models.ready,
+                model_provider=self.models.provider_label,
+                model_id=self._model_view()["model"],
+                discord_connected=self.discord.connected,
+                discord_identity=self.discord.identity,
+                discord_error=self.discord.error,
+                chat_connected=self.account.connected,
+                automation_enabled=self.store.automation_settings().enabled,
+            )
             return await self._render(
                 request,
                 "overview.html",
                 "overview",
                 "overview",
-                overview=await self.queries.overview(),
+                overview=view,
             )
 
         @self.app.get("/inbox")
         async def inbox(request: Request, offset: int = 0, _: str = Depends(auth)):
             return await self._render(
-                request, "inbox.html", "inbox", "inbox", escalations=await self.queries.inbox(offset=offset)
+                request,
+                "inbox.html",
+                "inbox",
+                "inbox",
+                escalations=await self.queries.inbox(offset=offset),
+                failed_runs=await self.queries.actionable_runs(),
+                captcha_requests=self.discord.captcha_requests(),
+                connection_errors=[
+                    {"kind": "chatgpt", "summary": self.account.last_error}
+                    for _ in (0,)
+                    if self.account.last_error
+                ]
+                + [
+                    {"kind": "discord", "summary": self.discord.error}
+                    for _ in (0,)
+                    if self.discord.error
+                ],
+                live_topic="inbox",
+            )
+
+        @self.app.get("/inbox/escalations/{escalation_id}")
+        async def escalation_detail(request: Request, escalation_id: str, _: str = Depends(auth)):
+            view = await self.queries.escalation(escalation_id)
+            if view is None:
+                raise HTTPException(404, self._t("escalation_not_found"))
+            return await self._render(
+                request,
+                "escalation.html",
+                "inbox",
+                "escalation_detail",
+                detail=view,
+                live_topic="inbox",
+            )
+
+        @self.app.get("/search")
+        async def search(request: Request, q: str = "", _: str = Depends(auth)):
+            return await self._render(
+                request,
+                "search.html",
+                "",
+                "search_results",
+                query=q,
+                results=await self.queries.search(q),
             )
 
         @self.app.get("/chats")
@@ -1023,10 +1076,10 @@ class WebApp:
         ):
             solution = solution.strip()
             if not solution:
-                return self._back(error=self._t("captcha_solution_required"))
+                return self._redirect("/inbox", error=self._t("captcha_solution_required"))
             if not self.discord.solve_captcha(request_id, solution):
-                return self._back(error=self._t("captcha_expired"))
-            return self._back(message=self._t("captcha_submitted"))
+                return self._redirect("/inbox", error=self._t("captcha_expired"))
+            return self._redirect("/inbox", message=self._t("captcha_submitted"))
 
         @self.app.post("/settings/reset")
         async def settings_reset(
@@ -1190,8 +1243,10 @@ class WebApp:
         @self.app.post("/inbox/escalations/{escalation_id}/claim")
         async def escalation_claim(escalation_id: str, _: str = Depends(auth)):
             if not await self.runtime.claim_escalation(escalation_id):
-                return self._back(tab="conversations", error=self._t("escalation_not_found"))
-            return self._back(tab="conversations", message=self._t("escalation_claimed"))
+                return self._redirect("/inbox", error=self._t("escalation_not_found"))
+            return self._redirect(
+                f"/inbox/escalations/{escalation_id}", message=self._t("escalation_claimed")
+            )
 
         @self.app.post("/inbox/escalations/{escalation_id}/resolve")
         async def escalation_resolve(
@@ -1200,15 +1255,15 @@ class WebApp:
             _: str = Depends(auth),
         ):
             if not await self.runtime.resume_escalation(escalation_id, action="resolved"):
-                return self._back(tab="conversations", error=self._t("escalation_not_found"))
+                return self._redirect("/inbox", error=self._t("escalation_not_found"))
             if resume is not None:
                 escalation = await self.store.aescalation_interrupt(escalation_id)
                 if escalation:
                     channel_id = str(escalation["channel_id"])
                     await self.store.aset_permanent_pause(channel_id, False)
                     await self.store.aclear_snooze(channel_id)
-            return self._back(
-                tab="conversations",
+            return self._redirect(
+                "/inbox",
                 message=self._t("escalation_resolved")
                 + (self._t("automation_resumed_suffix") if resume is not None else ""),
             )
@@ -1220,9 +1275,15 @@ class WebApp:
             _: str = Depends(auth),
         ):
             if not await self.runtime.resume_escalation(escalation_id, action="dismissed"):
-                return self._back(tab="conversations", error=self._t("escalation_not_found"))
-            return self._back(
-                tab="conversations",
+                return self._redirect("/inbox", error=self._t("escalation_not_found"))
+            if resume is not None:
+                escalation = await self.store.aescalation_interrupt(escalation_id)
+                if escalation:
+                    channel_id = str(escalation["channel_id"])
+                    await self.store.aset_permanent_pause(channel_id, False)
+                    await self.store.aclear_snooze(channel_id)
+            return self._redirect(
+                "/inbox",
                 message=self._t("escalation_dismissed")
                 + (self._t("automation_resumed_suffix") if resume is not None else ""),
             )

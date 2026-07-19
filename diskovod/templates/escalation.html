@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block breadcrumbs %}<nav aria-label="{{ t('pagination') }}"><a href="/inbox">{{ t("inbox") }}</a> / {{ detail.conversation.peer_name or detail.escalation.channel_id }}</nav>{% endblock %}
+{% block subtitle %}<p class="text-body-secondary">{{ t("reason_" ~ detail.escalation.reason) }}</p>{% endblock %}
+{% block content %}
+<div class="chat-layout">
+  <section class="card"><div class="card-header d-flex justify-content-between align-items-center"><h2 class="h5 mb-0">{{ t("conversation_transcript") }}</h2><a href="/chats/{{ detail.escalation.channel_id }}">{{ t("open_chat") }}</a></div><div class="chat-transcript">
+    {% for message in detail.messages %}<article class="chat-message {{ 'is-owner' if message.is_owner }}"><div class="message-meta"><strong>{{ message.author_name }}</strong><time data-local-time data-timestamp="{{ message.timestamp }}">{{ message.timestamp }}</time></div><div class="message-bubble">{{ message.content }}</div></article>{% else %}<div class="empty-state">{{ t("no_messages") }}</div>{% endfor %}
+  </div></section>
+  <aside class="vstack gap-3"><section class="card"><div class="card-body"><h2 class="h5">{{ t("escalations") }}</h2><p>{{ t("reason_" ~ detail.escalation.reason) }}</p>{% if detail.escalation.acknowledgement %}<blockquote class="blockquote fs-6">{{ detail.escalation.acknowledgement }}</blockquote>{% endif %}<div class="vstack gap-2">
+    {% if detail.escalation.state == "pending" %}<form method="post" action="/inbox/escalations/{{ detail.escalation.id }}/claim"><button class="btn btn-outline-primary w-100">{{ t("claim") }}</button></form>{% endif %}
+    <form method="post" action="/inbox/escalations/{{ detail.escalation.id }}/resolve"><button class="btn btn-primary w-100">{{ t("resolve_keep_paused") }}</button><button class="btn btn-outline-primary w-100 mt-2" name="resume" value="yes">{{ t("resolve_resume") }}</button></form>
+    <form method="post" action="/inbox/escalations/{{ detail.escalation.id }}/dismiss"><button class="btn btn-outline-secondary w-100">{{ t("dismiss_keep_paused") }}</button></form>
+  </div></div></section></aside>
+</div>
+{% endblock %}

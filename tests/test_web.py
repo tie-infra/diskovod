@@ -60,6 +60,8 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/settings/theme" not in route_paths
     assert "/settings/reset" in route_paths
     assert "/inbox" in route_paths
+    assert "/inbox/escalations/{escalation_id}" in route_paths
+    assert "/search" in route_paths
     assert "/chats" in route_paths
     assert "/chats/{channel_id}" in route_paths
     assert "/activity/runs" in route_paths

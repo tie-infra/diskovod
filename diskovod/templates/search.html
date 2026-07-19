@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<form class="filter-bar" method="get" role="search"><input class="form-control" type="search" name="q" value="{{ query }}" minlength="2" autofocus placeholder="{{ t('search') }}"><button class="btn btn-primary">{{ t("search") }}</button></form>
+{% if query|length >= 2 %}<div class="row g-4">
+{% for group, items in results.items() %}<div class="col-xl-6"><section class="card h-100"><div class="card-header"><h2 class="h5 mb-0">{{ t(group) }}</h2></div><div class="list-group list-group-flush">
+  {% for item in items %}
+    {% if group == "chats" %}<a class="list-group-item list-group-item-action" href="/chats/{{ item.channel_id }}"><strong>{{ item.peer_name or item.channel_id }}</strong><small class="d-block text-body-secondary">{{ t("mode_" ~ item.mode) }}</small></a>
+    {% elif group == "messages" %}<a class="list-group-item list-group-item-action" href="/chats/{{ item.channel_id }}"><strong>{{ item.author_name }}</strong><small class="d-block text-body-secondary text-truncate">{{ item.content }}</small></a>
+    {% elif group == "runs" %}<a class="list-group-item list-group-item-action d-flex justify-content-between" href="/activity/runs/{{ item.id }}"><span>{{ item.channel_id }}</span><span class="badge status-{{ item.status }}">{{ t("status_" ~ item.status) }}</span></a>
+    {% elif group == "memories" %}<a class="list-group-item list-group-item-action" href="/knowledge/memories?q={{ item.key|urlencode }}"><strong>{{ item.key }}</strong><small class="d-block text-body-secondary text-truncate">{{ item.value }}</small></a>
+    {% else %}<a class="list-group-item list-group-item-action" href="/knowledge/attachments?q={{ item.filename|urlencode }}"><strong>{{ item.filename }}</strong><small class="d-block text-body-secondary">{{ item.channel_id }}</small></a>{% endif %}
+  {% else %}<div class="empty-state">{{ t("no_results") }}</div>{% endfor %}
+</div></section></div>{% endfor %}
+</div>{% endif %}
+{% endblock %}

@@ -7,17 +7,49 @@
   <a class="metric-card" href="/activity/runs?run_status=failed"><span>{{ t("failed_runs") }}</span><strong>{{ overview.failed_runs }}</strong></a>
   <a class="metric-card" href="/activity/jobs"><span>{{ t("active_jobs") }}</span><strong>{{ overview.active_jobs }}</strong></a>
 </div>
-<section class="card">
+<div class="row g-3 mb-4">
+  <div class="col-md-4"><section class="card h-100"><div class="card-body">
+    <h2 class="h6 text-body-secondary">{{ t("model") }}</h2>
+    <div class="d-flex align-items-center gap-2"><span class="status-dot {{ 'is-on' if overview.model_ready }}"></span><strong>{{ overview.model_id }}</strong></div>
+    <p class="small text-body-secondary mb-0">{{ overview.model_provider }}</p>
+  </div></section></div>
+  <div class="col-md-4"><section class="card h-100"><div class="card-body">
+    <h2 class="h6 text-body-secondary">{{ t("discord") }}</h2>
+    <div class="d-flex align-items-center gap-2"><span class="status-dot {{ 'is-on' if overview.discord_connected }}"></span><strong>{{ t("connected") if overview.discord_connected else t("not_connected") }}</strong></div>
+    {% if overview.discord_identity %}<p class="small text-body-secondary mb-0">{{ overview.discord_identity }}</p>{% endif %}
+    {% if overview.discord_error %}<p class="small text-danger mb-0">{{ overview.discord_error }}</p>{% endif %}
+  </div></section></div>
+  <div class="col-md-4"><section class="card h-100"><div class="card-body">
+    <h2 class="h6 text-body-secondary">{{ t("automation_settings") }}</h2>
+    <div class="d-flex align-items-center gap-2"><span class="status-dot {{ 'is-on' if overview.automation_enabled }}"></span><strong>{{ t("automation_enabled") if overview.automation_enabled else t("automation_disabled") }}</strong></div>
+    <p class="small text-body-secondary mb-0">{% for mode, count in overview.conversation_modes.items() %}{{ t("mode_" ~ mode) }}: {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  </div></section></div>
+</div>
+<div class="row g-4">
+<div class="col-xl-6"><section class="card h-100">
   <div class="card-header d-flex justify-content-between align-items-center">
-    <h2 class="h5 mb-0">{{ t("recent_runs") }}</h2><a href="/activity/runs">{{ t("view_all") }}</a>
+    <h2 class="h5 mb-0">{{ t("chats") }}</h2><a href="/chats">{{ t("view_all") }}</a>
   </div>
   <div class="list-group list-group-flush">
+    {% for chat in overview.recent_chats %}
+      <a class="list-group-item list-group-item-action" href="/chats/{{ chat.channel_id }}">
+        <div class="d-flex justify-content-between gap-3"><strong>{{ chat.peer_name or t("unknown_peer") }}</strong><span class="badge text-bg-secondary">{{ t("mode_" ~ chat.mode) }}</span></div>
+        <small class="d-block text-body-secondary text-truncate">{{ chat.latest_content or t("no_messages") }}</small>
+      </a>
+    {% else %}<div class="empty-state">{{ t("no_messages") }}</div>{% endfor %}
+  </div>
+</section></div>
+<div class="col-xl-6"><section class="card h-100">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h2 class="h5 mb-0">{{ t("recent_runs") }}</h2><a href="/activity/runs">{{ t("view_all") }}</a>
+  </div><div class="list-group list-group-flush">
     {% for run in overview.recent_runs %}
       <a class="list-group-item list-group-item-action d-flex justify-content-between" href="/activity/runs/{{ run.id }}">
         <span><strong>{{ run.channel_id }}</strong><small class="d-block text-body-secondary">{{ run.started_at_label }}</small></span>
-        <span class="badge status-{{ run.status }}">{{ run.status }}</span>
+        <span class="badge status-{{ run.status }}">{{ t("status_" ~ run.status) }}</span>
       </a>
     {% else %}<div class="empty-state">{{ t("no_agent_runs") }}</div>{% endfor %}
   </div>
-</section>
+</section></div>
+</div>
 {% endblock %}

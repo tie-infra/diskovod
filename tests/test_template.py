@@ -15,6 +15,8 @@ def test_multipage_admin_templates_parse_and_use_the_shared_shell():
     expected = {
         "overview.html",
         "inbox.html",
+        "escalation.html",
+        "search.html",
         "chats.html",
         "chat.html",
         "runs.html",
@@ -55,6 +57,7 @@ def test_multipage_admin_templates_parse_and_use_the_shared_shell():
     assert 'href="/knowledge/memories"' in rendered
     assert 'href="/settings/connections"' in rendered
     assert 'href="/system/diagnostics"' in rendered
+    assert 'action="/search"' in rendered
     assert 'data-admin-theme="system"' in rendered
     assert 'id="main-content"' in rendered
 

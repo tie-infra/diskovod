@@ -37,7 +37,41 @@ class AdminQueryService:
                     "FROM agent_runs ORDER BY started_at DESC LIMIT 5"
                 )
             ).fetchall()
-        return {**counts, "recent_runs": [self._run_summary(row) for row in runs]}
+            mode_rows = await (
+                await connection.execute(
+                    "SELECT mode, COUNT(*) AS count FROM conversations GROUP BY mode"
+                )
+            ).fetchall()
+            chats = await (
+                await connection.execute(
+                    """
+                    SELECT c.*,
+                      (SELECT content FROM messages m WHERE m.channel_id=c.channel_id
+                       ORDER BY timestamp DESC LIMIT 1) AS latest_content,
+                      (SELECT timestamp FROM messages m WHERE m.channel_id=c.channel_id
+                       ORDER BY timestamp DESC LIMIT 1) AS latest_message_at
+                    FROM conversations c
+                    ORDER BY COALESCE(latest_message_at, c.updated_at) DESC LIMIT 5
+                    """
+                )
+            ).fetchall()
+            jobs = await (
+                await connection.execute(
+                    "SELECT id, type, status, progress_stage, requested_at, completed_at "
+                    "FROM admin_jobs ORDER BY requested_at DESC LIMIT 5"
+                )
+            ).fetchall()
+            last_event = await (
+                await connection.execute("SELECT MAX(observed_at) FROM discord_events")
+            ).fetchone()
+        return {
+            **counts,
+            "conversation_modes": {str(row["mode"]): int(row["count"]) for row in mode_rows},
+            "recent_runs": [self._run_summary(row) for row in runs],
+            "recent_chats": [dict(row) for row in chats],
+            "recent_jobs": [dict(row) for row in jobs],
+            "last_discord_event_at": float(last_event[0]) if last_event[0] is not None else None,
+        }
 
     async def chats(
         self,
@@ -402,7 +436,9 @@ class AdminQueryService:
             )
             rows = await (
                 await connection.execute(
-                    "SELECT * FROM escalation_interrupts WHERE state IN ('pending','claimed') "
+                    "SELECT e.*, c.peer_name FROM escalation_interrupts e "
+                    "LEFT JOIN conversations c ON c.channel_id=e.channel_id "
+                    "WHERE e.state IN ('pending','claimed') "
                     "ORDER BY created_at DESC LIMIT ? OFFSET ?",
                     (page_limit, page_offset),
                 )
@@ -426,6 +462,45 @@ class AdminQueryService:
             "previous_offset": max(0, page_offset - page_limit) if page_offset else None,
             "next_offset": page_offset + page_limit if page_offset + page_limit < total else None,
         }
+
+    async def escalation(self, escalation_id: str) -> dict[str, Any] | None:
+        escalation = await self.store.aescalation_interrupt(escalation_id)
+        if escalation is None:
+            return None
+        channel_id = str(escalation["channel_id"])
+        async with self.store.database.transaction() as connection:
+            conversation = await (
+                await connection.execute(
+                    "SELECT * FROM conversations WHERE channel_id=?", (channel_id,)
+                )
+            ).fetchone()
+            rows = await (
+                await connection.execute(
+                    "SELECT * FROM messages WHERE channel_id=? AND timestamp<=? "
+                    "ORDER BY timestamp DESC, id DESC LIMIT 30",
+                    (channel_id, float(escalation["created_at"])),
+                )
+            ).fetchall()
+        payload = redact_sensitive(escalation.get("payload") or {})
+        escalation["payload"] = payload
+        escalation["reason"] = str(payload.get("reason") or "other_explicit_request")
+        escalation["acknowledgement"] = str(payload.get("acknowledgement") or "")
+        return {
+            "escalation": escalation,
+            "conversation": dict(conversation) if conversation else None,
+            "messages": [self._message(row) for row in reversed(rows)],
+        }
+
+    async def actionable_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        async with self.store.database.transaction() as connection:
+            rows = await (
+                await connection.execute(
+                    "SELECT * FROM agent_runs WHERE status IN ('failed','interrupted') "
+                    "ORDER BY started_at DESC LIMIT ?",
+                    (max(1, min(limit, 50)),),
+                )
+            ).fetchall()
+        return [self._run_summary(row, include_error=True) for row in rows]
 
     async def inbox_count(self) -> int:
         async with self.store.database.transaction() as connection:

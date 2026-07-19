@@ -166,6 +166,7 @@ class WebApp:
         ):
             custom_provider = self.store.custom_provider()
             app_settings = self.store.app_settings()
+            model_view = self._model_view()
             active_tab = tab if tab in ADMIN_TABS else "connections"
             draft = self._provider_draft(provider_draft)
             provider_view = (
@@ -185,7 +186,7 @@ class WebApp:
                         "base_url": custom_provider.base_url,
                         "protocol": custom_provider.protocol,
                         "capabilities": custom_provider.capabilities,
-                        "probe_model": app_settings.model,
+                        "probe_model": model_view["model"],
                         "has_api_key": bool(custom_provider.api_key),
                         "draft_token": "",
                     }
@@ -198,6 +199,7 @@ class WebApp:
                 "index.html",
                 {
                     "app_settings": app_settings,
+                    "model_view": model_view,
                     "active_tab": active_tab,
                     "assistant_display_name": assistant_name_for(
                         app_settings.prompt_locale,
@@ -213,7 +215,7 @@ class WebApp:
                     "chat_error": self.account.last_error,
                     "subscription_web_search": self._hosted_search_capability(),
                     "subscription_web_search_probe": self._subscription_web_search_probe_view(
-                        app_settings.model
+                        model_view["model"]
                     ),
                     "model_connected": self.models.ready,
                     "automation_ready": self.runtime.ready,
@@ -229,8 +231,6 @@ class WebApp:
                     "personality": self._personality_view(),
                     "escalations": self._escalation_views(),
                     "conversations": self._conversation_views(),
-                    "usage_stats": self._usage_views(),
-                    "request_logs": self._model_request_log_views() if active_tab == "usage" else [],
                     "agent_runs": self._agent_run_views() if active_tab == "usage" else [],
                     "capability_probes": self._capability_probe_views() if active_tab == "usage" else [],
                     "database": self._database_view(db_table, db_page, db_query),
@@ -492,7 +492,13 @@ class WebApp:
                 and not custom.supports("native_function_calls")
             ):
                 return self._back(error=self._t("detect_native_calls_before_select"))
-            self._save_provider_selection(provider, self.store.app_settings())
+            selected = self._model_view()
+            self._save_provider_selection(
+                provider,
+                model=selected["model"],
+                reasoning_effort=selected["reasoning_effort"],
+                max_output_tokens=selected["max_output_tokens"],
+            )
             return self._back(message=self._t("provider_selected", name=self.models.provider_label))
 
         @self.app.post("/discord/connect")
@@ -533,8 +539,6 @@ class WebApp:
             prompt_locale: str = Form("en"),
             assistant_name: str = Form(""),
             owner_timezone: str = Form("UTC"),
-            multi_message_replies: str | None = Form(None),
-            max_reply_messages: int = Form(3),
             min_message_gap_seconds: float = Form(0.7),
             max_message_gap_seconds: float = Form(2.0),
             conversation_default: str = Form("opt_in"),
@@ -549,7 +553,6 @@ class WebApp:
             max_typing_cps: float = Form(...),
             min_human_quiet_minutes: float = Form(...),
             max_human_quiet_minutes: float = Form(...),
-            history_limit: int = Form(...),
             owner_details: str = Form(""),
             base_instructions: str = Form(...),
             _: str = Depends(auth),
@@ -607,15 +610,9 @@ class WebApp:
                 prompt_locale=normalized_prompt_locale,
                 assistant_name=assistant_name,
                 owner_timezone=owner_timezone,
-                multi_message_replies=multi_message_replies is not None,
-                max_reply_messages=max(2, min(max_reply_messages, 5)),
                 min_message_gap_seconds=max(0.0, min(min_message_gap_seconds, 30.0)),
                 max_message_gap_seconds=max(0.0, min(max_message_gap_seconds, 30.0)),
                 default_conversation_enabled=conversation_default == "opt_in",
-                provider=provider,
-                model=model,
-                reasoning_effort=reasoning_effort,
-                max_reply_tokens=max(32, min(max_reply_tokens, 2048)),
                 debounce_seconds=debounce_seconds,
                 min_delay_seconds=min_delay_seconds,
                 max_delay_seconds=max_delay_seconds,
@@ -623,12 +620,16 @@ class WebApp:
                 max_typing_cps=max_typing_cps,
                 min_human_quiet_minutes=max(0.0, min_human_quiet_minutes),
                 max_human_quiet_minutes=max(0.0, max_human_quiet_minutes),
-                history_limit=max(4, min(history_limit, 100)),
                 owner_details=owner_details,
                 base_instructions=base_instructions,
             )
             self.store.set_app_settings(value)
-            self._save_provider_selection(provider, value)
+            self._save_provider_selection(
+                provider,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                max_output_tokens=max(32, min(max_reply_tokens, 2048)),
+            )
             return self._back(
                 tab="assistant",
                 message=ui_text(value.admin_locale, "settings_saved"),
@@ -929,95 +930,6 @@ class WebApp:
             )
         return result
 
-    def _usage_views(self) -> dict:
-        stats = self.store.chatgpt_usage_stats()
-        locale = self.store.app_settings().admin_locale
-        window_keys = ("last_24_hours", "last_7_days", "last_30_days", "all_time")
-        for record, key in zip(stats["windows"], window_keys, strict=True):
-            record["label"] = ui_text(locale, key)
-        for record in stats["by_purpose"]:
-            record["name_label"] = ui_text(locale, f"purpose_{record['name']}")
-        for record in stats["recent"]:
-            record["purpose_label"] = ui_text(locale, f"purpose_{record['purpose']}")
-            record["recorded_at_label"] = (
-                datetime.fromtimestamp(record["recorded_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-            )
-        return stats
-
-    def _model_request_log_views(self) -> list[dict[str, Any]]:
-        locale = self.store.app_settings().admin_locale
-        conversations = {
-            conversation["channel_id"]: conversation["peer_name"]
-            for conversation in self.store.conversations()
-        }
-        status_keys = {"pending", "completed", "error"}
-        validation_keys = {
-            "accepted",
-            "rejected",
-            "repair_requested",
-            "tool_continuation",
-            "probe_verified",
-            "probe_inconclusive",
-        }
-        result = self.store.model_request_logs(100)
-        for record in result:
-            status = record["status"] if record["status"] in status_keys else "pending"
-            validation = record.get("validation_status")
-            record["status_label"] = ui_text(locale, f"model_request_status_{status}")
-            record["validation_label"] = (
-                ui_text(locale, f"model_validation_{validation}")
-                if validation in validation_keys
-                else ui_text(locale, "model_validation_unreviewed")
-            )
-            record["purpose_label"] = ui_text(locale, f"purpose_{record['purpose']}")
-            record["started_at_label"] = (
-                datetime.fromtimestamp(record["started_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-            )
-            record["conversation_label"] = conversations.get(
-                record.get("channel_id"),
-                record.get("channel_id") or "—",
-            )
-            record["request_json"] = json.dumps(
-                record.get("request_summary") or {},
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            record["response_json"] = json.dumps(
-                record.get("response_summary") or {},
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            record["request_payload_json"] = json.dumps(
-                record.get("request_payload") or {},
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            record["response_payload_json"] = json.dumps(
-                record.get("response_payload") or {},
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            record["validation_summary_json"] = json.dumps(
-                record.get("validation_summary") or {},
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            record["parent_request_url"] = (
-                self._url(f"?tab=usage#model-request-{record['parent_request_id']}")
-                if isinstance(record.get("parent_request_id"), int)
-                else None
-            )
-            record["is_problem"] = status == "error" or validation in {
-                "rejected",
-                "probe_inconclusive",
-            }
-        return result
-
     def _database_view(self, table: str, page: int, query: str) -> dict:
         tables = self.store.database_tables()
         locale = self.store.app_settings().admin_locale
@@ -1068,12 +980,19 @@ class WebApp:
         )
         return data
 
-    def _save_provider_selection(self, provider: str, settings: AppSettings) -> None:
+    def _save_provider_selection(
+        self,
+        provider: str,
+        *,
+        model: str,
+        reasoning_effort: str,
+        max_output_tokens: int,
+    ) -> None:
         if provider == "chatgpt":
             self.models.save_subscription(
-                model_id=settings.model,
-                reasoning_effort=settings.reasoning_effort,
-                max_output_tokens=settings.max_reply_tokens,
+                model_id=model,
+                reasoning_effort=reasoning_effort,
+                max_output_tokens=max_output_tokens,
             )
             return
         custom = self.store.custom_provider()
@@ -1081,10 +1000,21 @@ class WebApp:
             raise ValueError("Unknown or unavailable model provider")
         self.models.save_custom_openai(
             custom,
-            model_id=settings.model,
-            reasoning_effort=settings.reasoning_effort,
-            max_output_tokens=settings.max_reply_tokens,
+            model_id=model,
+            reasoning_effort=reasoning_effort,
+            max_output_tokens=max_output_tokens,
         )
+
+    def _model_view(self) -> dict[str, Any]:
+        configuration = self.models.configuration
+        if configuration is None:
+            return {"model": "gpt-5.4-mini", "reasoning_effort": "low", "max_output_tokens": 256}
+        options = configuration.options
+        return {
+            "model": configuration.model_id,
+            "reasoning_effort": str(options.get("reasoning_effort") or "low"),
+            "max_output_tokens": int(options.get("max_completion_tokens") or 256),
+        }
 
     def _active_provider(self) -> str:
         configuration = self.models.configuration

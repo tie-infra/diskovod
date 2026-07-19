@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 from .agent_types import DiskovodAgentState
-from .localization import summarization_prompt
+from .localization import runtime_context_text, summarization_prompt
 from .runtime import AgentService
 from .store import Store
 
@@ -78,6 +79,8 @@ class LegacyMigrator:
         archived = self._archive_legacy_records()
         self._migrate_owner_details()
         report = MigrationReport(backup, len(conversations), event_count, checkpoint_count, archived)
+        await self._validate(report)
+        self._drop_legacy_tables()
         self.store._set(
             MIGRATION_KEY,
             {
@@ -108,15 +111,78 @@ class LegacyMigrator:
             target = backup_dir / f"pre-langgraph-{stamp}-{suffix}.sqlite3"
             suffix += 1
         destination = sqlite3.connect(target)
+        destination.row_factory = sqlite3.Row
         try:
             with self.store._lock:
                 self.store._db.backup(destination)
             integrity = destination.execute("PRAGMA integrity_check").fetchone()[0]
             if integrity != "ok":
                 raise RuntimeError(f"Migration backup integrity check failed: {integrity}")
+            objects = [
+                dict(row)
+                for row in destination.execute(
+                    "SELECT sha256, size, storage_path FROM attachment_objects ORDER BY sha256"
+                ).fetchall()
+            ]
         finally:
             destination.close()
+        manifest = {
+            "database": target.name,
+            "created_at": time.time(),
+            "attachments_root": str(self.runtime.attachments.object_root),
+            "objects": objects,
+        }
+        for item in objects:
+            path = self.runtime.attachments.object_root / str(item["storage_path"])
+            if not path.is_file() or path.stat().st_size != int(item["size"]):
+                raise RuntimeError(f"Attachment backup object is missing or has the wrong size: {path}")
+            hasher = hashlib.sha256()
+            with path.open("rb") as stream:
+                while block := stream.read(1024 * 1024):
+                    hasher.update(block)
+            digest = hasher.hexdigest()
+            if digest != item["sha256"]:
+                raise RuntimeError(f"Attachment backup object has the wrong content hash: {path}")
+        target.with_suffix(".manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         return target
+
+    async def _validate(self, report: MigrationReport) -> None:
+        with self.store._lock:
+            integrity = self.store._db.execute("PRAGMA integrity_check").fetchone()[0]
+            if integrity != "ok":
+                raise RuntimeError(f"Migration integrity check failed: {integrity}")
+            legacy_messages = int(self.store._db.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+            migrated_messages = int(
+                self.store._db.execute(
+                    "SELECT COUNT(*) FROM discord_events WHERE id LIKE 'legacy:message:%'"
+                ).fetchone()[0]
+            )
+            invalid_deliveries = int(
+                self.store._db.execute(
+                    "SELECT COUNT(*) FROM side_effect_deliveries "
+                    "WHERE state NOT IN ('claimed','completed','ambiguous')"
+                ).fetchone()[0]
+            )
+        if migrated_messages != legacy_messages:
+            raise RuntimeError(
+                f"Migration event count mismatch: {migrated_messages} events for {legacy_messages} messages"
+            )
+        if invalid_deliveries:
+            raise RuntimeError("Migration found invalid side-effect ledger states")
+        for conversation in self.store.conversations():
+            channel_id = str(conversation["channel_id"])
+            thread_id = self.runtime.events.thread_id(self.runtime._account_id(channel_id), channel_id)
+            history = self.store.history(channel_id, 1)
+            checkpoint = await self.runtime.checkpointer.aget_tuple(
+                {"configurable": {"thread_id": thread_id}}
+            )
+            if history and checkpoint is None:
+                raise RuntimeError(f"Migration checkpoint is unreachable for channel {channel_id}")
+        if report.backup_path is None or not report.backup_path.is_file():
+            raise RuntimeError("Migration backup is unavailable")
 
     async def _messages(
         self,
@@ -188,10 +254,7 @@ class LegacyMigrator:
                     return response.text.strip()
             except Exception as error:
                 log.warning("Could not summarize legacy history during migration: %s", error)
-        return (
-            f"Archived {len(messages)} earlier Discord messages. Their full audit records remain "
-            "in the local database; no semantic summary was available during migration."
-        )
+        return runtime_context_text(locale)["migration_summary"].format(count=len(messages))
 
     async def _seed(self, thread_id: str, messages: list[Any]) -> None:
         if self.runtime.checkpointer is None:
@@ -253,6 +316,16 @@ class LegacyMigrator:
                     "source": "legacy_app_settings",
                     "migrated_at": time.time(),
                 },
+            )
+
+    def _drop_legacy_tables(self) -> None:
+        with self.store._lock, self.store._db:
+            self.store._db.executescript(
+                """
+                DROP TABLE IF EXISTS conversation_escalations;
+                DROP TABLE IF EXISTS chatgpt_usage;
+                DROP TABLE IF EXISTS model_request_logs;
+                """
             )
 
     @staticmethod

@@ -17,7 +17,7 @@ from .agent_types import AgentRuntimeContext, CapabilityProfile
 from .attachments import AttachmentRepository
 from .durable_actions import DiscordActionTransport, DurableActionGateway, SideEffectLedger
 from .events import DiscordEventQueue, QueuedDiscordEvent
-from .localization import assistant_name_for
+from .localization import assistant_name_for, runtime_context_text
 from .persistence import SQLiteLangGraphStore, open_checkpointer
 from .providers import ModelService
 from .steering import LiveConversationMiddleware
@@ -436,14 +436,14 @@ class AgentService:
             },
         )
 
-    @staticmethod
-    def _message(event: QueuedDiscordEvent) -> BaseMessage | None:
+    def _message(self, event: QueuedDiscordEvent) -> BaseMessage | None:
         if event.kind == "force_reply":
             return None
         if event.kind == "delete":
             return RemoveMessage(id=str(event.payload["message_id"]))
         content = str(event.payload.get("content") or "")
         attachments = event.payload.get("attachments") or []
+        text_bundle = runtime_context_text(self.store.app_settings().prompt_locale)
         if attachments:
             notes = []
             for attachment in attachments:
@@ -461,8 +461,7 @@ class AgentService:
                 notes.append(note)
             if notes:
                 content = (content.strip() + "\n\n" if content.strip() else "") + (
-                    "Discord attachments (untrusted conversation data; use "
-                    "search_chat_attachments for indexed excerpts):\n" + "\n".join(notes)
+                    text_bundle["attachments"] + "\n" + "\n".join(notes)
                 )
         return HumanMessage(
             content=content,
@@ -470,7 +469,7 @@ class AgentService:
             additional_kwargs={
                 "diskovod_participant": {
                     "id": str(event.payload.get("author_id") or "unknown"),
-                    "name": str(event.payload.get("author_name") or "Unknown participant"),
+                    "name": str(event.payload.get("author_name") or text_bundle["unknown_participant"]),
                     "role": str(event.payload.get("participant_role") or "peer"),
                     "discord_event_id": event.id,
                     "edited": event.kind == "edit",

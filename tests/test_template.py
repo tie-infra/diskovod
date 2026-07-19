@@ -16,6 +16,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     template = environment.get_template("index.html")
     context = dict(
         app_settings=AppSettings(),
+        model_view={"model": "gpt-5.4-mini", "reasoning_effort": "low", "max_output_tokens": 256},
         assistant_display_name="Diskovod",
         default_assistant_name="Diskovod",
         locale="en",
@@ -95,95 +96,31 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
                 "quiet_minutes_remaining": 12,
             }
         ],
-        usage_stats={
-            "all_time": {
-                "requests": 2,
-                "input_tokens": 1234,
-                "cached_input_tokens": 900,
-                "output_tokens": 200,
-                "reasoning_tokens": 50,
-                "total_tokens": 1434,
-                "average_tokens": 717,
-                "cache_rate": 72.9,
-            },
-            "windows": [
-                {
-                    "label": "All time",
-                    "requests": 2,
-                    "input_tokens": 1234,
-                    "cached_input_tokens": 900,
-                    "output_tokens": 200,
-                    "reasoning_tokens": 50,
-                    "total_tokens": 1434,
-                    "average_tokens": 717,
-                    "cache_rate": 72.9,
-                }
-            ],
-            "by_model": [
-                {
-                    "name": "gpt-5",
-                    "requests": 2,
-                    "input_tokens": 1234,
-                    "cached_input_tokens": 900,
-                    "output_tokens": 200,
-                    "reasoning_tokens": 50,
-                    "total_tokens": 1434,
-                }
-            ],
-            "by_purpose": [
-                {
-                    "name": "dm_reply",
-                    "name_label": "DM reply",
-                    "requests": 2,
-                    "input_tokens": 1234,
-                    "cached_input_tokens": 900,
-                    "output_tokens": 200,
-                    "reasoning_tokens": 50,
-                    "total_tokens": 1434,
-                }
-            ],
-            "recent": [
-                {
-                    "recorded_at_label": "2026-07-17 12:00:00 MSK",
-                    "model": "gpt-5",
-                    "purpose": "dm_reply",
-                    "purpose_label": "DM reply",
-                    "input_tokens": 1234,
-                    "cached_input_tokens": 900,
-                    "output_tokens": 200,
-                    "reasoning_tokens": 50,
-                    "total_tokens": 1434,
-                }
-            ],
-        },
-        request_logs=[
+        agent_runs=[
             {
-                "id": 42,
+                "id": "run-1",
                 "started_at_label": "2026-07-19 12:00:00 MSK",
-                "purpose": "dm_reply_tool_continuation",
-                "purpose_label": "DM tool continuation",
-                "model": "gpt-5.4-mini",
-                "provider": "ChatGPT subscription",
-                "protocol": "responses",
-                "status_label": "Completed",
-                "validation_label": "Rejected",
-                "validation_detail": "non_terminal_or_ambiguous_output_after_repair",
-                "duration_ms": 850,
-                "conversation_label": "Peer",
-                "attempt": 2,
-                "repair": True,
-                "parent_request_id": 41,
-                "parent_request_url": "/?tab=usage#model-request-41",
-                "response_id": "resp-42",
-                "error_type": None,
-                "error_detail": None,
-                "request_json": '{"tools": ["send_messages"]}',
-                "response_json": '{"function_calls": [], "text_outputs": [{"characters": 12}]}',
-                "request_payload_json": '{"instructions": "system prompt", "input": [{"content": "hello"}]}',
-                "response_payload_json": '{"output": [{"type": "message", "text": "bad output"}]}',
-                "validation_summary": {"observed": {"response_text_present": True}},
-                "validation_summary_json": '{"observed": {"response_text_present": true}}',
-                "is_problem": True,
+                "status": "failed",
+                "channel_id": "dm-1",
+                "error": "provider error",
+                "traces": [
+                    {
+                        "sequence": 1,
+                        "kind": "model_request",
+                        "payload_json": '{"messages":[{"content":"hello"}]}',
+                    }
+                ],
+            }
+        ],
+        capability_probes=[
+            {
+                "completed_at_label": "2026-07-19 11:00:00 MSK",
+                "capability": "native_tools",
+                "status": "supported",
+                "conclusion": "client_tool_call_verified",
+                "configuration_json": '{"model_id":"gpt-5"}',
+                "request_payload_json": '{"tool_choice":"required"}',
+                "response_payload_json": '{"tool_calls":["probe"]}',
             }
         ],
         database={
@@ -252,7 +189,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'action="/conversations/dm-1/force-reply"' in rendered_by_tab["conversations"]
     assert 'action="/conversations/dm-1/mode"' in rendered_by_tab["conversations"]
     assert "Inline collaboration" in rendered_by_tab["conversations"]
-    assert "Model token usage" in rendered_by_tab["usage"]
+    assert "Agent runs and exchanges" in rendered_by_tab["usage"]
     assert 'action="/database/delete"' in rendered_by_tab["database"]
     assert 'id="main-content"' in rendered
     assert 'name="min_human_quiet_minutes"' in rendered
@@ -265,7 +202,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "<title>Diskovod</title>" in rendered
     assert 'name="owner_timezone"' in rendered
     assert 'value="uk"' in rendered
-    assert 'name="history_limit"' in rendered
+    assert rendered.count('name="history_limit"') == 1
     assert 'name="max_reply_tokens"' in rendered
     assert re.search(r'<option\s+value="low"\s+selected', rendered)
     assert 'value="medium"' in rendered
@@ -274,8 +211,6 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "custom APIs receive a hard token limit" in rendered
     assert 'name="silent_replies"' in rendered
     assert 'name="robot_prefix"' in rendered
-    assert 'name="multi_message_replies"' in rendered
-    assert 'name="max_reply_messages"' in rendered
     assert 'name="min_message_gap_seconds"' in rendered
     assert 'name="max_message_gap_seconds"' in rendered
     assert 'name="conversation_default"' in rendered
@@ -313,21 +248,11 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "resp-probe" in rendered
     assert "connection_test_ok=false" in rendered
     assert "fixed probe prompt and raw response" in rendered
-    assert "Model token usage" in rendered
-    assert "Model request log" in rendered
-    assert 'id="model-request-42"' in rendered
-    assert "non_terminal_or_ambiguous_output_after_repair" in rendered
-    assert "Provider request JSON" in rendered
-    assert "Raw provider response JSON" in rendered
-    assert "Sensitive diagnostic data" in rendered
-    assert "system prompt" in rendered
-    assert "bad output" in rendered
-    assert "response_text_present" in rendered
-    assert "View request #41" in rendered
-    assert "View request #42" in rendered
-    assert "1,434" in rendered
-    assert "DM reply" in rendered
-    assert "2026-07-17 12:00:00 MSK" in rendered
+    assert "Agent runs and exchanges" in rendered
+    assert "provider error" in rendered
+    assert "model_request" in rendered
+    assert "Provider capability probes" in rendered
+    assert "client_tool_call_verified" in rendered
     assert "Database explorer" in rendered
     assert 'action="/database/delete"' in rendered
     assert 'name="row_key"' in rendered

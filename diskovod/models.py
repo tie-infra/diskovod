@@ -15,7 +15,6 @@ MAX_NATIVE_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_INLINE_TEXT_BYTES = 64 * 1024
 MAX_INLINE_TEXT_CHARACTERS = 24_000
 
-IMAGE_CONTENT_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
 FILE_EXTENSIONS = frozenset(
     {
         ".asm",
@@ -132,63 +131,6 @@ async def capture_discord_attachments(values: Iterable[Any]) -> list[dict[str, A
     return captured
 
 
-def model_supports_vision(model: str) -> bool:
-    """Conservative capability check for model families with documented image input."""
-    name = model.strip().casefold()
-    if "mini" in name and name.startswith("o1"):
-        return False
-    return name.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "o1", "o3", "o4"))
-
-
-def can_send_image(attachment: dict[str, Any], model: str) -> bool:
-    return (
-        model_supports_vision(model)
-        and attachment.get("content_type") in IMAGE_CONTENT_TYPES
-        and 0 < int(attachment.get("size") or 0) <= MAX_NATIVE_ATTACHMENT_BYTES
-        and bool(attachment.get("url"))
-    )
-
-
-def can_send_file(attachment: dict[str, Any], provider: str, model: str) -> bool:
-    """The subscription transport uses Responses input_file; custom Chat Completions does not."""
-    return (
-        provider == "chatgpt"
-        and model_supports_vision(model)
-        and Path(str(attachment.get("filename", ""))).suffix.casefold() in FILE_EXTENSIONS
-        and 0 < int(attachment.get("size") or 0) <= MAX_NATIVE_ATTACHMENT_BYTES
-        and bool(attachment.get("url"))
-    )
-
-
-def attachment_context(
-    content: str,
-    attachments: list[dict[str, Any]],
-    *,
-    provider: str,
-    model: str,
-    locale: str = "en",
-) -> str:
-    """Add stable metadata and retrieval text for attachments not sent as native files."""
-    notes: list[str] = []
-    for attachment in attachments:
-        filename = str(attachment.get("filename") or "attachment")
-        content_type = str(attachment.get("content_type") or "unknown type")
-        size = int(attachment.get("size") or 0)
-        description = attachment.get("description")
-        note = f"- {filename} ({content_type}, {size} bytes)"
-        if description:
-            note += f": {description}"
-        if text := attachment.get("text"):
-            if not can_send_file(attachment, provider, model):
-                note += f"\n<attachment filename={filename!r}>\n{text}\n</attachment>"
-        notes.append(note)
-    if not notes:
-        return content
-    prompts = prompts_for(locale)
-    prefix = content.strip() or prompts.no_message_text
-    return prefix + f"\n\n{prompts.attachments_heading}\n" + "\n".join(notes)
-
-
 @dataclass(slots=True)
 class AppSettings:
     enabled: bool = False
@@ -200,10 +142,6 @@ class AppSettings:
     assistant_name: str = ""
     owner_timezone: str = "UTC"
     default_conversation_enabled: bool = True
-    provider: str = "chatgpt"
-    model: str = "gpt-5.4-mini"
-    reasoning_effort: str = "low"
-    max_reply_tokens: int = 256
     debounce_seconds: float = 1.8
     min_delay_seconds: float = 2.2
     max_delay_seconds: float = 6.5
@@ -211,9 +149,6 @@ class AppSettings:
     max_typing_cps: float = 32.0
     min_human_quiet_minutes: float = 15.0
     max_human_quiet_minutes: float = 30.0
-    history_limit: int = 30
-    multi_message_replies: bool = False
-    max_reply_messages: int = 3
     min_message_gap_seconds: float = 0.7
     max_message_gap_seconds: float = 2.0
     owner_details: str = ""
@@ -248,41 +183,3 @@ class CustomProvider:
 
     def supports(self, capability: str) -> bool:
         return self.capabilities.get(capability, False) is True
-
-
-@dataclass(slots=True)
-class TextOutput:
-    text: str
-    annotations: list[dict[str, Any]]
-
-
-@dataclass(slots=True)
-class FunctionCall:
-    call_id: str
-    name: str
-    arguments: str
-    parsed_arguments: dict[str, Any] | None
-
-
-@dataclass(slots=True)
-class HostedToolCall:
-    kind: str
-    status: str
-    metadata: dict[str, Any]
-
-
-@dataclass(slots=True)
-class ModelResult:
-    text_outputs: list[TextOutput]
-    function_calls: list[FunctionCall]
-    hosted_tool_calls: list[HostedToolCall]
-    usage: dict[str, Any] | None = None
-    provider_response_id: str | None = None
-    request_log_id: int | None = None
-    request_payload: dict[str, Any] | None = None
-    response_payload: dict[str, Any] | None = None
-    continuation_items: list[dict[str, Any]] = field(default_factory=list)
-
-    @property
-    def text(self) -> str:
-        return "\n".join(output.text for output in self.text_outputs if output.text).strip()

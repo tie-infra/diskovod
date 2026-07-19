@@ -17,7 +17,7 @@ from test_agent import RecordingGateway, ScriptedChatModel, prompt, runtime_cont
 
 
 @pytest.mark.asyncio
-async def test_invalid_escalation_uses_fixed_fallback_without_repair():
+async def test_invalid_escalation_uses_fixed_fallback_without_retry():
     gateway = RecordingGateway()
     model = ScriptedChatModel(
         responses=[tool_call("escalate_to_owner", {"reason": "made_up"}, "escalate-invalid")]

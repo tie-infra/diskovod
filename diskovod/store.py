@@ -36,24 +36,6 @@ DATABASE_TABLES = {
         "order_by": "created_at",
         "read_only": False,
     },
-    "conversation_escalations": {
-        "label": "Owner escalations",
-        "primary_key": "id",
-        "order_by": "requested_at",
-        "read_only": False,
-    },
-    "chatgpt_usage": {
-        "label": "Model usage",
-        "primary_key": "id",
-        "order_by": "recorded_at",
-        "read_only": False,
-    },
-    "model_request_logs": {
-        "label": "Model request logs",
-        "primary_key": "id",
-        "order_by": "started_at",
-        "read_only": False,
-    },
     "bot_nonces": {
         "label": "Pending nonces",
         "primary_key": "nonce",
@@ -150,6 +132,12 @@ DATABASE_TABLES = {
         "order_by": "updated_at",
         "read_only": True,
     },
+    "legacy_import_records": {
+        "label": "Archived pre-LangGraph records",
+        "primary_key": "source_id",
+        "order_by": "imported_at",
+        "read_only": True,
+    },
 }
 
 
@@ -164,87 +152,6 @@ class Store:
         with self._db:
             self._db.execute("PRAGMA busy_timeout=5000")
             self._db.execute("PRAGMA foreign_keys=ON")
-            self._db.executescript("""
-              PRAGMA journal_mode=WAL;
-              CREATE TABLE IF NOT EXISTS config (
-                key TEXT PRIMARY KEY, value TEXT NOT NULL, secret INTEGER NOT NULL DEFAULT 0,
-                updated_at REAL NOT NULL
-              );
-              CREATE TABLE IF NOT EXISTS conversations (
-                channel_id TEXT PRIMARY KEY, peer_id TEXT NOT NULL, peer_name TEXT NOT NULL,
-                paused INTEGER NOT NULL DEFAULT 0, paused_at REAL, updated_at REAL NOT NULL,
-                snoozed_until REAL, mode TEXT NOT NULL DEFAULT 'automatic'
-              );
-              CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, author_id TEXT NOT NULL,
-                author_name TEXT NOT NULL, direction TEXT NOT NULL, source TEXT NOT NULL,
-                content TEXT NOT NULL, timestamp REAL NOT NULL,
-                attachments TEXT NOT NULL DEFAULT '[]'
-              );
-              CREATE INDEX IF NOT EXISTS messages_channel_time ON messages(channel_id, timestamp DESC);
-              CREATE TABLE IF NOT EXISTS bot_nonces (nonce TEXT PRIMARY KEY, created_at REAL NOT NULL);
-              CREATE TABLE IF NOT EXISTS bot_message_ids (id TEXT PRIMARY KEY, created_at REAL NOT NULL);
-              CREATE TABLE IF NOT EXISTS assistant_reactions (
-                trigger_message_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
-                emoji TEXT NOT NULL, created_at REAL NOT NULL
-              );
-              CREATE INDEX IF NOT EXISTS assistant_reactions_channel_time
-                ON assistant_reactions(channel_id, created_at DESC);
-              CREATE TABLE IF NOT EXISTS conversation_escalations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_id TEXT NOT NULL,
-                trigger_message_id TEXT NOT NULL UNIQUE,
-                state TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                requested_at REAL NOT NULL,
-                acknowledged_at REAL,
-                resolved_at REAL,
-                delivery_error TEXT
-              );
-              CREATE INDEX IF NOT EXISTS escalation_channel_state
-                ON conversation_escalations(channel_id, state, requested_at DESC);
-              CREATE TABLE IF NOT EXISTS chatgpt_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                response_id TEXT UNIQUE,
-                recorded_at REAL NOT NULL,
-                model TEXT NOT NULL,
-                purpose TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL,
-                cached_input_tokens INTEGER NOT NULL,
-                output_tokens INTEGER NOT NULL,
-                reasoning_tokens INTEGER NOT NULL,
-                total_tokens INTEGER NOT NULL
-              );
-              CREATE INDEX IF NOT EXISTS chatgpt_usage_recorded_at
-                ON chatgpt_usage(recorded_at DESC);
-              CREATE TABLE IF NOT EXISTS model_request_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                started_at REAL NOT NULL,
-                completed_at REAL,
-                duration_ms INTEGER,
-                provider TEXT NOT NULL,
-                protocol TEXT NOT NULL,
-                model TEXT NOT NULL,
-                purpose TEXT NOT NULL,
-                status TEXT NOT NULL,
-                channel_id TEXT,
-                attempt INTEGER,
-                repair INTEGER NOT NULL DEFAULT 0,
-                parent_request_id INTEGER,
-                request_summary TEXT NOT NULL,
-                response_summary TEXT,
-                request_payload TEXT,
-                response_payload TEXT,
-                response_id TEXT,
-                validation_status TEXT,
-                validation_detail TEXT,
-                validation_summary TEXT,
-                error_type TEXT,
-                error_detail TEXT
-              );
-              CREATE INDEX IF NOT EXISTS model_request_logs_started_at
-                ON model_request_logs(started_at DESC);
-            """)
             initialize_target_schema(self._db)
             message_columns = {
                 row["name"] for row in self._db.execute("PRAGMA table_info(messages)").fetchall()
@@ -258,17 +165,6 @@ class Store:
                 self._db.execute(
                     "ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'automatic'"
                 )
-            request_log_columns = {
-                row["name"] for row in self._db.execute("PRAGMA table_info(model_request_logs)").fetchall()
-            }
-            for column, definition in {
-                "parent_request_id": "INTEGER",
-                "request_payload": "TEXT",
-                "response_payload": "TEXT",
-                "validation_summary": "TEXT",
-            }.items():
-                if column not in request_log_columns:
-                    self._db.execute(f"ALTER TABLE model_request_logs ADD COLUMN {column} {definition}")
 
     def close(self) -> None:
         with self._lock:
@@ -339,42 +235,6 @@ class Store:
 
     def clear_chat_credentials(self) -> None:
         self._delete("chatgpt.credentials")
-        self._delete("chatgpt.web_search_capability")
-
-    def set_subscription_web_search_capability(
-        self,
-        model: str,
-        supported: bool | None,
-        diagnostics: dict[str, Any] | None = None,
-    ) -> None:
-        credentials = self.chat_credentials()
-        value = {
-            "model": model,
-            "account_id": credentials.account_id if credentials else None,
-            "supported": supported,
-            "checked_at": time.time(),
-            "diagnostics": diagnostics or {},
-        }
-        self._set("chatgpt.web_search_capability", value)
-
-    def subscription_web_search_probe(self, model: str) -> dict[str, Any] | None:
-        value = self._get("chatgpt.web_search_capability", None)
-        credentials = self.chat_credentials()
-        if (
-            not value
-            or not credentials
-            or value.get("model") != model
-            or value.get("account_id") != credentials.account_id
-        ):
-            return None
-        return value
-
-    def subscription_web_search_capability(self, model: str) -> bool | None:
-        value = self.subscription_web_search_probe(model)
-        if value is None:
-            return None
-        supported = value.get("supported")
-        return supported if isinstance(supported, bool) else None
 
     def custom_provider(self) -> CustomProvider | None:
         value = self._get("openai_compatible.provider", None)
@@ -434,38 +294,6 @@ class Store:
             },
         )
 
-    def record_chatgpt_usage(
-        self,
-        *,
-        response_id: str | None,
-        model: str,
-        purpose: str,
-        input_tokens: int,
-        cached_input_tokens: int,
-        output_tokens: int,
-        reasoning_tokens: int,
-        total_tokens: int,
-        recorded_at: float | None = None,
-    ) -> None:
-        with self._lock, self._db:
-            self._db.execute(
-                """INSERT OR IGNORE INTO chatgpt_usage
-                   (response_id, recorded_at, model, purpose, input_tokens,
-                    cached_input_tokens, output_tokens, reasoning_tokens, total_tokens)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
-                (
-                    response_id,
-                    time.time() if recorded_at is None else recorded_at,
-                    model,
-                    purpose,
-                    max(0, input_tokens),
-                    max(0, cached_input_tokens),
-                    max(0, output_tokens),
-                    max(0, reasoning_tokens),
-                    max(0, total_tokens),
-                ),
-            )
-
     def start_agent_run(
         self,
         *,
@@ -509,213 +337,6 @@ class Store:
                     time.time(),
                 ),
             )
-
-    def record_agent_trace_for_trace(
-        self,
-        trace_id: str,
-        kind: str,
-        payload: dict[str, Any],
-    ) -> None:
-        with self._lock:
-            row = self._db.execute("SELECT id FROM agent_runs WHERE trace_id=?", (trace_id,)).fetchone()
-        if row is not None:
-            self.record_agent_trace(str(row["id"]), kind, payload)
-
-    def start_model_request(
-        self,
-        *,
-        provider: str,
-        protocol: str,
-        model: str,
-        purpose: str,
-        request_summary: dict[str, Any],
-        channel_id: str | None = None,
-        attempt: int | None = None,
-        repair: bool = False,
-        parent_request_id: int | None = None,
-        started_at: float | None = None,
-    ) -> int:
-        with self._lock, self._db:
-            cursor = self._db.execute(
-                """INSERT INTO model_request_logs
-                   (started_at, provider, protocol, model, purpose, status, channel_id,
-                    attempt, repair, parent_request_id, request_summary)
-                   VALUES(?,?,?,?,?,'pending',?,?,?,?,?)""",
-                (
-                    time.time() if started_at is None else started_at,
-                    provider,
-                    protocol,
-                    model,
-                    purpose,
-                    channel_id,
-                    attempt,
-                    int(repair),
-                    parent_request_id,
-                    json.dumps(request_summary, ensure_ascii=False),
-                ),
-            )
-            request_id = int(cursor.lastrowid)
-            self._db.execute(
-                """DELETE FROM model_request_logs
-                   WHERE id NOT IN (
-                     SELECT id FROM model_request_logs ORDER BY id DESC LIMIT 100
-                   )"""
-            )
-        return request_id
-
-    def finish_model_request(
-        self,
-        request_id: int | None,
-        *,
-        status: str,
-        duration_ms: int,
-        response_summary: dict[str, Any] | None = None,
-        request_payload: dict[str, Any] | None = None,
-        response_payload: dict[str, Any] | None = None,
-        response_id: str | None = None,
-        error_type: str | None = None,
-        error_detail: str | None = None,
-    ) -> None:
-        if request_id is None:
-            return
-        with self._lock, self._db:
-            self._db.execute(
-                """UPDATE model_request_logs
-                   SET completed_at=?, duration_ms=?, status=?, response_summary=?,
-                       request_payload=?, response_payload=?, response_id=?, error_type=?, error_detail=?
-                   WHERE id=?""",
-                (
-                    time.time(),
-                    max(0, duration_ms),
-                    status,
-                    json.dumps(response_summary, ensure_ascii=False)
-                    if response_summary is not None
-                    else None,
-                    json.dumps(request_payload, ensure_ascii=False) if request_payload is not None else None,
-                    json.dumps(response_payload, ensure_ascii=False)
-                    if response_payload is not None
-                    else None,
-                    response_id,
-                    error_type,
-                    error_detail,
-                    request_id,
-                ),
-            )
-
-    def annotate_model_request(
-        self,
-        request_id: int | None,
-        validation_status: str,
-        validation_detail: str,
-        validation_summary: dict[str, Any] | None = None,
-    ) -> None:
-        if request_id is None:
-            return
-        with self._lock, self._db:
-            self._db.execute(
-                """UPDATE model_request_logs
-                   SET validation_status=?, validation_detail=?, validation_summary=? WHERE id=?""",
-                (
-                    validation_status,
-                    validation_detail[:1000],
-                    json.dumps(validation_summary, ensure_ascii=False)
-                    if validation_summary is not None
-                    else None,
-                    request_id,
-                ),
-            )
-
-    def model_request_logs(self, limit: int = 100) -> list[dict[str, Any]]:
-        with self._lock:
-            rows = self._db.execute(
-                """SELECT * FROM model_request_logs
-                   ORDER BY started_at DESC LIMIT ?""",
-                (max(1, min(limit, 500)),),
-            ).fetchall()
-        result = []
-        for row in rows:
-            item = dict(row)
-            for field in (
-                "request_summary",
-                "response_summary",
-                "request_payload",
-                "response_payload",
-                "validation_summary",
-            ):
-                try:
-                    value = json.loads(item[field]) if item[field] else None
-                except (TypeError, json.JSONDecodeError):
-                    value = None
-                item[field] = value if isinstance(value, dict) else None
-            item["repair"] = bool(item["repair"])
-            result.append(item)
-        return result
-
-    def chatgpt_usage_stats(self, now: float | None = None) -> dict[str, Any]:
-        current_time = time.time() if now is None else now
-        windows = [
-            ("Last 24 hours", current_time - 86400),
-            ("Last 7 days", current_time - 7 * 86400),
-            ("Last 30 days", current_time - 30 * 86400),
-            ("All time", None),
-        ]
-        with self._lock:
-            window_stats = [{"label": label, **self._usage_summary(cutoff)} for label, cutoff in windows]
-            by_model = self._usage_groups("model")
-            by_purpose = self._usage_groups("purpose")
-            recent = [
-                dict(row)
-                for row in self._db.execute(
-                    """SELECT recorded_at, model, purpose, input_tokens,
-                              cached_input_tokens, output_tokens, reasoning_tokens, total_tokens
-                       FROM chatgpt_usage ORDER BY recorded_at DESC LIMIT 50"""
-                ).fetchall()
-            ]
-        return {
-            "windows": window_stats,
-            "all_time": window_stats[-1],
-            "by_model": by_model,
-            "by_purpose": by_purpose,
-            "recent": recent,
-        }
-
-    def _usage_summary(self, cutoff: float | None = None) -> dict[str, Any]:
-        where = " WHERE recorded_at >= ?" if cutoff is not None else ""
-        parameters = (cutoff,) if cutoff is not None else ()
-        row = self._db.execute(
-            """SELECT COUNT(*) AS requests,
-                      COALESCE(SUM(input_tokens), 0) AS input_tokens,
-                      COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
-                      COALESCE(SUM(output_tokens), 0) AS output_tokens,
-                      COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
-                      COALESCE(SUM(total_tokens), 0) AS total_tokens
-               FROM chatgpt_usage"""
-            + where,
-            parameters,
-        ).fetchone()
-        result = dict(row)
-        requests = result["requests"]
-        input_tokens = result["input_tokens"]
-        result["average_tokens"] = round(result["total_tokens"] / requests) if requests else 0
-        result["cache_rate"] = (
-            round(result["cached_input_tokens"] * 100 / input_tokens, 1) if input_tokens else 0.0
-        )
-        return result
-
-    def _usage_groups(self, column: str) -> list[dict[str, Any]]:
-        if column not in {"model", "purpose"}:
-            raise ValueError("Unsupported usage grouping")
-        rows = self._db.execute(
-            f"""SELECT {column} AS name, COUNT(*) AS requests,
-                       COALESCE(SUM(input_tokens), 0) AS input_tokens,
-                       COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
-                       COALESCE(SUM(output_tokens), 0) AS output_tokens,
-                       COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
-                       COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM chatgpt_usage GROUP BY {column}
-                ORDER BY total_tokens DESC, name ASC"""
-        ).fetchall()
-        return [dict(row) for row in rows]
 
     def upsert_conversation(self, channel_id: str, peer_id: str, peer_name: str) -> None:
         now = time.time()
@@ -774,95 +395,6 @@ class Store:
                 "UPDATE conversations SET snoozed_until=NULL, updated_at=? WHERE channel_id=?",
                 (time.time(), channel_id),
             )
-
-    def create_escalation(
-        self,
-        *,
-        channel_id: str,
-        trigger_message_id: str,
-        reason: str,
-    ) -> dict[str, Any]:
-        now = time.time()
-        with self._lock, self._db:
-            self._db.execute(
-                """INSERT OR IGNORE INTO conversation_escalations
-                   (channel_id, trigger_message_id, state, reason, requested_at)
-                   VALUES(?, ?, 'pending', ?, ?)""",
-                (channel_id, trigger_message_id, reason, now),
-            )
-            self._db.execute(
-                "UPDATE conversations SET paused=1, paused_at=?, updated_at=? WHERE channel_id=?",
-                (now, now, channel_id),
-            )
-            row = self._db.execute(
-                "SELECT * FROM conversation_escalations WHERE trigger_message_id=?",
-                (trigger_message_id,),
-            ).fetchone()
-        if row is None:
-            raise RuntimeError("Could not create owner escalation")
-        return dict(row)
-
-    def mark_escalation_acknowledgement(
-        self,
-        trigger_message_id: str,
-        *,
-        delivered: bool,
-        error: str | None = None,
-    ) -> None:
-        with self._lock, self._db:
-            self._db.execute(
-                """UPDATE conversation_escalations
-                   SET acknowledged_at=?, delivery_error=? WHERE trigger_message_id=?""",
-                (
-                    time.time() if delivered else None,
-                    None if delivered else (error or "delivery failed")[:500],
-                    trigger_message_id,
-                ),
-            )
-
-    def resolve_escalation_on_owner_reply(self, channel_id: str) -> bool:
-        now = time.time()
-        with self._lock, self._db:
-            cursor = self._db.execute(
-                """UPDATE conversation_escalations SET state='resolved', resolved_at=?
-                   WHERE channel_id=? AND state IN ('pending', 'claimed')""",
-                (now, channel_id),
-            )
-        return cursor.rowcount > 0
-
-    def set_escalation_state(self, escalation_id: int, state: str, *, resume: bool = False) -> bool:
-        if state not in {"claimed", "resolved", "dismissed"}:
-            raise ValueError("Unknown escalation state")
-        now = time.time()
-        resolved_at = now if state in {"resolved", "dismissed"} else None
-        with self._lock, self._db:
-            cursor = self._db.execute(
-                """UPDATE conversation_escalations SET state=?, resolved_at=?
-                   WHERE id=? AND state IN ('pending', 'claimed')""",
-                (state, resolved_at, escalation_id),
-            )
-            if cursor.rowcount and resume:
-                row = self._db.execute(
-                    "SELECT channel_id FROM conversation_escalations WHERE id=?",
-                    (escalation_id,),
-                ).fetchone()
-                if row:
-                    self._db.execute(
-                        """UPDATE conversations SET paused=0, paused_at=NULL,
-                           snoozed_until=NULL, updated_at=? WHERE channel_id=?""",
-                        (now, row["channel_id"]),
-                    )
-        return cursor.rowcount > 0
-
-    def active_escalations(self) -> list[dict[str, Any]]:
-        with self._lock:
-            rows = self._db.execute(
-                """SELECT e.*, c.peer_name FROM conversation_escalations e
-                   LEFT JOIN conversations c ON c.channel_id=e.channel_id
-                   WHERE e.state IN ('pending', 'claimed')
-                   ORDER BY e.requested_at DESC"""
-            ).fetchall()
-        return [dict(row) for row in rows]
 
     def active_interrupts(self) -> list[dict[str, Any]]:
         with self._lock:

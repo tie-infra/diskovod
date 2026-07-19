@@ -32,7 +32,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 4
+TARGET_SCHEMA_VERSION = 5
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -198,6 +198,32 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
       imported_at REAL NOT NULL,
       PRIMARY KEY(kind, source_id)
     );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS config (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL, secret INTEGER NOT NULL DEFAULT 0,
+      updated_at REAL NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS conversations (
+      channel_id TEXT PRIMARY KEY, peer_id TEXT NOT NULL, peer_name TEXT NOT NULL,
+      paused INTEGER NOT NULL DEFAULT 0, paused_at REAL, updated_at REAL NOT NULL,
+      snoozed_until REAL, mode TEXT NOT NULL DEFAULT 'automatic'
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, author_id TEXT NOT NULL,
+      author_name TEXT NOT NULL, direction TEXT NOT NULL, source TEXT NOT NULL,
+      content TEXT NOT NULL, timestamp REAL NOT NULL,
+      attachments TEXT NOT NULL DEFAULT '[]'
+    );
+    CREATE INDEX IF NOT EXISTS messages_channel_time ON messages(channel_id, timestamp DESC);
+    CREATE TABLE IF NOT EXISTS bot_nonces (nonce TEXT PRIMARY KEY, created_at REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS bot_message_ids (id TEXT PRIMARY KEY, created_at REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS assistant_reactions (
+      trigger_message_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
+      emoji TEXT NOT NULL, created_at REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS assistant_reactions_channel_time
+      ON assistant_reactions(channel_id, created_at DESC);
     """,
 )
 

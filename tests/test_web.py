@@ -81,8 +81,6 @@ def test_assistant_settings_defaults_preserve_only_admin_appearance():
         admin_theme="black",
         prompt_locale="ja",
         assistant_name="Helper",
-        provider="custom",
-        model="custom-model",
         owner_details="Private details",
         base_instructions="Custom instructions",
     )
@@ -125,58 +123,6 @@ def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path
     assert view["response_id"] == "probe-1"
     assert "web_search_call" in view["observed"]
     assert "access" not in str(view)
-    store.close()
-
-
-def test_model_request_log_view_correlates_validation_with_conversation(tmp_path):
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
-    store.upsert_conversation("dm-1", "peer", "Peer")
-    request_id = store.start_model_request(
-        provider="ChatGPT subscription",
-        protocol="responses",
-        model="gpt-model",
-        purpose="dm_reply_tool_continuation",
-        request_summary={"messages": [{"role": "user", "content_characters": 20}]},
-        channel_id="dm-1",
-        attempt=2,
-        repair=True,
-    )
-    store.finish_model_request(
-        request_id,
-        status="completed",
-        duration_ms=500,
-        response_summary={"text_outputs": [{"characters": 10}]},
-        request_payload={"instructions": "private prompt"},
-        response_payload={"output": [{"type": "message", "text": "model output"}]},
-    )
-    store.annotate_model_request(
-        request_id,
-        "rejected",
-        "non_terminal_or_ambiguous_output_after_repair",
-        {"observed": {"response_text_present": True}},
-    )
-    web = WebApp(
-        store,
-        cast(object, None),
-        cast(object, None),
-        cast(object, None),
-        cast(DiscordService, None),
-        cast(object, None),
-        "a-long-admin-password",
-        "https://diskovod.example",
-    )
-
-    view = web._model_request_log_views()[0]
-
-    assert view["conversation_label"] == "Peer"
-    assert view["purpose_label"] == "DM tool continuation"
-    assert view["validation_label"] == "Rejected"
-    assert view["is_problem"] is True
-    assert "content_characters" in view["request_json"]
-    assert "characters" in view["response_json"]
-    assert "private prompt" in view["request_payload_json"]
-    assert "model output" in view["response_payload_json"]
-    assert "response_text_present" in view["validation_summary_json"]
     store.close()
 
 

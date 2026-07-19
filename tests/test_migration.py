@@ -49,11 +49,18 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
     report = await migrator.run()
 
     assert report.backup_path is not None and report.backup_path.exists()
+    assert report.backup_path.with_suffix(".manifest.json").exists()
     assert report.conversations == 1
     assert report.events == 2
     assert report.checkpoints == 1
     assert store._db.execute("SELECT COUNT(*) FROM discord_events").fetchone()[0] == 2
     assert store._db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] > 0
+    tables = {
+        row[0] for row in store._db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    assert "model_request_logs" not in tables
+    assert "chatgpt_usage" not in tables
+    assert "conversation_escalations" not in tables
     thread_id = runtime.events.thread_id("discord-owner", "channel")
     checkpoint = await runtime.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
     assert [message.content for message in checkpoint.checkpoint["channel_values"]["messages"]] == [

@@ -30,6 +30,7 @@ from .localization import (
     assistant_identity,
     escalation_fallback,
     prompts_for,
+    runtime_context_text,
     summarization_prompt,
     tool_policy,
 )
@@ -65,9 +66,10 @@ class RuntimePromptMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeCo
     async def awrap_model_call(self, request, handler):
         context = request.runtime.context
         prompts = prompts_for(context.prompt_locale)
+        runtime_text = runtime_context_text(context.prompt_locale)
         suffix = [
-            f"Automation mode: {context.automation_mode}.",
-            f"Participant roles are supplied in trusted message metadata for channel {context.channel_id}.",
+            runtime_text["mode"].format(mode=context.automation_mode),
+            runtime_text["participants"].format(channel=context.channel_id),
         ]
         if context.force_reply:
             suffix.append(prompts.forced_reply)
@@ -197,7 +199,7 @@ class ExplicitSendTerminationMiddleware(AgentMiddleware[DiskovodAgentState, Agen
 
 
 class EscalationValidationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeContext]):
-    """Apply the fixed fallback directly; malformed escalation is never repaired."""
+    """Apply the fixed fallback directly; malformed escalation is never retried."""
 
     def __init__(self, gateway: AgentActionGateway, locale: str):
         self.gateway = gateway

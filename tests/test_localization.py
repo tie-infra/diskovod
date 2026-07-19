@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from diskovod.automation import build_reply_instructions
+from diskovod.agent import AgentPrompt
 from diskovod.localization import (
     ASSISTANT_IDENTITIES,
     ASSISTANT_NAMES,
@@ -17,7 +17,6 @@ from diskovod.localization import (
     tool_policy,
     ui_text,
 )
-from diskovod.models import AppSettings, attachment_context
 from diskovod.web import localized_base_instructions, personality_source_hash
 
 
@@ -66,22 +65,13 @@ def test_assistant_identity_has_a_localized_default_name_in_every_locale():
 def test_reply_instructions_use_the_selected_prompt_locale():
     for locale in SUPPORTED_LOCALES:
         prompts = prompts_for(locale)
-        settings = AppSettings(
-            prompt_locale=locale,
-            base_instructions=prompts.base,
-            owner_details="details",
-        )
-        instructions = build_reply_instructions(
-            settings,
-            {"profile": "profile"},
-            [
-                {
-                    "direction": "out",
-                    "source": "human",
-                    "content": "example",
-                }
-            ],
-        )
+        instructions = AgentPrompt(
+            locale,
+            assistant_name_for(locale),
+            prompts.base,
+            "profile",
+            "details",
+        ).stable_prefix()
 
         assert prompts.base in instructions
         assert prompts.dm_style in instructions
@@ -91,22 +81,8 @@ def test_reply_instructions_use_the_selected_prompt_locale():
         assert "react_to_message" in instructions
         assert tool_policy(locale) in instructions
         assert "<react>" not in instructions
-        assert "<message>" not in instructions
         assert prompts.owner_details.format(details="details") in instructions
         assert prompts.cached_personality.format(profile="profile") in instructions
-
-
-def test_attachment_context_uses_the_selected_prompt_locale():
-    result = attachment_context(
-        "",
-        [{"filename": "notes.txt", "content_type": "text/plain", "size": 4}],
-        provider="custom",
-        model="local",
-        locale="uk",
-    )
-
-    assert prompts_for("uk").no_message_text in result
-    assert prompts_for("uk").attachments_heading in result
 
 
 def test_prompt_locale_is_part_of_the_personality_cache_identity():

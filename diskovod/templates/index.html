@@ -118,11 +118,11 @@
               <button class="button-secondary">{{ t("test_hosted_web_search") }}</button>
               <small>
                 {% if subscription_web_search is sameas true %}
-                  {{ t("web_search_available", model=app_settings.model) }}
+                  {{ t("web_search_available", model=model_view.model) }}
                 {% elif subscription_web_search is sameas false %}
-                  {{ t("web_search_unavailable", model=app_settings.model) }}
+                  {{ t("web_search_unavailable", model=model_view.model) }}
                 {% else %}
-                  {{ t("web_search_untested", model=app_settings.model) }}
+                  {{ t("web_search_untested", model=model_view.model) }}
                 {% endif %}
               </small>
             </form>
@@ -245,8 +245,8 @@
               {{ t("detection_model") }}
               <input
                 name="probe_model"
-                value="{{ custom_provider.probe_model if custom_provider else app_settings.model }}"
-                placeholder="{{ app_settings.model }}"
+                value="{{ custom_provider.probe_model if custom_provider else model_view.model }}"
+                placeholder="{{ model_view.model }}"
                 required
               >
             </label>
@@ -598,7 +598,7 @@
 
               <label>
                 {{ t("model") }}
-                <input name="model" value="{{ app_settings.model }}">
+                <input name="model" value="{{ model_view.model }}">
               </label>
             </div>
 
@@ -609,7 +609,7 @@
                   {% for effort in ["low", "medium", "high"] %}
                     <option
                       value="{{ effort }}"
-                      {% if effort == app_settings.reasoning_effort %}selected{% endif %}
+                      {% if effort == model_view.reasoning_effort %}selected{% endif %}
                     >
                       {{ t(effort) }}
                     </option>
@@ -623,33 +623,14 @@
                   min="32"
                   max="2048"
                   name="max_reply_tokens"
-                  value="{{ app_settings.max_reply_tokens }}"
+                  value="{{ model_view.max_output_tokens }}"
                 >
               </label>
             </div>
             <p class="field-help">{{ t("token_budget_help") }}</p>
 
             <fieldset>
-              <legend>{{ t("multi_message_replies") }}</legend>
-              <label class="toggle">
-                <input
-                  type="checkbox"
-                  name="multi_message_replies"
-                  {% if app_settings.multi_message_replies %}checked{% endif %}
-                >
-                {{ t("allow_message_sequences") }}
-              </label>
-              <p class="field-help">{{ t("message_sequences_help") }}</p>
-              <label>
-                {{ t("maximum_messages") }}
-                <input
-                  type="number"
-                  min="2"
-                  max="5"
-                  name="max_reply_messages"
-                  value="{{ app_settings.max_reply_messages }}"
-                >
-              </label>
+              <legend>{{ t("message_timing") }}</legend>
               <div class="field-grid field-grid-two">
                 <label>
                   {{ t("minimum_gap") }}
@@ -760,16 +741,6 @@
                   value="{{ app_settings.max_typing_cps }}"
                 >
               </label>
-              <label>
-                {{ t("history_messages") }}
-                <input
-                  type="number"
-                  min="4"
-                  max="100"
-                  name="history_limit"
-                  value="{{ app_settings.history_limit }}"
-                >
-              </label>
             </div>
 
             <label>
@@ -806,187 +777,6 @@
 
       {% if active_tab == "usage" %}
       <section id="usage" class="page-section" aria-label="{{ t('usage') }}">
-        <article class="card usage-card">
-          <div class="card-header">
-            <div>
-              <span class="step">06</span>
-              <h2>{{ t("model_token_usage") }}</h2>
-            </div>
-            <span class="pill">{{ t("calls_count", count="{:,}".format(usage_stats.all_time.requests)) }}</span>
-          </div>
-
-          <p>{{ t("usage_help") }}</p>
-
-          <div class="usage-summary" aria-label="{{ t('all_time_usage') }}">
-            <div class="metric">
-              <span>{{ t("total_tokens") }}</span>
-              <strong>{{ "{:,}".format(usage_stats.all_time.total_tokens) }}</strong>
-            </div>
-            <div class="metric">
-              <span>{{ t("input") }}</span>
-              <strong>{{ "{:,}".format(usage_stats.all_time.input_tokens) }}</strong>
-            </div>
-            <div class="metric">
-              <span>{{ t("cached_input") }}</span>
-              <strong>{{ "{:,}".format(usage_stats.all_time.cached_input_tokens) }}</strong>
-              <small>{{ t("percent_of_input", percent=usage_stats.all_time.cache_rate) }}</small>
-            </div>
-            <div class="metric">
-              <span>{{ t("output") }}</span>
-              <strong>{{ "{:,}".format(usage_stats.all_time.output_tokens) }}</strong>
-            </div>
-            <div class="metric">
-              <span>{{ t("reasoning_output") }}</span>
-              <strong>{{ "{:,}".format(usage_stats.all_time.reasoning_tokens) }}</strong>
-            </div>
-            <div class="metric">
-              <span>{{ t("average_per_call") }}</span>
-              <strong>{{ "{:,}".format(usage_stats.all_time.average_tokens) }}</strong>
-            </div>
-          </div>
-
-          <div class="table-section">
-            <h3>{{ t("time_windows") }}</h3>
-            <div class="table-wrap">
-              <table class="table table-hover align-middle mb-0">
-                <thead>
-                  <tr>
-                    <th>{{ t("window") }}</th>
-                    <th>{{ t("calls") }}</th>
-                    <th>{{ t("input") }}</th>
-                    <th>{{ t("cached") }}</th>
-                    <th>{{ t("output") }}</th>
-                    <th>{{ t("reasoning") }}</th>
-                    <th>{{ t("total") }}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for window in usage_stats.windows %}
-                    <tr>
-                      <th>{{ window.label }}</th>
-                      <td>{{ "{:,}".format(window.requests) }}</td>
-                      <td>{{ "{:,}".format(window.input_tokens) }}</td>
-                      <td>
-                        {{ "{:,}".format(window.cached_input_tokens) }}
-                        <span class="subvalue">{{ window.cache_rate }}%</span>
-                      </td>
-                      <td>{{ "{:,}".format(window.output_tokens) }}</td>
-                      <td>{{ "{:,}".format(window.reasoning_tokens) }}</td>
-                      <td>{{ "{:,}".format(window.total_tokens) }}</td>
-                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="usage-breakdown">
-            <div class="table-section">
-              <h3>{{ t("by_model") }}</h3>
-              <div class="table-wrap">
-                <table class="table table-hover align-middle mb-0">
-                  <thead>
-                    <tr>
-                      <th>{{ t("model") }}</th>
-                      <th>{{ t("calls") }}</th>
-                      <th>{{ t("input") }}</th>
-                      <th>{{ t("cached") }}</th>
-                      <th>{{ t("output") }}</th>
-                      <th>{{ t("reasoning") }}</th>
-                      <th>{{ t("total") }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {% for group in usage_stats.by_model %}
-                      <tr>
-                        <th>{{ group.name }}</th>
-                        <td>{{ "{:,}".format(group.requests) }}</td>
-                        <td>{{ "{:,}".format(group.input_tokens) }}</td>
-                        <td>{{ "{:,}".format(group.cached_input_tokens) }}</td>
-                        <td>{{ "{:,}".format(group.output_tokens) }}</td>
-                        <td>{{ "{:,}".format(group.reasoning_tokens) }}</td>
-                        <td>{{ "{:,}".format(group.total_tokens) }}</td>
-                      </tr>
-                    {% else %}
-                      <tr><td colspan="7" class="table-empty">{{ t("no_completed_calls") }}</td></tr>
-                    {% endfor %}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div class="table-section">
-              <h3>{{ t("by_operation") }}</h3>
-              <div class="table-wrap">
-                <table class="table table-hover align-middle mb-0">
-                  <thead>
-                    <tr>
-                      <th>{{ t("operation") }}</th>
-                      <th>{{ t("calls") }}</th>
-                      <th>{{ t("input") }}</th>
-                      <th>{{ t("cached") }}</th>
-                      <th>{{ t("output") }}</th>
-                      <th>{{ t("reasoning") }}</th>
-                      <th>{{ t("total") }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {% for group in usage_stats.by_purpose %}
-                      <tr>
-                        <th>{{ group.name_label }}</th>
-                        <td>{{ "{:,}".format(group.requests) }}</td>
-                        <td>{{ "{:,}".format(group.input_tokens) }}</td>
-                        <td>{{ "{:,}".format(group.cached_input_tokens) }}</td>
-                        <td>{{ "{:,}".format(group.output_tokens) }}</td>
-                        <td>{{ "{:,}".format(group.reasoning_tokens) }}</td>
-                        <td>{{ "{:,}".format(group.total_tokens) }}</td>
-                      </tr>
-                    {% else %}
-                      <tr><td colspan="7" class="table-empty">{{ t("no_completed_calls") }}</td></tr>
-                    {% endfor %}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <details class="usage-details" {% if usage_stats.recent %}open{% endif %}>
-            <summary>{{ t("recent_calls", count=usage_stats.recent | length) }}</summary>
-            <div class="table-wrap">
-              <table class="table table-hover align-middle mb-0">
-                <thead>
-                  <tr>
-                    <th>{{ t("time") }}</th>
-                    <th>{{ t("operation") }}</th>
-                    <th>{{ t("model") }}</th>
-                    <th>{{ t("input") }}</th>
-                    <th>{{ t("cached") }}</th>
-                    <th>{{ t("output") }}</th>
-                    <th>{{ t("reasoning") }}</th>
-                    <th>{{ t("total") }}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for call in usage_stats.recent %}
-                    <tr>
-                      <td class="time-cell">{{ call.recorded_at_label }}</td>
-                      <td>{{ call.purpose_label }}</td>
-                      <td>{{ call.model }}</td>
-                      <td>{{ "{:,}".format(call.input_tokens) }}</td>
-                      <td>{{ "{:,}".format(call.cached_input_tokens) }}</td>
-                      <td>{{ "{:,}".format(call.output_tokens) }}</td>
-                      <td>{{ "{:,}".format(call.reasoning_tokens) }}</td>
-                      <td>{{ "{:,}".format(call.total_tokens) }}</td>
-                    </tr>
-                  {% else %}
-                    <tr><td colspan="8" class="table-empty">{{ t("no_usage") }}</td></tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          </details>
-        </article>
-
         <article class="card mt-4" id="agent-runs">
           <div class="card-header">
             <div><h2>{{ t("agent_runs_title") }}</h2></div>
@@ -1033,109 +823,6 @@
           {% endfor %}
         </article>
 
-        <article class="card mt-4" id="model-requests">
-          <div class="card-header">
-            <div>
-              <h2>{{ t("model_request_log") }}</h2>
-            </div>
-            <span class="pill">{{ t("model_requests_count", count=request_logs | length) }}</span>
-          </div>
-
-          <p>{{ t("model_request_log_help") }}</p>
-          <p class="field-help">{{ t("model_request_log_privacy") }}</p>
-
-          {% for request in request_logs %}
-            <details
-              class="request-log"
-              id="model-request-{{ request.id }}"
-              {% if request.is_problem and loop.first %}open{% endif %}
-            >
-              <summary>
-                <code>#{{ request.id }}</code>
-                · {{ request.started_at_label }}
-                · {{ request.purpose_label }}
-                · {{ request.model }}
-                · <span class="{{ 'text-danger' if request.is_problem else '' }}">{{ request.validation_label }}</span>
-              </summary>
-
-              <dl class="captcha-details">
-                <dt>{{ t("model_request_status") }}</dt>
-                <dd>{{ request.status_label }}</dd>
-                <dt>{{ t("provider") }}</dt>
-                <dd>{{ request.provider }}</dd>
-                <dt>{{ t("api_protocol") }}</dt>
-                <dd><code>{{ request.protocol }}</code></dd>
-                <dt>{{ t("model") }}</dt>
-                <dd><code>{{ request.model }}</code></dd>
-                <dt>{{ t("operation") }}</dt>
-                <dd><code>{{ request.purpose }}</code> · {{ request.purpose_label }}</dd>
-                <dt>{{ t("model_request_duration") }}</dt>
-                <dd>{{ request.duration_ms if request.duration_ms is not none else "—" }} ms</dd>
-                <dt>{{ t("model_request_conversation") }}</dt>
-                <dd>{{ request.conversation_label }}</dd>
-                <dt>{{ t("model_request_attempt") }}</dt>
-                <dd>{{ request.attempt if request.attempt is not none else "—" }}</dd>
-                <dt>{{ t("model_request_repair") }}</dt>
-                <dd>{{ t("active") if request.repair else "—" }}</dd>
-                {% if request.parent_request_url %}
-                  <dt>{{ t("model_request_parent") }}</dt>
-                  <dd>
-                    <a href="{{ request.parent_request_url }}">
-                      {{ t("view_model_request", id=request.parent_request_id) }}
-                    </a>
-                  </dd>
-                {% endif %}
-                <dt>{{ t("model_request_validation") }}</dt>
-                <dd>
-                  {{ request.validation_label }}
-                  {% if request.validation_detail %}<code>{{ request.validation_detail }}</code>{% endif %}
-                </dd>
-                {% if request.response_id %}
-                  <dt>{{ t("web_search_probe_response_id") }}</dt>
-                  <dd><code>{{ request.response_id }}</code></dd>
-                {% endif %}
-                {% if request.error_type or request.error_detail %}
-                  <dt>{{ t("errors") }}</dt>
-                  <dd><code>{{ request.error_type }}: {{ request.error_detail }}</code></dd>
-                {% endif %}
-              </dl>
-
-              {% if request.validation_summary %}
-                <div class="request-log-validator">
-                  <h3>{{ t("model_validator_observation") }}</h3>
-                  <pre><code>{{ request.validation_summary_json }}</code></pre>
-                </div>
-              {% endif %}
-
-              <div class="request-log-payloads">
-                <div>
-                  <h3>{{ t("model_provider_request") }}</h3>
-                  <pre><code>{{ request.request_payload_json }}</code></pre>
-                </div>
-                <div>
-                  <h3>{{ t("model_provider_response") }}</h3>
-                  <pre><code>{{ request.response_payload_json }}</code></pre>
-                </div>
-              </div>
-
-              <details class="request-log-metadata">
-                <summary>{{ t("model_compact_metadata") }}</summary>
-                <div class="request-log-payloads">
-                  <div>
-                    <h3>{{ t("model_request_metadata") }}</h3>
-                    <pre><code>{{ request.request_json }}</code></pre>
-                  </div>
-                  <div>
-                    <h3>{{ t("model_response_metadata") }}</h3>
-                    <pre><code>{{ request.response_json }}</code></pre>
-                  </div>
-                </div>
-              </details>
-            </details>
-          {% else %}
-            <div class="empty-state">{{ t("no_model_requests") }}</div>
-          {% endfor %}
-        </article>
       </section>
       {% endif %}
 

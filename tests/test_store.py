@@ -37,8 +37,6 @@ def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
             silent_replies=True,
             robot_prefix=True,
             assistant_name="Helper",
-            multi_message_replies=True,
-            max_reply_messages=4,
             min_message_gap_seconds=1,
             max_message_gap_seconds=3,
             owner_details="My name is Alex and I live in Berlin.",
@@ -48,8 +46,6 @@ def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
     assert store.app_settings().silent_replies is True
     assert store.app_settings().robot_prefix is True
     assert store.app_settings().assistant_name == "Helper"
-    assert store.app_settings().multi_message_replies is True
-    assert store.app_settings().max_reply_messages == 4
     assert store.app_settings().min_message_gap_seconds == 1
     assert store.app_settings().max_message_gap_seconds == 3
     assert store.app_settings().owner_details == "My name is Alex and I live in Berlin."
@@ -61,7 +57,7 @@ def test_removed_settings_are_ignored_when_loading_older_configuration(tmp_path:
     store = Store(tmp_path / "state.sqlite3", SECRET)
     store._set("app.settings", {"multi_message_chance": 25, "max_reply_messages": 4})
 
-    assert store.app_settings().max_reply_messages == 4
+    assert "max_reply_messages" not in store.app_settings().to_dict()
     assert "multi_message_chance" not in store.app_settings().to_dict()
     store.close()
 
@@ -79,14 +75,6 @@ def test_localization_settings_round_trip_and_unknown_values_fall_back(tmp_path:
     store.set_app_settings(settings)
     assert store.app_settings().admin_locale == "en"
     assert store.app_settings().prompt_locale == "en"
-    store.close()
-
-
-def test_invalid_saved_reasoning_effort_falls_back_to_api_default(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
-    store.set_app_settings(AppSettings(reasoning_effort="Низкое"))
-
-    assert store.app_settings().reasoning_effort == "low"
     store.close()
 
 
@@ -178,77 +166,6 @@ def test_custom_provider_capabilities_round_trip(tmp_path: Path):
     assert provider.supports("native_function_calls") is True
     assert provider.supports("hosted_web_search") is False
     assert provider.supports("unknown") is False
-    store.close()
-
-
-def test_subscription_web_search_capability_is_scoped_to_account_and_model(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
-    store.set_chat_credentials(ChatCredentials("access", "refresh", 123, "account-1", None))
-    store.set_subscription_web_search_capability(
-        "gpt-model",
-        True,
-        {"outcome": "verified", "response_id": "resp-1"},
-    )
-
-    assert store.subscription_web_search_capability("gpt-model") is True
-    assert store.subscription_web_search_probe("gpt-model")["diagnostics"] == {
-        "outcome": "verified",
-        "response_id": "resp-1",
-    }
-    assert store.subscription_web_search_capability("different-model") is None
-    assert store.subscription_web_search_probe("different-model") is None
-
-    store.set_chat_credentials(ChatCredentials("access", "refresh", 123, "account-2", None))
-    assert store.subscription_web_search_capability("gpt-model") is None
-    store.clear_chat_credentials()
-    assert store.subscription_web_search_capability("gpt-model") is None
-    store.close()
-
-
-def test_model_request_log_lifecycle_keeps_diagnostic_payloads_and_repair_links(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
-    request_id = store.start_model_request(
-        provider="ChatGPT subscription",
-        protocol="responses",
-        model="gpt-model",
-        purpose="dm_reply",
-        channel_id="dm-1",
-        attempt=2,
-        repair=True,
-        parent_request_id=99,
-        request_summary={"messages": [{"role": "user", "content_characters": 12}]},
-        started_at=100,
-    )
-    store.finish_model_request(
-        request_id,
-        status="completed",
-        duration_ms=321,
-        response_summary={"function_calls": [{"name": "send_messages"}]},
-        request_payload={"instructions": "reply naturally", "input": [{"content": "hello"}]},
-        response_payload={"output": [{"type": "function_call", "arguments": '{"messages":[]}'}]},
-        response_id="resp-1",
-    )
-    store.annotate_model_request(
-        request_id,
-        "rejected",
-        "non_terminal_or_ambiguous_output_after_repair",
-        {"observed": {"function_call_count": 1, "response_text_present": True}},
-    )
-
-    record = store.model_request_logs()[0]
-
-    assert record["id"] == request_id
-    assert record["status"] == "completed"
-    assert record["duration_ms"] == 321
-    assert record["repair"] is True
-    assert record["parent_request_id"] == 99
-    assert record["request_summary"]["messages"][0]["content_characters"] == 12
-    assert record["response_summary"]["function_calls"][0]["name"] == "send_messages"
-    assert record["validation_detail"] == "non_terminal_or_ambiguous_output_after_repair"
-    assert record["request_payload"]["input"][0]["content"] == "hello"
-    assert record["response_payload"]["output"][0]["arguments"] == '{"messages":[]}'
-    assert record["validation_summary"]["observed"]["response_text_present"] is True
-    assert set(record["request_summary"]["messages"][0]) == {"role", "content_characters"}
     store.close()
 
 
@@ -344,64 +261,6 @@ def test_inline_conversation_mode_survives_pause_and_resume(tmp_path: Path):
     store.set_permanent_pause("dm-1", False)
     assert store.conversation("dm-1")["mode"] == "inline"
     assert store.can_automate("dm-1") is True
-    store.close()
-
-
-def test_escalation_is_idempotent_and_pauses_until_explicit_resume(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
-    store.upsert_conversation("dm-1", "peer-1", "Sam")
-
-    created = store.create_escalation(
-        channel_id="dm-1",
-        trigger_message_id="incoming-1",
-        reason="peer_requested_owner",
-    )
-    repeated = store.create_escalation(
-        channel_id="dm-1",
-        trigger_message_id="incoming-1",
-        reason="peer_requested_owner",
-    )
-
-    assert repeated["id"] == created["id"]
-    assert store.conversation("dm-1")["paused"] is True
-    assert len(store.active_escalations()) == 1
-
-    store.mark_escalation_acknowledgement("incoming-1", delivered=True)
-    assert store.active_escalations()[0]["acknowledged_at"] is not None
-    assert store.set_escalation_state(created["id"], "claimed") is True
-    assert store.set_escalation_state(created["id"], "resolved") is True
-    assert store.active_escalations() == []
-    assert store.conversation("dm-1")["paused"] is True
-    store.close()
-
-
-def test_escalation_dashboard_can_close_and_explicitly_resume(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
-    store.upsert_conversation("dm-1", "peer-1", "Sam")
-    escalation = store.create_escalation(
-        channel_id="dm-1",
-        trigger_message_id="incoming-1",
-        reason="peer_requested_owner",
-    )
-
-    assert store.set_escalation_state(escalation["id"], "dismissed", resume=True) is True
-    assert store.conversation("dm-1")["paused"] is False
-    assert store.can_automate("dm-1") is True
-    store.close()
-
-
-def test_manual_owner_reply_resolves_escalation_but_keeps_conversation_paused(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
-    store.upsert_conversation("dm-1", "peer-1", "Sam")
-    store.create_escalation(
-        channel_id="dm-1",
-        trigger_message_id="incoming-1",
-        reason="peer_requested_owner",
-    )
-
-    assert store.resolve_escalation_on_owner_reply("dm-1") is True
-    assert store.active_escalations() == []
-    assert store.conversation("dm-1")["paused"] is True
     store.close()
 
 
@@ -529,65 +388,4 @@ def test_personality_can_be_edited(tmp_path: Path):
     assert personality["source_hash"] == "edit-hash"
     assert personality["source"] == "edited"
     assert personality["updated_at"] > 0
-    store.close()
-
-
-def test_chatgpt_usage_is_aggregated_by_window_model_and_operation(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
-    now = 2_000_000.0
-    store.record_chatgpt_usage(
-        response_id="resp-recent",
-        recorded_at=now - 60,
-        model="gpt-5",
-        purpose="dm_reply",
-        input_tokens=100,
-        cached_input_tokens=40,
-        output_tokens=30,
-        reasoning_tokens=10,
-        total_tokens=130,
-    )
-    store.record_chatgpt_usage(
-        response_id="resp-old",
-        recorded_at=now - 10 * 86400,
-        model="gpt-5-mini",
-        purpose="personality_inference",
-        input_tokens=900,
-        cached_input_tokens=0,
-        output_tokens=100,
-        reasoning_tokens=25,
-        total_tokens=1000,
-    )
-    store.record_chatgpt_usage(
-        response_id="resp-recent",
-        recorded_at=now,
-        model="duplicate",
-        purpose="dm_reply",
-        input_tokens=999,
-        cached_input_tokens=999,
-        output_tokens=999,
-        reasoning_tokens=999,
-        total_tokens=999,
-    )
-
-    stats = store.chatgpt_usage_stats(now=now)
-
-    assert stats["windows"][0] == {
-        "label": "Last 24 hours",
-        "requests": 1,
-        "input_tokens": 100,
-        "cached_input_tokens": 40,
-        "output_tokens": 30,
-        "reasoning_tokens": 10,
-        "total_tokens": 130,
-        "average_tokens": 130,
-        "cache_rate": 40.0,
-    }
-    assert stats["all_time"]["requests"] == 2
-    assert stats["all_time"]["total_tokens"] == 1130
-    assert [group["name"] for group in stats["by_model"]] == ["gpt-5-mini", "gpt-5"]
-    assert {group["name"] for group in stats["by_purpose"]} == {
-        "dm_reply",
-        "personality_inference",
-    }
-    assert stats["recent"][0]["model"] == "gpt-5"
     store.close()

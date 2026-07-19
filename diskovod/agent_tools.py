@@ -92,7 +92,7 @@ def localized_agent_tools(
         runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
     ) -> dict[str, Any]:
         if attachments is None:
-            return {"ok": False, "error": "attachment_store_unavailable"}
+            return {"ok": False, "error": text["memory_unavailable"]}
         return {"ok": True, "results": attachments.search(runtime.context.channel_id, query)}
 
     async def search_chat_memory(

@@ -139,26 +139,35 @@ class ModelService:
         """One-time transformer for installations created before configuration versions."""
         if self.configuration is not None:
             return None
-        settings = self.store.app_settings()
-        if settings.provider == "custom":
+        raw = self.store._get("app.settings", {})
+        provider_id = str(raw.get("provider") or "chatgpt")
+        model_id = str(raw.get("model") or "gpt-5.4-mini")
+        effort = str(raw.get("reasoning_effort") or "low")
+        if effort not in {"low", "medium", "high"}:
+            effort = "low"
+        try:
+            max_output_tokens = max(32, min(int(raw.get("max_reply_tokens") or 256), 2048))
+        except (TypeError, ValueError):
+            max_output_tokens = 256
+        if provider_id == "custom":
             provider = self.store.custom_provider()
             if provider is None:
                 return None
             return self.save_custom_openai(
                 provider,
-                model_id=settings.model,
-                reasoning_effort=settings.reasoning_effort,
-                max_output_tokens=settings.max_reply_tokens,
+                model_id=model_id,
+                reasoning_effort=effort,
+                max_output_tokens=max_output_tokens,
             )
         if self.account.connected:
             capabilities = ProviderCapabilities(
                 native_tools=True,
-                hosted_web_search=(self.store.subscription_web_search_capability(settings.model) is True),
+                hosted_web_search=False,
             )
             return self.save_subscription(
-                model_id=settings.model,
-                reasoning_effort=settings.reasoning_effort,
-                max_output_tokens=settings.max_reply_tokens,
+                model_id=model_id,
+                reasoning_effort=effort,
+                max_output_tokens=max_output_tokens,
                 capabilities=capabilities,
             )
         return None

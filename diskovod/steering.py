@@ -8,7 +8,7 @@ from langgraph.runtime import Runtime
 
 from .agent_types import AgentRuntimeContext, DiskovodAgentState
 from .events import DiscordEventQueue, QueuedDiscordEvent
-from .localization import tool_text
+from .localization import runtime_context_text, tool_text
 
 
 class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeContext]):
@@ -17,6 +17,7 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
     def __init__(self, queue: DiscordEventQueue, locale: str, *, max_batches: int = 4):
         self.queue = queue
         self.text = tool_text(locale)
+        self.runtime_text = runtime_context_text(locale)
         self.max_batches = max_batches
 
     @hook_config(can_jump_to=["model"])
@@ -102,8 +103,7 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
             else None,
         }
 
-    @staticmethod
-    def _message(event: QueuedDiscordEvent):
+    def _message(self, event: QueuedDiscordEvent):
         if event.kind == "delete":
             return RemoveMessage(id=str(event.payload["message_id"]))
         message_id = str(event.payload.get("message_id") or event.id)
@@ -113,14 +113,14 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
             names = [
                 str(item.get("filename") or "attachment") for item in attachments if isinstance(item, dict)
             ]
-            content += "\n\nDiscord attachments (untrusted conversation data): " + ", ".join(names)
+            content += "\n\n" + self.runtime_text["attachments"] + " " + ", ".join(names)
         return HumanMessage(
             content=content,
             id=message_id,
             additional_kwargs={
                 "diskovod_participant": {
                     "id": str(event.payload.get("author_id") or "unknown"),
-                    "name": str(event.payload.get("author_name") or "Unknown participant"),
+                    "name": str(event.payload.get("author_name") or self.runtime_text["unknown_participant"]),
                     "role": str(event.payload.get("participant_role") or "peer"),
                     "discord_event_id": event.id,
                     "edited": event.kind == "edit",

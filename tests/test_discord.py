@@ -9,7 +9,7 @@ import pytest
 
 import diskovod.discord as discord_module
 from diskovod.discord import CaptchaBroker, DiscordService, PrivateDiscordClient
-from diskovod.models import capture_discord_attachments, model_supports_vision
+from diskovod.models import capture_discord_attachments
 from diskovod.store import Store
 
 
@@ -50,13 +50,6 @@ async def test_captures_metadata_and_small_text_attachment_body():
             "text": "hello world",
         }
     ]
-
-
-def test_vision_capability_check_is_conservative():
-    assert model_supports_vision("gpt-5.4-mini") is True
-    assert model_supports_vision("gpt-4o-mini") is True
-    assert model_supports_vision("o1-mini") is False
-    assert model_supports_vision("local-text-model") is False
 
 
 @pytest.mark.asyncio

@@ -271,6 +271,14 @@
               <label class="toggle">
                 <input
                   type="checkbox"
+                  name="output_token_limit"
+                  {% if not custom_provider or custom_provider.capabilities.output_token_limit %}checked{% endif %}
+                >
+                {{ t("output_token_limit") }}
+              </label>
+              <label class="toggle">
+                <input
+                  type="checkbox"
                   name="strict_function_schemas"
                   {% if custom_provider and custom_provider.capabilities.strict_function_schemas %}checked{% endif %}
                 >

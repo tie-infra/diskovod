@@ -185,7 +185,10 @@ class WebApp:
                         "name": custom_provider.name,
                         "base_url": custom_provider.base_url,
                         "protocol": custom_provider.protocol,
-                        "capabilities": custom_provider.capabilities,
+                        "capabilities": {
+                            **custom_provider.capabilities,
+                            "output_token_limit": custom_provider.supports("output_token_limit"),
+                        },
                         "probe_model": model_view["model"],
                         "has_api_key": bool(custom_provider.api_key),
                         "draft_token": "",
@@ -333,6 +336,7 @@ class WebApp:
             strict_function_schemas: str | None = Form(None),
             parallel_tool_control: str | None = Form(None),
             prompt_cache_key: str | None = Form(None),
+            output_token_limit: str | None = Form(None),
             hosted_web_search: str | None = Form(None),
             clear_api_key: str | None = Form(None),
             _: str = Depends(auth),
@@ -360,6 +364,7 @@ class WebApp:
                 "strict_function_schemas": strict_function_schemas is not None,
                 "parallel_tool_control": parallel_tool_control is not None,
                 "prompt_cache_key": prompt_cache_key is not None,
+                "output_token_limit": output_token_limit is not None,
                 "hosted_web_search": hosted_web_search is not None and protocol == "responses",
             }
             if self.store.app_settings().enabled and not capabilities["native_function_calls"]:
@@ -392,6 +397,7 @@ class WebApp:
             strict_function_schemas: str | None = Form(None),
             parallel_tool_control: str | None = Form(None),
             prompt_cache_key: str | None = Form(None),
+            output_token_limit: str | None = Form(None),
             hosted_web_search: str | None = Form(None),
             clear_api_key: str | None = Form(None),
             _: str = Depends(auth),
@@ -428,6 +434,7 @@ class WebApp:
                     "strict_function_schemas": strict_function_schemas is not None,
                     "parallel_tool_control": parallel_tool_control is not None,
                     "prompt_cache_key": prompt_cache_key is not None,
+                    "output_token_limit": output_token_limit is not None,
                     "hosted_web_search": hosted_web_search is not None and protocol == "responses",
                 },
                 probe_model,
@@ -1089,7 +1096,11 @@ class WebApp:
     def _model_view(self) -> dict[str, Any]:
         configuration = self.models.configuration
         if configuration is None:
-            return {"model": "gpt-5.4-mini", "reasoning_effort": "low", "max_output_tokens": 256}
+            return {
+                "model": "gpt-5.4-mini",
+                "reasoning_effort": "low",
+                "max_output_tokens": 256,
+            }
         options = configuration.options
         return {
             "model": configuration.model_id,

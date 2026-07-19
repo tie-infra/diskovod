@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from importlib.metadata import version
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -111,16 +112,21 @@ class ModelService:
     ) -> ModelConfiguration:
         if not self.account.connected:
             raise ProviderBuildError("missing_credentials", "ChatGPT Subscription is not connected")
+        resolved_capabilities = replace(
+            capabilities or ProviderCapabilities(),
+            output_token_limit=False,
+        )
         return ModelConfiguration(
             provider_id="chatgpt_subscription",
             model_id=model_id,
             transport_profile="responses",
             credential_profile="chatgpt_subscription",
-            options={
-                "reasoning_effort": reasoning_effort,
-                "max_completion_tokens": max_output_tokens,
-            },
-            capabilities=capabilities or ProviderCapabilities(),
+            options=self._completion_options(
+                reasoning_effort,
+                max_output_tokens,
+                resolved_capabilities,
+            ),
+            capabilities=resolved_capabilities,
             integration_version=version("langchain-openai"),
         )
 
@@ -166,12 +172,10 @@ class ModelService:
             image_input=provider.supports("image_input"),
             file_input=provider.supports("file_input"),
             prompt_cache=provider.supports("prompt_cache_key"),
+            output_token_limit=provider.supports("output_token_limit"),
             details={"setup_probe": dict(provider.capabilities)},
         )
-        options = {
-            "reasoning_effort": reasoning_effort,
-            "max_completion_tokens": max_output_tokens,
-        }
+        options = self._completion_options(reasoning_effort, max_output_tokens, capabilities)
         if capabilities.prompt_cache:
             options["prompt_cache_key"] = self._prompt_cache_key(
                 provider_id="custom_openai",
@@ -188,6 +192,17 @@ class ModelService:
             capabilities=capabilities,
             integration_version=version("langchain-openai"),
         )
+
+    @staticmethod
+    def _completion_options(
+        reasoning_effort: str,
+        max_output_tokens: int,
+        capabilities: ProviderCapabilities,
+    ) -> dict[str, object]:
+        options: dict[str, object] = {"reasoning_effort": reasoning_effort}
+        if capabilities.output_token_limit:
+            options["max_completion_tokens"] = max_output_tokens
+        return options
 
     def migrate_legacy_selection(self) -> int | None:
         """One-time transformer for installations created before configuration versions."""

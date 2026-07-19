@@ -16,7 +16,11 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     template = environment.get_template("index.html")
     context = dict(
         app_settings=AppSettings(),
-        model_view={"model": "gpt-5.4-mini", "reasoning_effort": "low", "max_output_tokens": 256},
+        model_view={
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "max_output_tokens": 256,
+        },
         assistant_display_name="Diskovod",
         default_assistant_name="Diskovod",
         locale="en",
@@ -53,6 +57,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
                 "strict_function_schemas": True,
                 "parallel_tool_control": True,
                 "prompt_cache_key": True,
+                "output_token_limit": True,
                 "hosted_web_search": False,
             },
             "probe_model": "local-model",
@@ -235,7 +240,7 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'value="medium"' in rendered
     assert 'value="high"' in rendered
     assert "Reply token budget" in rendered
-    assert "custom APIs receive a hard token limit" in rendered
+    assert "selected provider supports an explicit output token limit" in rendered
     assert 'name="silent_replies"' in rendered
     assert 'name="robot_prefix"' in rendered
     assert 'name="min_message_gap_seconds"' in rendered

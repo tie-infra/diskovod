@@ -165,6 +165,7 @@ def test_custom_provider_capabilities_round_trip(tmp_path: Path):
     provider = store.custom_provider()
     assert provider.supports("native_function_calls") is True
     assert provider.supports("hosted_web_search") is False
+    assert provider.supports("output_token_limit") is True
     assert provider.supports("unknown") is False
     store.close()
 

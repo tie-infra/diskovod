@@ -14,6 +14,7 @@ class ProviderCapabilities:
     image_input: bool = False
     file_input: bool = False
     prompt_cache: bool = False
+    output_token_limit: bool = True
     standard_content_blocks: bool = True
     probed_at: float | None = None
     probe_trace_id: str | None = None

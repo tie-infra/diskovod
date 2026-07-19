@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 
@@ -46,8 +47,42 @@ def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path):
         (3,),
         (4,),
         (5,),
+        (6,),
     ]
     assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    connection.close()
+
+
+def test_schema_migration_removes_unsupported_subscription_token_limit(tmp_path: Path):
+    path = tmp_path / "diskovod.sqlite3"
+    connection = sqlite3.connect(path)
+    with connection:
+        initialize_target_schema(connection)
+        connection.execute("DELETE FROM schema_migrations WHERE version=6")
+        connection.execute(
+            "INSERT INTO agent_configuration_versions(created_at, configuration, active) VALUES(0, ?, 1)",
+            (
+                json.dumps(
+                    {
+                        "provider_id": "chatgpt_subscription",
+                        "model_id": "test-model",
+                        "transport_profile": "responses",
+                        "credential_profile": "chatgpt_subscription",
+                        "options": {"reasoning_effort": "low", "max_completion_tokens": 256},
+                        "capabilities": {"native_tools": True},
+                    }
+                ),
+            ),
+        )
+
+    with connection:
+        initialize_target_schema(connection)
+
+    saved = json.loads(
+        connection.execute("SELECT configuration FROM agent_configuration_versions").fetchone()[0]
+    )
+    assert saved["options"] == {"reasoning_effort": "low"}
+    assert saved["capabilities"]["output_token_limit"] is False
     connection.close()
 
 

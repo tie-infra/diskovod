@@ -32,7 +32,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 5
+TARGET_SCHEMA_VERSION = 6
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -224,6 +224,24 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX IF NOT EXISTS assistant_reactions_channel_time
       ON assistant_reactions(channel_id, created_at DESC);
+    """,
+    """
+    UPDATE agent_configuration_versions
+    SET configuration = json_set(
+      json_remove(configuration, '$.options.max_completion_tokens'),
+      '$.capabilities.output_token_limit',
+      json('false')
+    )
+    WHERE json_extract(configuration, '$.provider_id') = 'chatgpt_subscription';
+
+    UPDATE agent_configuration_versions
+    SET configuration = json_set(
+      configuration,
+      '$.capabilities.output_token_limit',
+      json('true')
+    )
+    WHERE json_extract(configuration, '$.provider_id') != 'chatgpt_subscription'
+      AND json_type(configuration, '$.capabilities.output_token_limit') IS NULL;
     """,
 )
 

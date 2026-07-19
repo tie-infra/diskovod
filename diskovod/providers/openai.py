@@ -23,17 +23,6 @@ RESPONSES = "responses"
 CHAT_COMPLETIONS = "chat_completions"
 
 
-class _DiskovodChatOpenAICodex(_ChatOpenAICodex):
-    """Apply Codex backend wire constraints missing from LangChain's adapter."""
-
-    def _get_request_payload(self, input_, *, stop=None, **kwargs):
-        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-        # LangChain maps max_completion_tokens to max_output_tokens for the
-        # public Responses API, but the ChatGPT Codex backend rejects that field.
-        payload.pop("max_output_tokens", None)
-        return payload
-
-
 class OpenAIAdapter(ProviderAdapter):
     integration_package = "langchain-openai"
     transport_profiles = frozenset({RESPONSES, CHAT_COMPLETIONS})
@@ -58,7 +47,7 @@ class OpenAIAdapter(ProviderAdapter):
     ) -> BaseChatModel:
         if credentials.api_key is None and not self.custom_endpoint:
             raise ProviderBuildError("missing_credentials", "An OpenAI API key is required")
-        options = _model_options(configuration.options)
+        options = _model_options(configuration)
         prompt_cache_key = options.pop("prompt_cache_key", None)
         return ChatOpenAI(
             model=configuration.model_id,
@@ -93,9 +82,9 @@ class ChatGPTSubscriptionAdapter(ProviderAdapter):
             raise ProviderBuildError(
                 "missing_credentials", "Encrypted ChatGPT Subscription credentials are required"
             )
-        options = _model_options(configuration.options)
+        options = _model_options(configuration)
         prompt_cache_key = options.pop("prompt_cache_key", None)
-        return _DiskovodChatOpenAICodex(
+        return _ChatOpenAICodex(
             model=configuration.model_id,
             token_provider=credentials.oauth_token_provider,
             output_version="responses/v1",
@@ -163,7 +152,8 @@ class StoredChatGPTTokenProvider:
         )
 
 
-def _model_options(options: dict[str, object]) -> dict[str, object]:
+def _model_options(configuration: ModelConfiguration) -> dict[str, object]:
+    options = configuration.options
     allowed = {
         "reasoning_effort",
         "max_completion_tokens",
@@ -175,4 +165,9 @@ def _model_options(options: dict[str, object]) -> dict[str, object]:
     if unknown:
         names = ", ".join(sorted(unknown))
         raise ProviderBuildError("unsupported_options", f"Unsupported provider options: {names}")
+    if "max_completion_tokens" in options and not configuration.capabilities.output_token_limit:
+        raise ProviderBuildError(
+            "unsupported_options",
+            "The selected provider does not support a configurable output token limit",
+        )
     return dict(options)

@@ -257,6 +257,8 @@ class Store:
             return None
         # Providers saved before protocol selection existed used Chat Completions.
         value.setdefault("protocol", "chat_completions")
+        # Providers saved before this capability existed always received the limit.
+        value.setdefault("capabilities", {}).setdefault("output_token_limit", True)
         return CustomProvider(**value)
 
     def set_custom_provider(self, value: CustomProvider) -> None:

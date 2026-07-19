@@ -17,6 +17,7 @@ from diskovod.providers import (
     OpenAIAdapter,
     ProviderAdapter,
     ProviderBuildError,
+    ProviderCapabilities,
     ProviderCredentials,
     ProviderRegistry,
     ProviderSetup,
@@ -53,6 +54,7 @@ def configuration(
     *,
     endpoint: str | None = None,
     options: dict | None = None,
+    capabilities: ProviderCapabilities | None = None,
 ) -> ModelConfiguration:
     return ModelConfiguration(
         provider_id=provider_id,
@@ -61,6 +63,7 @@ def configuration(
         credential_profile="default",
         endpoint=endpoint,
         options=options or {},
+        capabilities=capabilities or ProviderCapabilities(),
         integration_version="test",
     )
 
@@ -177,21 +180,45 @@ def test_subscription_adapter_is_responses_only_and_uses_private_surface_narrowl
     selected = configuration(
         "chatgpt_subscription",
         "responses",
-        options={"max_completion_tokens": 256},
+        options={"reasoning_effort": "low"},
+        capabilities=ProviderCapabilities(output_token_limit=False),
     )
     model = adapter.build_model(selected, ProviderCredentials(oauth_token_provider=token_provider))
-    payload = model._get_request_payload(
-        [HumanMessage("hello")],
-        max_completion_tokens=512,
-    )
+    payload = model._get_request_payload([HumanMessage("hello")])
 
     assert isinstance(model, BaseChatModel)
     assert model.max_retries == 0
     assert model.use_responses_api is True
     assert "max_output_tokens" not in payload
+    with pytest.raises(ProviderBuildError, match="output token limit"):
+        adapter.build_model(
+            configuration(
+                "chatgpt_subscription",
+                "responses",
+                options={"max_completion_tokens": 256},
+                capabilities=ProviderCapabilities(output_token_limit=False),
+            ),
+            ProviderCredentials(oauth_token_provider=token_provider),
+        )
     with pytest.raises(ProviderBuildError) as transport:
         adapter.validate(configuration("chatgpt_subscription", "chat_completions"))
     assert transport.value.code == "unsupported_transport"
+
+
+def test_subscription_configuration_omits_unsupported_token_limit(tmp_path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    models = ModelService(store, SimpleNamespace(connected=True))
+
+    models.save_subscription(
+        model_id="test-model",
+        reasoning_effort="low",
+        max_output_tokens=256,
+    )
+
+    configuration = models.configuration
+    assert configuration.options == {"reasoning_effort": "low"}
+    assert configuration.capabilities.output_token_limit is False
+    store.close()
 
 
 def test_model_configuration_round_trips_as_an_immutable_active_version(tmp_path):
@@ -230,7 +257,11 @@ def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_perso
         "http://localhost:8000/v1",
         "",
         "responses",
-        {"native_function_calls": True, "prompt_cache_key": True},
+        {
+            "native_function_calls": True,
+            "prompt_cache_key": True,
+            "output_token_limit": True,
+        },
     )
 
     models.save_custom_openai(
@@ -240,6 +271,8 @@ def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_perso
         max_output_tokens=256,
     )
     first = models.configuration.options["prompt_cache_key"]
+    assert models.configuration.options["max_completion_tokens"] == 256
+    assert models.configuration.capabilities.output_token_limit is True
     store.set_personality("A durable style profile", "personality-v2")
     assert models.refresh_prompt_cache_identity() is not None
     second = models.configuration.options["prompt_cache_key"]
@@ -249,6 +282,29 @@ def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_perso
     assert first != second
     model = models.build_model()
     assert model.model_kwargs["prompt_cache_key"] == second
+    store.close()
+
+
+def test_custom_provider_without_token_limit_capability_omits_option(tmp_path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    models = ModelService(store, SimpleNamespace(connected=False))
+    provider = CustomProvider(
+        "Limited",
+        "http://localhost:8000/v1",
+        "",
+        "responses",
+        {"native_function_calls": True, "output_token_limit": False},
+    )
+
+    models.save_custom_openai(
+        provider,
+        model_id="local-model",
+        reasoning_effort="low",
+        max_output_tokens=256,
+    )
+
+    assert "max_completion_tokens" not in models.configuration.options
+    assert models.configuration.capabilities.output_token_limit is False
     store.close()
 
 

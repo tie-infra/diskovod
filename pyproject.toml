@@ -26,9 +26,8 @@ dependencies = [
 [project.scripts]
 diskovod = "diskovod.main:main"
 
-[tool.setuptools]
-packages = ["diskovod"]
-include-package-data = false
+[tool.setuptools.packages.find]
+include = ["diskovod*"]
 
 [tool.setuptools.package-data]
 diskovod = ["templates/*.html", "static/*.css"]

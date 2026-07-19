@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import time
+from datetime import timedelta
+
+import pytest
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_openai import ChatOpenAI
+
+from diskovod.models import ChatCredentials
+from diskovod.providers import (
+    ChatGPTSubscriptionAdapter,
+    ModelConfiguration,
+    OpenAIAdapter,
+    ProviderAdapter,
+    ProviderBuildError,
+    ProviderCredentials,
+    ProviderRegistry,
+    StoredChatGPTTokenProvider,
+)
+
+
+class FakeAdapter(ProviderAdapter):
+    id = "fake"
+    integration_package = "test"
+    transport_profiles = frozenset({"native"})
+
+    def __init__(self, model: BaseChatModel):
+        self.model = model
+
+    def build_model(self, configuration, credentials):
+        return self.model
+
+
+def configuration(
+    provider_id: str,
+    transport: str,
+    *,
+    endpoint: str | None = None,
+    options: dict | None = None,
+) -> ModelConfiguration:
+    return ModelConfiguration(
+        provider_id=provider_id,
+        model_id="test-model",
+        transport_profile=transport,
+        credential_profile="default",
+        endpoint=endpoint,
+        options=options or {},
+        integration_version="test",
+    )
+
+
+def test_registry_is_provider_neutral_and_never_falls_back():
+    model = ChatOpenAI(model="test-model", api_key="test", max_retries=0)
+    registry = ProviderRegistry([FakeAdapter(model)])
+
+    assert registry.available() == ("fake",)
+    assert registry.build_model(configuration("fake", "native"), ProviderCredentials()) is model
+    with pytest.raises(ProviderBuildError) as unknown:
+        registry.build_model(configuration("missing", "native"), ProviderCredentials())
+    assert unknown.value.code == "unknown_provider"
+    with pytest.raises(ProviderBuildError) as transport:
+        registry.build_model(configuration("fake", "other"), ProviderCredentials())
+    assert transport.value.code == "unsupported_transport"
+
+
+def test_openai_adapter_pins_saved_transport_and_disables_retries():
+    adapter = OpenAIAdapter()
+    responses = adapter.build_model(
+        configuration("openai", "responses"), ProviderCredentials(api_key="secret")
+    )
+    chat = adapter.build_model(
+        configuration("openai", "chat_completions"), ProviderCredentials(api_key="secret")
+    )
+
+    assert isinstance(responses, BaseChatModel)
+    assert responses.use_responses_api is True
+    assert responses.max_retries == 0
+    assert chat.use_responses_api is False
+    assert chat.max_retries == 0
+
+
+def test_custom_openai_adapter_requires_and_preserves_endpoint():
+    adapter = OpenAIAdapter("custom_openai", custom_endpoint=True)
+    selected = configuration("custom_openai", "responses", endpoint="https://models.example/v1")
+    adapter.validate(selected)
+    model = adapter.build_model(selected, ProviderCredentials(api_key="secret"))
+
+    assert str(model.openai_api_base).rstrip("/") == "https://models.example/v1"
+    with pytest.raises(ProviderBuildError, match="endpoint"):
+        adapter.validate(configuration("custom_openai", "responses"))
+
+
+def test_provider_options_are_allowlisted_instead_of_forwarded_blindly():
+    adapter = OpenAIAdapter()
+    with pytest.raises(ProviderBuildError) as error:
+        adapter.build_model(
+            configuration("openai", "responses", options={"dangerous": True}),
+            ProviderCredentials(api_key="secret"),
+        )
+    assert error.value.code == "unsupported_options"
+
+
+@pytest.mark.asyncio
+async def test_subscription_token_provider_refreshes_from_encrypted_store_callback():
+    current = ChatCredentials("old", "refresh", time.time() - 10, "account", None)
+    refreshes = 0
+
+    def load():
+        return current
+
+    async def refresh():
+        nonlocal current, refreshes
+        refreshes += 1
+        current = ChatCredentials("new", "refresh", time.time() + 3600, "account", None)
+        return current
+
+    provider = StoredChatGPTTokenProvider(load, refresh, refresh_skew=timedelta(seconds=0))
+    token = await provider.aget_token()
+
+    assert token.access_token == "new"
+    assert token.account_id == "account"
+    assert refreshes == 1
+    assert await provider.aget_access_token() == "new"
+    assert refreshes == 1
+
+
+def test_subscription_adapter_is_responses_only_and_uses_private_surface_narrowly():
+    credentials = ChatCredentials("access", "refresh", time.time() + 3600, "account", None)
+
+    async def refresh():
+        return credentials
+
+    token_provider = StoredChatGPTTokenProvider(lambda: credentials, refresh)
+    adapter = ChatGPTSubscriptionAdapter()
+    selected = configuration("chatgpt_subscription", "responses")
+    model = adapter.build_model(selected, ProviderCredentials(oauth_token_provider=token_provider))
+
+    assert isinstance(model, BaseChatModel)
+    assert model.max_retries == 0
+    assert model.use_responses_api is True
+    with pytest.raises(ProviderBuildError) as transport:
+        adapter.validate(configuration("chatgpt_subscription", "chat_completions"))
+    assert transport.value.code == "unsupported_transport"

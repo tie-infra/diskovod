@@ -433,20 +433,20 @@ class Automation:
                 )
                 log.error("Rejected invalid or over-budget hosted tool output")
                 return None
-            if len(calls) != 1 or result.text:
+            if len(calls) != 1:
                 if repair_used:
                     self.store.annotate_model_request(
                         result.request_log_id,
                         "rejected",
-                        "non_terminal_or_ambiguous_output_after_repair",
+                        "missing_or_ambiguous_function_call_after_repair",
                         self._model_output_observation(result),
                     )
-                    log.error("Rejected non-terminal or ambiguous model output after native repair")
+                    log.error("Rejected missing or ambiguous function call after native repair")
                     return None
                 self.store.annotate_model_request(
                     result.request_log_id,
                     "repair_requested",
-                    "expected_one_function_call_and_no_text",
+                    "expected_exactly_one_function_call",
                     self._model_output_observation(result),
                 )
                 repair_used = True
@@ -544,7 +544,6 @@ class Automation:
         return {
             "expected": {
                 "function_call_count": 1,
-                "response_text_present": False,
             },
             "observed": {
                 "text_output_count": len(result.text_outputs),

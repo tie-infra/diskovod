@@ -293,6 +293,23 @@ async def test_plain_text_is_inert_and_gets_one_forced_native_repair(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_text_alongside_terminal_function_call_does_not_invalidate_action(tmp_path: Path):
+    store = reply_store(tmp_path)
+    result = function_result("send_messages", {"messages": ["actual reply"]})
+    result.text_outputs.append(TextOutput("protocol preamble that must not be sent", []))
+    chatgpt = ReplyingChatGPT([result])
+    automation = Automation(store, cast(ChatGPTClient, chatgpt))
+    automation.versions["dm"] = 0
+    trigger = TextTrigger()
+
+    await automation._reply(trigger, 0)
+
+    assert [item[0] for item in trigger.channel.sent] == ["actual reply"]
+    assert len(chatgpt.calls) == 1
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_native_repair_rejection_is_annotated_in_request_log(tmp_path: Path):
     store = reply_store(tmp_path)
     request_ids = [
@@ -322,9 +339,9 @@ async def test_ambiguous_native_repair_rejection_is_annotated_in_request_log(tmp
 
     logs = {record["id"]: record for record in store.model_request_logs()}
     assert logs[request_ids[0]]["validation_status"] == "repair_requested"
-    assert logs[request_ids[0]]["validation_detail"] == "expected_one_function_call_and_no_text"
+    assert logs[request_ids[0]]["validation_detail"] == "expected_exactly_one_function_call"
     assert logs[request_ids[1]]["validation_status"] == "rejected"
-    assert logs[request_ids[1]]["validation_detail"] == ("non_terminal_or_ambiguous_output_after_repair")
+    assert logs[request_ids[1]]["validation_detail"] == ("missing_or_ambiguous_function_call_after_repair")
     assert logs[request_ids[0]]["validation_summary"]["observed"] == {
         "text_output_count": 1,
         "text_characters": 20,

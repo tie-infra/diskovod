@@ -823,6 +823,73 @@
           {% endfor %}
         </article>
 
+        <article class="card mt-4" id="checkpoint-history">
+          <div class="card-header">
+            <div><h2>{{ t("checkpoint_history_title") }}</h2></div>
+            <span class="pill">{{ checkpoint_threads | length }}</span>
+          </div>
+          <p>{{ t("checkpoint_history_help") }}</p>
+          {% for thread in checkpoint_threads %}
+            <details class="request-log">
+              <summary>{{ thread.channel_id }} · g{{ thread.generation }} · {{ thread.checkpoints | length }}</summary>
+              <code>{{ thread.thread_id }}</code>
+              {% for checkpoint in thread.checkpoints %}
+                <div class="conversation mt-2">
+                  <div class="conversation-name">
+                    <strong>{{ checkpoint.created_at }}</strong>
+                    <small>{{ t("checkpoint_summary", messages=checkpoint.message_count, step=checkpoint.step) }}</small>
+                    <code>{{ checkpoint.checkpoint_id }}</code>
+                  </div>
+                  <form method="post" action="/diagnostics/replay">
+                    <input type="hidden" name="thread_id" value="{{ thread.thread_id }}">
+                    <input type="hidden" name="checkpoint_id" value="{{ checkpoint.checkpoint_id }}">
+                    <input type="hidden" name="confirm" value="emulate">
+                    <button class="btn btn-sm btn-outline-secondary">{{ t("replay_safely") }}</button>
+                  </form>
+                </div>
+              {% endfor %}
+            </details>
+          {% else %}
+            <div class="empty-state">{{ t("no_checkpoint_history") }}</div>
+          {% endfor %}
+        </article>
+
+        {% for kind, title_key, help_key in [
+          ("memories", "memories_title", "memories_help"),
+          ("attachments", "attachments_diagnostics_title", "attachments_diagnostics_help"),
+          ("deliveries", "deliveries_title", "deliveries_help"),
+          ("events", "event_audit_title", "event_audit_help")
+        ] %}
+          <article class="card mt-4" id="{{ kind }}-diagnostics">
+            <div class="card-header">
+              <div><h2>{{ t(title_key) }}</h2></div>
+              <span class="pill">{{ runtime_records[kind] | length }}</span>
+            </div>
+            <p>{{ t(help_key) }}</p>
+            {% for record in runtime_records[kind] %}
+              <details class="request-log">
+                <summary>
+                  {% if kind == "memories" %}{{ record.key }}
+                  {% elif kind == "attachments" %}{{ record.filename }} · {{ record.channel_id }}
+                  {% elif kind == "deliveries" %}{{ record.action }} · {{ record.state }}
+                  {% else %}{{ record.kind }} · {{ record.channel_id }} · #{{ record.sequence }}{% endif %}
+                </summary>
+                <pre><code>{{ record.json }}</code></pre>
+                {% if kind == "memories" %}
+                  <form method="post" action="/memories/delete">
+                    <input type="hidden" name="namespace" value="{{ record.namespace }}">
+                    <input type="hidden" name="key" value="{{ record.key }}">
+                    <input type="hidden" name="confirm" value="delete">
+                    <button class="btn btn-sm btn-outline-danger">{{ t("delete_row") }}</button>
+                  </form>
+                {% endif %}
+              </details>
+            {% else %}
+              <div class="empty-state">{{ t("no_runtime_records") }}</div>
+            {% endfor %}
+          </article>
+        {% endfor %}
+
       </section>
       {% endif %}
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from importlib.metadata import version
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -119,6 +121,16 @@ class ModelService:
             prompt_cache=provider.supports("prompt_cache_key"),
             details={"setup_probe": dict(provider.capabilities)},
         )
+        options = {
+            "reasoning_effort": reasoning_effort,
+            "max_completion_tokens": max_output_tokens,
+        }
+        if capabilities.prompt_cache:
+            options["prompt_cache_key"] = self._prompt_cache_key(
+                provider_id="custom_openai",
+                model_id=model_id,
+                transport_profile=provider.protocol,
+            )
         return self.store.save_agent_configuration(
             ModelConfiguration(
                 provider_id="custom_openai",
@@ -126,10 +138,7 @@ class ModelService:
                 transport_profile=provider.protocol,
                 credential_profile=profile,
                 endpoint=provider.base_url,
-                options={
-                    "reasoning_effort": reasoning_effort,
-                    "max_completion_tokens": max_output_tokens,
-                },
+                options=options,
                 capabilities=capabilities,
                 integration_version=version("langchain-openai"),
             )
@@ -171,6 +180,48 @@ class ModelService:
                 capabilities=capabilities,
             )
         return None
+
+    def refresh_prompt_cache_identity(self) -> int | None:
+        configuration = self.configuration
+        if configuration is None or not configuration.capabilities.prompt_cache:
+            return None
+        options = dict(configuration.options)
+        options["prompt_cache_key"] = self._prompt_cache_key(
+            provider_id=configuration.provider_id,
+            model_id=configuration.model_id,
+            transport_profile=configuration.transport_profile,
+        )
+        if options == configuration.options:
+            return None
+        return self.store.save_agent_configuration(
+            ModelConfiguration(
+                provider_id=configuration.provider_id,
+                model_id=configuration.model_id,
+                transport_profile=configuration.transport_profile,
+                credential_profile=configuration.credential_profile,
+                endpoint=configuration.endpoint,
+                options=options,
+                capabilities=configuration.capabilities,
+                integration_version=configuration.integration_version,
+            )
+        )
+
+    def _prompt_cache_key(self, **model_identity: str) -> str:
+        settings = self.store.app_settings()
+        personality = self.store.personality() or {}
+        identity = {
+            **model_identity,
+            "locale": settings.prompt_locale,
+            "assistant_name": settings.assistant_name,
+            "base_instructions": settings.base_instructions,
+            "owner_details": settings.owner_details,
+            "personality_hash": personality.get("source_hash"),
+            "tool_schema": "langgraph-v1",
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return f"diskovod:{digest}"
 
     def _credentials(self, configuration: ModelConfiguration) -> ProviderCredentials:
         if configuration.provider_id == "chatgpt_subscription":

@@ -149,7 +149,13 @@ class StoredChatGPTTokenProvider:
 
 
 def _model_options(options: dict[str, object]) -> dict[str, object]:
-    allowed = {"reasoning_effort", "max_completion_tokens", "timeout", "temperature"}
+    allowed = {
+        "reasoning_effort",
+        "max_completion_tokens",
+        "timeout",
+        "temperature",
+        "prompt_cache_key",
+    }
     unknown = set(options) - allowed
     if unknown:
         names = ", ".join(sorted(unknown))

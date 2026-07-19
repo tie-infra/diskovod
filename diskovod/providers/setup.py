@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
 from diskovod.store import Store
+from diskovod.localization import tool_text
 
 from .base import ModelConfiguration, ProviderCapabilities, ProviderCredentials
 from .service import ModelService
@@ -59,14 +60,16 @@ class ProviderSetup:
         configuration: ModelConfiguration,
         credentials: ProviderCredentials,
     ) -> CapabilityProbe:
-        @tool
+        text = tool_text(self.store.app_settings().prompt_locale)
+
+        @tool("diskovod_setup_probe", description=text["connection_test_tool"])
         def diskovod_setup_probe(value: str) -> str:
-            """Return the supplied setup probe value."""
             return value
 
         model = self.models.build_configuration(configuration, credentials)
+        prompt = f"{text['connection_test_system']} {text['connection_test_tool']} value=ready."
         request = {
-            "messages": [{"role": "user", "content": "Call diskovod_setup_probe with value ready."}],
+            "messages": [{"role": "user", "content": prompt}],
             "tool_choice": "required",
             "tools": ["diskovod_setup_probe"],
         }
@@ -77,7 +80,7 @@ class ProviderSetup:
             response = await model.bind_tools(
                 [diskovod_setup_probe],
                 tool_choice="required",
-            ).ainvoke([HumanMessage("Call diskovod_setup_probe with value ready.")])
+            ).ainvoke([HumanMessage(prompt)])
             response_payload = self._message_payload(response)
             supported = bool(
                 isinstance(response, AIMessage)
@@ -109,17 +112,17 @@ class ProviderSetup:
         credentials: ProviderCredentials,
     ) -> CapabilityProbe:
         model = self.models.build_configuration(configuration, credentials)
+        text = tool_text(self.store.app_settings().prompt_locale)
+        prompt = f"{text['web_test_system']} {text['web_test_input']}"
         request = {
-            "messages": [{"role": "user", "content": "Search the web for the Python project home page."}],
+            "messages": [{"role": "user", "content": prompt}],
             "tools": [{"type": "web_search"}],
         }
         started = time.time()
         probe_id = str(uuid.uuid4())
         response_payload: dict[str, Any] | None = None
         try:
-            response = await model.bind_tools([{"type": "web_search"}]).ainvoke(
-                [HumanMessage("Search the web for the Python project home page.")]
-            )
+            response = await model.bind_tools([{"type": "web_search"}]).ainvoke([HumanMessage(prompt)])
             response_payload = self._message_payload(response)
             blocks = getattr(response, "content_blocks", [])
             block_types = {str(block.get("type")) for block in blocks if isinstance(block, dict)}

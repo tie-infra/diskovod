@@ -233,6 +233,10 @@ class WebApp:
                     "conversations": self._conversation_views(),
                     "agent_runs": self._agent_run_views() if active_tab == "usage" else [],
                     "capability_probes": self._capability_probe_views() if active_tab == "usage" else [],
+                    "checkpoint_threads": (
+                        await self.runtime.checkpoint_views() if active_tab == "usage" else []
+                    ),
+                    "runtime_records": (self._runtime_record_views() if active_tab == "usage" else {}),
                     "database": self._database_view(db_table, db_page, db_query),
                     "message": request.query_params.get("message"),
                     "error": request.query_params.get("error"),
@@ -272,12 +276,16 @@ class WebApp:
                 await self.account.finish_oauth(code=code, state=state, error=error)
             except Exception as exc:
                 return self._back(error=str(exc))
-            settings = self.store.app_settings()
-            self.models.save_subscription(
-                model_id=settings.model,
-                reasoning_effort=settings.reasoning_effort,
-                max_output_tokens=settings.max_reply_tokens,
-            )
+            selected = self._model_view()
+            try:
+                await self._save_provider_selection(
+                    "chatgpt",
+                    model=selected["model"],
+                    reasoning_effort=selected["reasoning_effort"],
+                    max_output_tokens=selected["max_output_tokens"],
+                )
+            except RuntimeError as exc:
+                return self._back(error=str(exc))
             return self._back(message=self._t("chatgpt_connected"))
 
         @self.app.post("/chatgpt/disconnect")
@@ -360,13 +368,16 @@ class WebApp:
             self.store.set_custom_provider(saved_provider)
             if draft_token:
                 self.provider_drafts.pop(draft_token, None)
-            settings = self.store.app_settings()
-            self.models.save_custom_openai(
-                saved_provider,
-                model_id=settings.model,
-                reasoning_effort=settings.reasoning_effort,
-                max_output_tokens=settings.max_reply_tokens,
-            )
+            selected = self._model_view()
+            try:
+                await self._save_provider_selection(
+                    "custom",
+                    model=selected["model"],
+                    reasoning_effort=selected["reasoning_effort"],
+                    max_output_tokens=selected["max_output_tokens"],
+                )
+            except RuntimeError as exc:
+                return self._back(error=str(exc))
             return self._back(message=self._t("provider_saved", name=name))
 
         @self.app.post("/provider/custom/detect")
@@ -493,7 +504,7 @@ class WebApp:
             ):
                 return self._back(error=self._t("detect_native_calls_before_select"))
             selected = self._model_view()
-            self._save_provider_selection(
+            await self._save_provider_selection(
                 provider,
                 model=selected["model"],
                 reasoning_effort=selected["reasoning_effort"],
@@ -624,7 +635,7 @@ class WebApp:
                 base_instructions=base_instructions,
             )
             self.store.set_app_settings(value)
-            self._save_provider_selection(
+            await self._save_provider_selection(
                 provider,
                 model=model,
                 reasoning_effort=reasoning_effort,
@@ -648,6 +659,7 @@ class WebApp:
                 )
             value = assistant_settings_defaults(current)
             self.store.set_app_settings(value)
+            self.models.refresh_prompt_cache_identity()
             return self._back(
                 tab="assistant",
                 message=ui_text(value.admin_locale, "assistant_settings_reset"),
@@ -681,6 +693,7 @@ class WebApp:
                 return self._back(tab="assistant", error=self._t("personality_too_short"))
             source_hash = hashlib.sha256(("edited\n" + profile).encode()).hexdigest()
             self.store.set_personality(profile, source_hash, source="edited")
+            self.models.refresh_prompt_cache_identity()
             return self._back(tab="assistant", message=self._t("personality_updated"))
 
         @self.app.post("/conversations/{channel_id}/pause")
@@ -691,7 +704,9 @@ class WebApp:
         @self.app.post("/conversations/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
             self.runtime.cancel(channel_id)
-            self.store.resolve_escalation_on_owner_reply(channel_id)
+            escalation = self.store.active_interrupt_for_channel(channel_id)
+            if escalation is not None:
+                await self.runtime.resume_escalation(str(escalation["id"]), action="resolved")
             self.store.set_permanent_pause(channel_id, False)
             self.store.clear_snooze(channel_id)
             return self._back(tab="conversations", message=self._t("conversation_resumed"))
@@ -812,6 +827,39 @@ class WebApp:
                 message=self._t("database_row_deleted", row=repr(row_key), table=table),
             )
 
+        @self.app.post("/diagnostics/replay")
+        async def diagnostics_replay(
+            thread_id: str = Form(...),
+            checkpoint_id: str = Form(...),
+            confirm: str = Form(""),
+            _: str = Depends(auth),
+        ):
+            if confirm != "emulate":
+                return self._back(tab="usage", error=self._t("replay_confirmation_required"))
+            try:
+                run_id = await self.runtime.replay_checkpoint(thread_id, checkpoint_id)
+            except (RuntimeError, ValueError) as error:
+                return self._back(tab="usage", error=str(error))
+            return self._back(tab="usage", message=self._t("replay_completed", id=run_id))
+
+        @self.app.post("/memories/delete")
+        async def memory_delete(
+            namespace: str = Form(...),
+            key: str = Form(...),
+            confirm: str = Form(""),
+            _: str = Depends(auth),
+        ):
+            if confirm != "delete":
+                return self._back(tab="usage", error=self._t("delete_confirmation_required"))
+            try:
+                labels = tuple(json.loads(namespace))
+                if not labels or not all(isinstance(label, str) for label in labels):
+                    raise ValueError
+                self.runtime.memory.delete(labels, key)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return self._back(tab="usage", error=self._t("memory_identity_invalid"))
+            return self._back(tab="usage", message=self._t("memory_deleted"))
+
     def _conversation_views(self) -> list[dict]:
         now = time.time()
         result = self.store.conversations()
@@ -869,6 +917,25 @@ class WebApp:
                 value = json.loads(item[field]) if item[field] else None
                 item[f"{field}_json"] = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
             result.append(item)
+        return result
+
+    def _runtime_record_views(self) -> dict[str, list[dict[str, Any]]]:
+        queries = {
+            "memories": "SELECT namespace, key, value, updated_at FROM langgraph_store_items ORDER BY updated_at DESC LIMIT 100",
+            "attachments": "SELECT r.channel_id, r.message_id, r.filename, r.object_sha256, o.size, o.media_type, r.created_at FROM attachment_references r JOIN attachment_objects o ON o.sha256=r.object_sha256 ORDER BY r.created_at DESC LIMIT 100",
+            "deliveries": "SELECT run_id, tool_call_id, action, state, request, result, claimed_at, completed_at FROM side_effect_deliveries ORDER BY claimed_at DESC LIMIT 100",
+            "events": "SELECT e.id, e.channel_id, e.sequence, e.kind, e.payload, e.observed_at, q.disposition, q.logical_request_id, q.injection_batch FROM discord_events e LEFT JOIN chat_event_queue q ON q.event_id=e.id ORDER BY e.observed_at DESC LIMIT 100",
+        }
+        result: dict[str, list[dict[str, Any]]] = {}
+        with self.store._lock:
+            for name, query in queries.items():
+                rows = self.store._db.execute(query).fetchall()
+                values = []
+                for row in rows:
+                    item = dict(row)
+                    item["json"] = json.dumps(item, ensure_ascii=False, indent=2, default=str)
+                    values.append(item)
+                result[name] = values
         return result
 
     def _subscription_web_search_probe_view(self, model: str) -> dict[str, Any] | None:
@@ -980,7 +1047,7 @@ class WebApp:
         )
         return data
 
-    def _save_provider_selection(
+    async def _save_provider_selection(
         self,
         provider: str,
         *,
@@ -988,12 +1055,20 @@ class WebApp:
         reasoning_effort: str,
         max_output_tokens: int,
     ) -> None:
+        previous = self.models.configuration
+        target_transport = "responses"
+        if provider == "custom" and (custom := self.store.custom_provider()) is not None:
+            target_transport = custom.protocol
+        target_provider = "custom_openai" if provider == "custom" else "chatgpt_subscription"
+        if previous and self.runtime._affinity(previous) != (target_provider, model, target_transport):
+            self.runtime.ensure_configuration_transition_allowed()
         if provider == "chatgpt":
             self.models.save_subscription(
                 model_id=model,
                 reasoning_effort=reasoning_effort,
                 max_output_tokens=max_output_tokens,
             )
+            await self.runtime.apply_configuration_transition(previous)
             return
         custom = self.store.custom_provider()
         if provider != "custom" or custom is None:
@@ -1004,6 +1079,7 @@ class WebApp:
             reasoning_effort=reasoning_effort,
             max_output_tokens=max_output_tokens,
         )
+        await self.runtime.apply_configuration_transition(previous)
 
     def _model_view(self) -> dict[str, Any]:
         configuration = self.models.configuration
@@ -1041,6 +1117,7 @@ class WebApp:
         except Exception as exc:
             return self._back(tab="assistant", error=str(exc))
         self.store.set_personality(profile, source_hash, source=source)
+        self.models.refresh_prompt_cache_identity()
         return self._back(tab="assistant", message=self._t("personality_inferred"))
 
     def _url(self, path: str) -> str:

@@ -250,11 +250,20 @@ def build_agent(
     extra_middleware: Sequence[AgentMiddleware] = (),
     attachments: AttachmentRepository | None = None,
     diagnostics: Callable[[str, str, dict[str, Any]], None] | None = None,
+    hosted_web_search: bool = False,
 ):
     """Build Diskovod's provider-neutral LangChain agent loop."""
+    tools: list[Any] = localized_agent_tools(
+        prompt.locale,
+        gateway,
+        attachments,
+        include_web_search=not hosted_web_search,
+    )
+    if hosted_web_search:
+        tools.append({"type": "web_search"})
     return create_agent(
         model=model,
-        tools=localized_agent_tools(prompt.locale, gateway, attachments),
+        tools=tools,
         system_prompt=prompt.stable_prefix(),
         middleware=(
             *extra_middleware,

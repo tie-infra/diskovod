@@ -29,6 +29,8 @@ def localized_agent_tools(
     locale: str,
     gateway: AgentActionGateway,
     attachments: AttachmentRepository | None = None,
+    *,
+    include_web_search: bool = True,
 ) -> list[BaseTool]:
     text = tool_text(locale)
     invalid = lambda _: text["invalid_arguments"]  # noqa: E731
@@ -222,7 +224,7 @@ def localized_agent_tools(
             "deliveries": [item.to_dict() for item in deliveries],
         }
 
-    return [
+    tools = [
         StructuredTool.from_function(
             coroutine=get_current_datetime,
             name="get_current_datetime",
@@ -290,3 +292,6 @@ def localized_agent_tools(
             handle_validation_error=invalid,
         ),
     ]
+    if not include_web_search:
+        tools = [tool for tool in tools if tool.name != "web_search"]
+    return tools

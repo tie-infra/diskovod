@@ -123,6 +123,33 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
                 "response_payload_json": '{"tool_calls":["probe"]}',
             }
         ],
+        checkpoint_threads=[
+            {
+                "channel_id": "dm-1",
+                "generation": 2,
+                "thread_id": "discord:owner:dm-1:g2",
+                "checkpoints": [
+                    {
+                        "checkpoint_id": "checkpoint-1",
+                        "created_at": "2026-07-19T12:00:00Z",
+                        "message_count": 4,
+                        "step": 2,
+                    }
+                ],
+            }
+        ],
+        runtime_records={
+            "memories": [
+                {
+                    "namespace": '["chat","owner","dm-1","memory"]',
+                    "key": "preference",
+                    "json": '{"fact":"prefers tea"}',
+                }
+            ],
+            "attachments": [],
+            "deliveries": [],
+            "events": [],
+        },
         database={
             "name": "messages",
             "label": "Messages",
@@ -253,6 +280,10 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "model_request" in rendered
     assert "Provider capability probes" in rendered
     assert "client_tool_call_verified" in rendered
+    assert "Checkpoint history" in rendered_by_tab["usage"]
+    assert 'action="/diagnostics/replay"' in rendered_by_tab["usage"]
+    assert 'action="/memories/delete"' in rendered_by_tab["usage"]
+    assert "Discord event and injection audit" in rendered_by_tab["usage"]
     assert "Database explorer" in rendered
     assert 'action="/database/delete"' in rendered
     assert 'name="row_key"' in rendered

@@ -97,6 +97,87 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp
 
 
 @pytest.mark.asyncio
+async def test_historical_replay_uses_emulated_discord_actions(tmp_path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store.set_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
+    store.upsert_conversation("channel", "peer", "Peer")
+    transport = RecordingTransport()
+    model = ScriptedChatModel(responses=[AIMessage(content="Initial turn")])
+    service = AgentService(store, FakeModels(model), transport, "x" * 32)
+    await service.start()
+    service.submit_message(
+        message_id="discord-replay",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="Replay me",
+        attachments=[],
+        observed_at=time.time(),
+    )
+    await wait_for_idle(service)
+    checkpoint = (await service.checkpoint_views())[0]["checkpoints"][0]
+    model.responses.append(
+        tool_call(
+            "send_messages",
+            {"messages": ["This must be emulated"], "continue_after_sending": False},
+            "replay-send",
+        )
+    )
+
+    replay_id = await service.replay_checkpoint("discord:owner:channel:g1", checkpoint["checkpoint_id"])
+
+    assert transport.messages == []
+    trace = store._db.execute(
+        "SELECT payload FROM agent_trace_events WHERE run_id=? AND kind='emulated_actions'",
+        (replay_id,),
+    ).fetchone()
+    assert "This must be emulated" in trace["payload"]
+    await service.close()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_model_change_rolls_checkpoint_to_portable_summary(tmp_path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store.set_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
+    store.upsert_conversation("channel", "peer", "Peer")
+    model = ScriptedChatModel(responses=[AIMessage(content="Initial answer")])
+    models = FakeModels(model)
+    service = AgentService(store, models, RecordingTransport(), "x" * 32)
+    await service.start()
+    service.submit_message(
+        message_id="discord-rollover",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="Keep this context",
+        attachments=[],
+        observed_at=time.time(),
+    )
+    await wait_for_idle(service)
+    previous = models.configuration
+    models.configuration = replace(previous, provider_id="other", model_id="other-model")
+    model.responses.append(AIMessage(content="Portable summary of the prior conversation"))
+
+    assert await service.apply_configuration_transition(previous) == 1
+
+    thread = store._db.execute(
+        "SELECT generation, thread_id FROM chat_threads WHERE channel_id='channel'"
+    ).fetchone()
+    assert dict(thread) == {"generation": 2, "thread_id": "discord:owner:channel:g2"}
+    snapshot = await service.checkpointer.aget_tuple({"configurable": {"thread_id": thread["thread_id"]}})
+    summary = snapshot.checkpoint["channel_values"]["messages"][0]
+    assert summary.content == "Portable summary of the prior conversation"
+    assert summary.additional_kwargs["diskovod_generation_summary"]["source_thread_id"].endswith(":g1")
+    await service.close()
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_agent_service_allows_a_zero_message_turn(tmp_path):
     store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
     store.set_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))

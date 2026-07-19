@@ -73,3 +73,56 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
     assert len(list((tmp_path / "backups").glob("*.sqlite3"))) == 1
     await runtime.close()
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_cutover_converts_active_legacy_escalation_to_real_interrupt(tmp_path: Path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store.upsert_conversation("channel", "peer", "Peer")
+    store.save_message(
+        id="trigger",
+        channel_id="channel",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="Please get the owner",
+        timestamp=time.time(),
+    )
+    with store._db:
+        store._db.executescript(
+            """
+            CREATE TABLE conversation_escalations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL,
+              trigger_message_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL,
+              reason TEXT NOT NULL, requested_at REAL NOT NULL,
+              acknowledged_at REAL, resolved_at REAL, delivery_error TEXT
+            );
+            """
+        )
+        store._db.execute(
+            "INSERT INTO conversation_escalations(channel_id, trigger_message_id, state, reason, requested_at, acknowledged_at) VALUES('channel', 'trigger', 'claimed', 'peer_requested_owner', ?, ?)",
+            (time.time(), time.time()),
+        )
+    runtime = AgentService(
+        store,
+        FakeModels(ScriptedChatModel(responses=[])),
+        RecordingTransport(),
+        "x" * 32,
+    )
+    await runtime.start()
+
+    report = await LegacyMigrator(store, runtime).run()
+
+    assert report.archived_records == 1
+    interrupt = store.active_interrupts()[0]
+    assert interrupt["state"] == "claimed"
+    assert interrupt["payload"]["trigger_message_id"] == "trigger"
+    assert (
+        store._db.execute("SELECT status FROM agent_runs WHERE id='migration-escalation-run:1'").fetchone()[
+            "status"
+        ]
+        == "interrupted"
+    )
+    await runtime.close()
+    store.close()

@@ -8,22 +8,53 @@ import uuid
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
-from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
+from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage, SystemMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
 from .agent import AgentPrompt, build_agent
-from .agent_types import AgentRuntimeContext, CapabilityProfile
+from .agent_types import AgentRuntimeContext, CapabilityProfile, DiskovodAgentState
 from .attachments import AttachmentRepository
+from .agent_actions import DeliveryRecord
 from .durable_actions import DiscordActionTransport, DurableActionGateway, SideEffectLedger
 from .events import DiscordEventQueue, QueuedDiscordEvent
-from .localization import assistant_name_for, runtime_context_text
+from .localization import assistant_name_for, runtime_context_text, summarization_prompt
 from .persistence import SQLiteLangGraphStore, open_checkpointer
 from .providers import ModelService
 from .steering import LiveConversationMiddleware
 from .store import Store
 
 log = logging.getLogger(__name__)
+ROLLOVER_MESSAGE_LIMIT = 400
+
+
+class EmulatedActionGateway:
+    """Capture replay actions without contacting Discord or changing durable action state."""
+
+    def __init__(self):
+        self.actions: list[dict[str, Any]] = []
+
+    async def send_messages(self, context, messages, *, tool_call_id):
+        records = [
+            DeliveryRecord("accepted", index, f"emulated:{tool_call_id}:{index}")
+            for index, _ in enumerate(messages)
+        ]
+        self.actions.append(
+            {"action": "send_messages", "messages": list(messages), "tool_call_id": tool_call_id}
+        )
+        return records
+
+    async def react_to_message(self, context, emoji, *, tool_call_id):
+        del context
+        self.actions.append({"action": "react_to_message", "emoji": emoji, "tool_call_id": tool_call_id})
+        return DeliveryRecord("accepted", 0, f"emulated:{tool_call_id}:reaction")
+
+    async def record_escalation(self, context, payload, *, tool_call_id):
+        del context
+        self.actions.append({"action": "escalate_to_owner", "payload": payload, "tool_call_id": tool_call_id})
 
 
 class AgentService:
@@ -192,6 +223,221 @@ class AgentService:
         account_id = self._account_id(channel_id)
         self.events.set_live_steering(account_id, channel_id, enabled)
 
+    async def checkpoint_views(self, *, limit_per_thread: int = 20) -> list[dict[str, Any]]:
+        if self.checkpointer is None:
+            return []
+        with self.store._lock:
+            rows = self.store._db.execute("SELECT * FROM chat_threads ORDER BY updated_at DESC").fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            thread = dict(row)
+            history = []
+            async for item in self.checkpointer.alist(
+                {"configurable": {"thread_id": thread["thread_id"]}},
+                limit=limit_per_thread,
+            ):
+                values = item.checkpoint.get("channel_values", {})
+                history.append(
+                    {
+                        "checkpoint_id": str(item.config["configurable"]["checkpoint_id"]),
+                        "created_at": str(item.checkpoint.get("ts") or ""),
+                        "step": item.metadata.get("step"),
+                        "source": item.metadata.get("source"),
+                        "message_count": len(values.get("messages", [])),
+                    }
+                )
+            thread["checkpoints"] = history
+            result.append(thread)
+        return result
+
+    async def replay_checkpoint(self, thread_id: str, checkpoint_id: str) -> str:
+        """Replay a historical state with isolated memory and emulated Discord actions."""
+        if self.checkpointer is None or not self.models.ready:
+            raise RuntimeError("The agent runtime is not ready")
+        snapshot = await self.checkpointer.aget_tuple(
+            {"configurable": {"thread_id": thread_id, "checkpoint_id": checkpoint_id}}
+        )
+        if snapshot is None:
+            raise ValueError("Unknown checkpoint")
+        with self.store._lock:
+            thread = self.store._db.execute(
+                "SELECT * FROM chat_threads WHERE thread_id=?", (thread_id,)
+            ).fetchone()
+        if thread is None:
+            raise ValueError("Unknown checkpoint thread")
+        channel_id = str(thread["channel_id"])
+        configuration = self.models.configuration
+        assert configuration is not None
+        settings = self.store.app_settings()
+        conversation = self.store.conversation(channel_id)
+        replay_id = str(uuid.uuid4())
+        trace_id = f"replay:{replay_id}"
+        context = AgentRuntimeContext(
+            account_id=str(thread["account_id"]),
+            channel_id=channel_id,
+            participant_ids=(str(conversation["peer_id"]),) if conversation else (),
+            owner_id=str(thread["account_id"]),
+            ui_locale=settings.admin_locale,
+            prompt_locale=settings.prompt_locale,
+            assistant_name=assistant_name_for(settings.prompt_locale, settings.assistant_name),
+            automation_mode=str(conversation["mode"] if conversation else "automatic"),
+            force_reply=False,
+            provider_id=configuration.provider_id,
+            model_id=configuration.model_id,
+            transport_profile=configuration.transport_profile,
+            capabilities=self._capabilities(configuration),
+            trace_id=trace_id,
+            thread_id=f"replay:{thread_id}:{checkpoint_id}",
+            owner_timezone=settings.owner_timezone,
+            trigger_message_id="historical-replay",
+            permissions=frozenset({"send_messages", "reactions", "owner_escalation"}),
+        )
+        personality = self.store.personality() or {}
+        gateway = EmulatedActionGateway()
+        agent = build_agent(
+            self.models.build_model(),
+            gateway,
+            AgentPrompt(
+                settings.prompt_locale,
+                context.assistant_name,
+                settings.base_instructions,
+                str(personality.get("profile") or ""),
+                settings.owner_details,
+            ),
+            checkpointer=InMemorySaver(),
+            store=InMemoryStore(),
+            attachments=self.attachments,
+            diagnostics=self._buffer_trace,
+            hosted_web_search=context.capabilities.hosted_web_search,
+        )
+        self.store.start_agent_run(
+            run_id=replay_id,
+            thread_id=context.thread_id,
+            channel_id=channel_id,
+            trace_id=trace_id,
+        )
+        self.store.record_agent_trace(
+            replay_id,
+            "historical_replay",
+            {"source_thread_id": thread_id, "source_checkpoint_id": checkpoint_id},
+        )
+        try:
+            await agent.ainvoke(
+                {"messages": snapshot.checkpoint.get("channel_values", {}).get("messages", [])},
+                config={"configurable": {"thread_id": context.thread_id}, "recursion_limit": 40},
+                context=context,
+            )
+        except Exception as error:
+            self._flush_trace(trace_id, replay_id)
+            self.store.record_agent_trace(replay_id, "emulated_actions", {"actions": gateway.actions})
+            self.store.finish_agent_run(replay_id, "failed", f"{type(error).__name__}: {error}")
+            raise
+        self._flush_trace(trace_id, replay_id)
+        self.store.record_agent_trace(replay_id, "emulated_actions", {"actions": gateway.actions})
+        self.store.finish_agent_run(replay_id, "completed")
+        return replay_id
+
+    async def apply_configuration_transition(self, previous) -> int:
+        """Roll provider-affine checkpoint histories at a completed-turn boundary."""
+        current = self.models.configuration
+        if previous is None or current is None or self._affinity(previous) == self._affinity(current):
+            return 0
+        if any(not task.done() for task in self.tasks.values()):
+            raise RuntimeError("Model configuration cannot change while an agent run is active")
+        if self.store.active_interrupts():
+            raise RuntimeError("Resolve active owner escalations before changing the model")
+        with self.store._lock:
+            threads = [dict(row) for row in self.store._db.execute("SELECT * FROM chat_threads")]
+        rolled = 0
+        for thread in threads:
+            if await self._roll_thread(thread, reason="model_configuration_changed"):
+                rolled += 1
+        return rolled
+
+    def ensure_configuration_transition_allowed(self) -> None:
+        if any(not task.done() for task in self.tasks.values()):
+            raise RuntimeError("Model configuration cannot change while an agent run is active")
+        if self.store.active_interrupts():
+            raise RuntimeError("Resolve active owner escalations before changing the model")
+
+    async def _roll_if_needed(self, channel_id: str, thread_id: str) -> None:
+        if self.checkpointer is None:
+            return
+        snapshot = await self.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+        messages = snapshot.checkpoint.get("channel_values", {}).get("messages", []) if snapshot else []
+        if len(messages) <= ROLLOVER_MESSAGE_LIMIT:
+            return
+        with self.store._lock:
+            row = self.store._db.execute(
+                "SELECT * FROM chat_threads WHERE channel_id=?", (channel_id,)
+            ).fetchone()
+        if row:
+            await self._roll_thread(dict(row), reason="completed_turn_retention")
+
+    async def _roll_thread(self, thread: dict[str, Any], *, reason: str) -> bool:
+        if self.checkpointer is None:
+            return False
+        thread_id = str(thread["thread_id"])
+        snapshot = await self.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+        if snapshot is None:
+            return False
+        messages = snapshot.checkpoint.get("channel_values", {}).get("messages", [])
+        if not messages:
+            return False
+        locale = self.store.app_settings().prompt_locale
+        rendered = "\n".join(
+            f"[{getattr(message, 'type', 'message')} {getattr(message, 'id', '')}] {message.text}"
+            for message in messages
+        )[-100_000:]
+        try:
+            response = await self.models.build_model().ainvoke(
+                [SystemMessage(summarization_prompt(locale)), HumanMessage(rendered)]
+            )
+            summary = response.text.strip()
+        except Exception as error:
+            log.warning("Could not summarize checkpoint generation %s: %s", thread_id, error)
+            summary = ""
+        if not summary:
+            summary = runtime_context_text(locale)["rollover_summary"].format(count=len(messages))
+        new_thread_id = self.events.roll_generation(str(thread["account_id"]), str(thread["channel_id"]))
+
+        async def seed(state: DiskovodAgentState) -> dict[str, Any]:
+            del state
+            return {}
+
+        builder = StateGraph(DiskovodAgentState)
+        builder.add_node("seed", seed)
+        builder.add_edge(START, "seed")
+        builder.add_edge("seed", END)
+        graph = builder.compile(checkpointer=self.checkpointer, store=self.memory)
+        await graph.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(
+                        summary,
+                        id=f"rollover:{thread_id}",
+                        additional_kwargs={
+                            "diskovod_generation_summary": {
+                                "source_thread_id": thread_id,
+                                "reason": reason,
+                                "message_count": len(messages),
+                            }
+                        },
+                    )
+                ]
+            },
+            config={"configurable": {"thread_id": new_thread_id}},
+        )
+        return True
+
+    @staticmethod
+    def _affinity(configuration) -> tuple[str, str, str]:
+        return (
+            configuration.provider_id,
+            configuration.model_id,
+            configuration.transport_profile,
+        )
+
     async def claim_escalation(self, escalation_id: str) -> bool:
         return self.store.set_interrupt_state(escalation_id, "claimed")
 
@@ -260,6 +506,7 @@ class AgentService:
             extra_middleware=(LiveConversationMiddleware(self.events, settings.prompt_locale),),
             attachments=self.attachments,
             diagnostics=self._buffer_trace,
+            hosted_web_search=context.capabilities.hosted_web_search,
         )
         resume_payload = {
             "action": action,
@@ -267,11 +514,21 @@ class AgentService:
             "resolved_at": time.time(),
         }
         self.store.record_agent_trace(str(run["id"]), "interrupt_resume", resume_payload)
-        result = await agent.ainvoke(
-            Command(resume=resume_payload),
-            config={"configurable": {"thread_id": thread_id}, "recursion_limit": 40},
-            context=context,
-        )
+        try:
+            result = await agent.ainvoke(
+                Command(resume=resume_payload),
+                config={"configurable": {"thread_id": thread_id}, "recursion_limit": 40},
+                context=context,
+            )
+        except Exception as error:
+            self._flush_trace(trace_id, str(run["id"]))
+            self.store.record_agent_trace(
+                str(run["id"]),
+                "interrupt_resume_error",
+                {"type": type(error).__name__, "detail": str(error)[:4000]},
+            )
+            self.store.finish_agent_run(str(run["id"]), "failed", f"{type(error).__name__}: {error}")
+            raise
         self._flush_trace(trace_id, str(run["id"]))
         state = "dismissed" if action == "dismissed" else "resolved"
         self.store.set_interrupt_state(escalation_id, state)
@@ -382,6 +639,7 @@ class AgentService:
             extra_middleware=(LiveConversationMiddleware(self.events, settings.prompt_locale),),
             attachments=self.attachments,
             diagnostics=self._buffer_trace,
+            hosted_web_search=context.capabilities.hosted_web_search,
         )
         initial_messages = [message for event in claimed if (message := self._message(event)) is not None]
         state = {
@@ -435,6 +693,11 @@ class AgentService:
                 "successful_written_sends": result.get("successful_written_sends", 0),
             },
         )
+        if not interrupted:
+            try:
+                await self._roll_if_needed(channel_id, thread_id)
+            except Exception as error:
+                log.warning("Could not apply completed-turn retention for %s: %s", channel_id, error)
 
     def _message(self, event: QueuedDiscordEvent) -> BaseMessage | None:
         if event.kind == "force_reply":

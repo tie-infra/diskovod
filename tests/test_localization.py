@@ -1,7 +1,10 @@
 import copy
 import json
 import re
+from collections import Counter
 from pathlib import Path
+from string import Formatter
+from typing import Any, cast
 
 import pytest
 
@@ -15,7 +18,7 @@ from diskovod.localization import (
     TOOL_TEXT,
     TOOL_POLICIES,
     UI_TEXT,
-    _validate_catalog,
+    PromptBundle,
     assistant_identity,
     assistant_name_for,
     prompts_for,
@@ -23,6 +26,115 @@ from diskovod.localization import (
     ui_text,
 )
 from diskovod.web import localized_base_instructions, personality_source_hash
+
+
+CATALOG_PATH = Path(__file__).parents[1] / "diskovod" / "localization.json"
+TOP_LEVEL_FIELDS = {"schema_version", "default_locale", "locales"}
+LOCALE_FIELDS = {
+    "display_name",
+    "assistant_name",
+    "assistant_identity",
+    "escalation_fallback",
+    "tool_policy",
+    "tool_text",
+    "inline_tool_text",
+    "summarization_prompt",
+    "runtime_context",
+    "ui",
+    "prompts",
+}
+SIMPLE_STRING_FIELDS = {
+    "display_name",
+    "assistant_name",
+    "assistant_identity",
+    "escalation_fallback",
+    "tool_policy",
+    "summarization_prompt",
+}
+STRING_MAP_FIELDS = {"tool_text", "inline_tool_text", "runtime_context", "ui", "prompts"}
+PROMPT_FIELDS = set(PromptBundle.__dataclass_fields__)
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    keys = [key for key, _ in pairs]
+    assert len(keys) == len(set(keys)), f"duplicate JSON properties: {keys}"
+    return dict(pairs)
+
+
+def _read_catalog() -> dict[str, Any]:
+    value = json.loads(CATALOG_PATH.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+    assert isinstance(value, dict)
+    return cast(dict[str, Any], value)
+
+
+def _mapping(value: object, path: str) -> dict[str, Any]:
+    assert isinstance(value, dict), f"{path} must be an object"
+    assert all(isinstance(key, str) for key in value), f"{path} has a non-string key"
+    return cast(dict[str, Any], value)
+
+
+def _nonempty_string(value: object, path: str) -> str:
+    assert isinstance(value, str) and value, f"{path} must be a non-empty string"
+    return value
+
+
+def _format_fields(value: str) -> Counter[str]:
+    return Counter(name for _, name, _, _ in Formatter().parse(value) if name is not None)
+
+
+def _validate_localized_value(reference: object, value: object, path: str) -> None:
+    if isinstance(reference, str):
+        localized = _nonempty_string(value, path)
+        assert _format_fields(localized) == _format_fields(reference), f"{path} format fields differ"
+        return
+
+    assert isinstance(reference, list), f"{path} default value must be a string or array"
+    assert isinstance(value, list), f"{path} must be an array"
+    assert len(value) == len(reference), f"{path} array length differs"
+    for index, (reference_item, localized_item) in enumerate(zip(reference, value, strict=True)):
+        assert isinstance(reference_item, str), f"{path}[{index}] default value must be a string"
+        _validate_localized_value(reference_item, localized_item, f"{path}[{index}]")
+
+
+def _validate_record(
+    reference: dict[str, Any],
+    value: object,
+    path: str,
+    *,
+    required_fields: set[str] | None = None,
+) -> None:
+    localized = _mapping(value, path)
+    expected_keys = required_fields if required_fields is not None else set(reference)
+    assert set(reference) == expected_keys, f"default {path} keys differ from the schema"
+    assert set(localized) == expected_keys, f"{path} keys differ from the default locale"
+    for key, reference_value in reference.items():
+        _validate_localized_value(reference_value, localized[key], f"{path}.{key}")
+
+
+def _validate_catalog(catalog: dict[str, Any]) -> None:
+    assert set(catalog) == TOP_LEVEL_FIELDS
+    assert catalog["schema_version"] == 1
+    default_locale = _nonempty_string(catalog["default_locale"], "default_locale")
+    locales = _mapping(catalog["locales"], "locales")
+    assert locales
+    assert default_locale in locales
+
+    locale_records = {locale: _mapping(value, f"locales.{locale}") for locale, value in locales.items()}
+    for locale, record in locale_records.items():
+        assert set(record) == LOCALE_FIELDS, f"locales.{locale} keys differ from the schema"
+
+    reference = locale_records[default_locale]
+    for locale, record in locale_records.items():
+        for field in SIMPLE_STRING_FIELDS:
+            _validate_localized_value(reference[field], record[field], f"locales.{locale}.{field}")
+        for field in STRING_MAP_FIELDS:
+            required_fields = PROMPT_FIELDS if field == "prompts" else None
+            _validate_record(
+                _mapping(reference[field], f"locales.{default_locale}.{field}"),
+                record[field],
+                f"locales.{locale}.{field}",
+                required_fields=required_fields,
+            )
 
 
 def test_every_supported_locale_has_a_complete_prompt_bundle():
@@ -129,8 +241,7 @@ def test_every_literal_admin_template_key_exists_in_the_catalog():
 
 
 def test_strings_live_in_the_machine_editable_json_catalog():
-    catalog_path = Path(__file__).parents[1] / "diskovod" / "localization.json"
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog = _read_catalog()
     source = (Path(__file__).parents[1] / "diskovod" / "localization.py").read_text()
 
     assert catalog["schema_version"] == 1
@@ -145,13 +256,15 @@ def test_strings_live_in_the_machine_editable_json_catalog():
     assert not (Path(__file__).parents[1] / "diskovod" / "ui_localization.py").exists()
 
 
+def test_catalog_is_structurally_complete():
+    _validate_catalog(_read_catalog())
+
+
 def test_catalog_validation_rejects_placeholder_drift():
-    catalog_path = Path(__file__).parents[1] / "diskovod" / "localization.json"
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    broken = copy.deepcopy(catalog)
+    broken = copy.deepcopy(_read_catalog())
     broken["locales"]["fr"]["assistant_identity"] = "Je suis un assistant sans nom."
 
-    with pytest.raises(ValueError, match="format fields"):
+    with pytest.raises(AssertionError, match="format fields"):
         _validate_catalog(broken)
 
 

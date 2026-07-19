@@ -23,6 +23,17 @@ RESPONSES = "responses"
 CHAT_COMPLETIONS = "chat_completions"
 
 
+class _DiskovodChatOpenAICodex(_ChatOpenAICodex):
+    """Apply Codex backend wire constraints missing from LangChain's adapter."""
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        # LangChain maps max_completion_tokens to max_output_tokens for the
+        # public Responses API, but the ChatGPT Codex backend rejects that field.
+        payload.pop("max_output_tokens", None)
+        return payload
+
+
 class OpenAIAdapter(ProviderAdapter):
     integration_package = "langchain-openai"
     transport_profiles = frozenset({RESPONSES, CHAT_COMPLETIONS})
@@ -84,7 +95,7 @@ class ChatGPTSubscriptionAdapter(ProviderAdapter):
             )
         options = _model_options(configuration.options)
         prompt_cache_key = options.pop("prompt_cache_key", None)
-        return _ChatOpenAICodex(
+        return _DiskovodChatOpenAICodex(
             model=configuration.model_id,
             token_provider=credentials.oauth_token_provider,
             output_version="responses/v1",

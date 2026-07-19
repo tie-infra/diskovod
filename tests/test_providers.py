@@ -95,6 +95,21 @@ def test_openai_adapter_pins_saved_transport_and_disables_retries():
     assert chat.max_retries == 0
 
 
+def test_public_responses_adapter_preserves_output_token_limit():
+    model = OpenAIAdapter().build_model(
+        configuration(
+            "openai",
+            "responses",
+            options={"max_completion_tokens": 512},
+        ),
+        ProviderCredentials(api_key="secret"),
+    )
+
+    payload = model._get_request_payload([HumanMessage("hello")])
+
+    assert payload["max_output_tokens"] == 512
+
+
 def test_custom_openai_adapter_requires_and_preserves_endpoint():
     adapter = OpenAIAdapter("custom_openai", custom_endpoint=True)
     selected = configuration("custom_openai", "responses", endpoint="https://models.example/v1")
@@ -159,12 +174,21 @@ def test_subscription_adapter_is_responses_only_and_uses_private_surface_narrowl
 
     token_provider = StoredChatGPTTokenProvider(lambda: credentials, refresh)
     adapter = ChatGPTSubscriptionAdapter()
-    selected = configuration("chatgpt_subscription", "responses")
+    selected = configuration(
+        "chatgpt_subscription",
+        "responses",
+        options={"max_completion_tokens": 256},
+    )
     model = adapter.build_model(selected, ProviderCredentials(oauth_token_provider=token_provider))
+    payload = model._get_request_payload(
+        [HumanMessage("hello")],
+        max_completion_tokens=512,
+    )
 
     assert isinstance(model, BaseChatModel)
     assert model.max_retries == 0
     assert model.use_responses_api is True
+    assert "max_output_tokens" not in payload
     with pytest.raises(ProviderBuildError) as transport:
         adapter.validate(configuration("chatgpt_subscription", "chat_completions"))
     assert transport.value.code == "unsupported_transport"

@@ -345,8 +345,14 @@ async def test_message_edits_replace_content_and_can_reclassify_owner_message(tm
     updated = await store.aupdate_message_content("message", "edited", source="human")
 
     assert updated["changed"] is True
-    assert (await store.ahistory("dm", 1))[0]["content"] == "edited"
-    assert (await store.ahistory("dm", 1))[0]["source"] == "human"
+    saved = (await store.ahistory("dm", 1))[0]
+    assert saved["content"] == "edited"
+    assert saved["source"] == "human"
+    assert saved["edited_at"] is not None
+    assert saved["deleted_at"] is None
+    assert await store.amark_message_deleted("message", deleted_at=200) is True
+    assert await store.amark_message_deleted("message", deleted_at=300) is False
+    assert (await store.ahistory("dm", 1))[0]["deleted_at"] == 200
     assert await store.aupdate_message_content("missing", "ignored") is None
     await store.aclose()
 

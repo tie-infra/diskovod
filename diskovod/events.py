@@ -46,9 +46,26 @@ class DiscordEventQueue:
                 """,
             (channel_id, account_id, thread_id, time.time()),
         )
+        await connection.execute(
+            """
+            INSERT INTO chat_thread_generations(
+              thread_id, channel_id, account_id, generation,
+              configuration_version_id, created_at
+            ) VALUES(?, ?, ?, 1,
+              (SELECT id FROM agent_configuration_versions WHERE active=1), ?)
+            """,
+            (thread_id, channel_id, account_id, time.time()),
+        )
         return thread_id
 
-    async def roll_generation(self, account_id: str, channel_id: str) -> str:
+    async def roll_generation(
+        self,
+        account_id: str,
+        channel_id: str,
+        *,
+        reason: str | None = None,
+        summary: str | None = None,
+    ) -> str:
         async with self.database.transaction() as connection:
             await self._thread_id(connection, account_id, channel_id)
             row = await (
@@ -58,13 +75,32 @@ class DiscordEventQueue:
             ).fetchone()
             generation = int(row["generation"]) + 1
             thread_id = f"discord:{account_id}:{channel_id}:g{generation}"
+            now = time.time()
+            await connection.execute(
+                """
+                UPDATE chat_thread_generations
+                SET closed_at=?, close_reason=?, summary=?
+                WHERE channel_id=? AND generation=? AND closed_at IS NULL
+                """,
+                (now, reason, summary, channel_id, generation - 1),
+            )
             await connection.execute(
                 """
                 UPDATE chat_threads
                 SET generation=?, thread_id=?, queue_cursor=0, updated_at=?
                 WHERE channel_id=?
                 """,
-                (generation, thread_id, time.time(), channel_id),
+                (generation, thread_id, now, channel_id),
+            )
+            await connection.execute(
+                """
+                INSERT INTO chat_thread_generations(
+                  thread_id, channel_id, account_id, generation,
+                  configuration_version_id, created_at
+                ) VALUES(?, ?, ?, ?,
+                  (SELECT id FROM agent_configuration_versions WHERE active=1), ?)
+                """,
+                (thread_id, channel_id, account_id, generation, now),
             )
             return thread_id
 

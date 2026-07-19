@@ -144,6 +144,36 @@ DATABASE_TABLES = {
         "order_by": "imported_at",
         "read_only": True,
     },
+    "chat_thread_generations": {
+        "label": "Chat thread generations",
+        "primary_key": "thread_id",
+        "order_by": "created_at",
+        "read_only": True,
+    },
+    "checkpoint_index": {
+        "label": "Checkpoint index",
+        "primary_key": "checkpoint_id",
+        "order_by": "created_at",
+        "read_only": True,
+    },
+    "admin_jobs": {
+        "label": "Administrative jobs",
+        "primary_key": "id",
+        "order_by": "requested_at",
+        "read_only": True,
+    },
+    "admin_job_events": {
+        "label": "Administrative job events",
+        "primary_key": "id",
+        "order_by": "occurred_at",
+        "read_only": True,
+    },
+    "provider_setup_drafts": {
+        "label": "Provider setup drafts",
+        "primary_key": "id",
+        "order_by": "created_at",
+        "read_only": True,
+    },
 }
 
 
@@ -577,12 +607,101 @@ class Store:
                 self._active_configuration = deepcopy(value)
         return configuration_id
 
-    async def astart_agent_run(self, *, run_id: str, thread_id: str, channel_id: str, trace_id: str) -> None:
+    async def aactive_configuration_id(self) -> int | None:
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute("SELECT id FROM agent_configuration_versions WHERE active=1")
+            ).fetchone()
+        return int(row["id"]) if row else None
+
+    async def aagent_configuration(self, configuration_id: int):
+        from .providers import ModelConfiguration
+
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT configuration FROM agent_configuration_versions WHERE id=?",
+                    (configuration_id,),
+                )
+            ).fetchone()
+        return ModelConfiguration.from_dict(json.loads(row["configuration"])) if row else None
+
+    async def acreate_provider_setup_draft(
+        self,
+        draft_id: str,
+        payload: dict[str, Any],
+        fingerprint: str,
+        *,
+        expires_at: float,
+    ) -> None:
+        encoded = self._box.seal(json.dumps(payload, ensure_ascii=False))
         async with self.database.transaction() as connection:
             await connection.execute(
-                "INSERT INTO agent_runs(id, thread_id, channel_id, trace_id, status, started_at) "
-                "VALUES(?, ?, ?, ?, 'running', ?)",
-                (run_id, thread_id, channel_id, trace_id, time.time()),
+                """
+                INSERT INTO provider_setup_drafts(
+                  id, payload, secret, fingerprint, created_at, expires_at
+                ) VALUES(?, ?, 1, ?, ?, ?)
+                """,
+                (draft_id, encoded, fingerprint, time.time(), expires_at),
+            )
+
+    async def aprovider_setup_draft(self, draft_id: str) -> dict[str, Any] | None:
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT payload, secret, fingerprint, expires_at FROM provider_setup_drafts "
+                    "WHERE id=? AND expires_at>?",
+                    (draft_id, time.time()),
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        payload = self._decode_config(str(row["payload"]), bool(row["secret"]))
+        return {
+            "payload": payload,
+            "fingerprint": str(row["fingerprint"]),
+            "expires_at": float(row["expires_at"]),
+        }
+
+    async def aupdate_provider_setup_draft(self, draft_id: str, payload: dict[str, Any]) -> bool:
+        encoded = self._box.seal(json.dumps(payload, ensure_ascii=False))
+        async with self.database.transaction() as connection:
+            cursor = await connection.execute(
+                "UPDATE provider_setup_drafts SET payload=?, secret=1 WHERE id=? AND expires_at>?",
+                (encoded, draft_id, time.time()),
+            )
+            return cursor.rowcount == 1
+
+    async def adelete_provider_setup_draft(self, draft_id: str) -> None:
+        async with self.database.transaction() as connection:
+            await connection.execute("DELETE FROM provider_setup_drafts WHERE id=?", (draft_id,))
+
+    async def astart_agent_run(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        channel_id: str,
+        trace_id: str,
+        trigger_kind: str | None = None,
+        trigger_message_id: str | None = None,
+    ) -> None:
+        async with self.database.transaction() as connection:
+            await connection.execute(
+                """INSERT INTO agent_runs(
+                     id, thread_id, channel_id, trace_id, status, started_at,
+                     configuration_version_id, trigger_kind, trigger_message_id
+                   ) VALUES(?, ?, ?, ?, 'running', ?,
+                     (SELECT id FROM agent_configuration_versions WHERE active=1), ?, ?)""",
+                (
+                    run_id,
+                    thread_id,
+                    channel_id,
+                    trace_id,
+                    time.time(),
+                    trigger_kind,
+                    trigger_message_id,
+                ),
             )
 
     async def afinish_agent_run(self, run_id: str, status: str, error: str | None = None) -> None:
@@ -732,12 +851,20 @@ class Store:
             changed = row["content"] != content or row["source"] != new_source
             if changed:
                 await connection.execute(
-                    "UPDATE messages SET content=?, source=? WHERE id=?",
-                    (content, new_source, message_id),
+                    "UPDATE messages SET content=?, source=?, edited_at=? WHERE id=?",
+                    (content, new_source, time.time(), message_id),
                 )
         result = dict(row)
         result.update(content=content, source=new_source, changed=changed)
         return result
+
+    async def amark_message_deleted(self, message_id: str, *, deleted_at: float | None = None) -> bool:
+        async with self.database.transaction() as connection:
+            cursor = await connection.execute(
+                "UPDATE messages SET deleted_at=? WHERE id=? AND deleted_at IS NULL",
+                (deleted_at or time.time(), message_id),
+            )
+            return cursor.rowcount > 0
 
     async def aremember_nonce(self, nonce: str) -> None:
         async with self.database.transaction() as connection:
@@ -789,6 +916,7 @@ class Store:
         async with self.database.transaction() as connection:
             await connection.execute("DELETE FROM bot_nonces WHERE created_at<?", (cutoff,))
             await connection.execute("DELETE FROM bot_message_ids WHERE created_at<?", (cutoff,))
+            await connection.execute("DELETE FROM provider_setup_drafts WHERE expires_at<?", (time.time(),))
 
     async def achat_threads(self) -> list[dict[str, Any]]:
         async with self.database.transaction() as connection:
@@ -796,6 +924,95 @@ class Store:
                 await connection.execute("SELECT * FROM chat_threads ORDER BY updated_at DESC")
             ).fetchall()
         return [dict(row) for row in rows]
+
+    async def achat_thread_generations(self, channel_id: str) -> list[dict[str, Any]]:
+        async with self.database.transaction() as connection:
+            rows = await (
+                await connection.execute(
+                    "SELECT * FROM chat_thread_generations WHERE channel_id=? ORDER BY generation DESC",
+                    (channel_id,),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def aindex_checkpoints(self, checkpoints: list[dict[str, Any]]) -> None:
+        if not checkpoints:
+            return
+        async with self.database.transaction() as connection:
+            for item in checkpoints:
+                thread_id = str(item["thread_id"])
+                generation = await (
+                    await connection.execute(
+                        "SELECT 1 FROM chat_thread_generations WHERE thread_id=?", (thread_id,)
+                    )
+                ).fetchone()
+                if generation is None:
+                    identity = self._checkpoint_thread_identity(thread_id)
+                    if identity is None:
+                        continue
+                    account_id, channel_id, generation_number = identity
+                    await connection.execute(
+                        """
+                        INSERT OR IGNORE INTO chat_thread_generations(
+                          thread_id, channel_id, account_id, generation,
+                          configuration_version_id, created_at, closed_at, close_reason
+                        ) VALUES(?, ?, ?, ?,
+                          (SELECT id FROM agent_configuration_versions WHERE active=1), ?, ?, ?)
+                        """,
+                        (
+                            thread_id,
+                            channel_id,
+                            account_id,
+                            generation_number,
+                            float(item["created_at"]),
+                            float(item["created_at"]),
+                            "historical_backfill",
+                        ),
+                    )
+                await connection.execute(
+                    """
+                    INSERT INTO checkpoint_index(
+                      thread_id, checkpoint_id, parent_checkpoint_id, run_id,
+                      created_at, step, source, message_count
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(thread_id, checkpoint_id) DO UPDATE SET
+                      parent_checkpoint_id=excluded.parent_checkpoint_id,
+                      run_id=COALESCE(excluded.run_id, checkpoint_index.run_id),
+                      created_at=excluded.created_at,
+                      step=excluded.step,
+                      source=excluded.source,
+                      message_count=excluded.message_count
+                    """,
+                    (
+                        thread_id,
+                        item["checkpoint_id"],
+                        item.get("parent_checkpoint_id"),
+                        item.get("run_id"),
+                        item["created_at"],
+                        item.get("step"),
+                        item.get("source"),
+                        item.get("message_count", 0),
+                    ),
+                )
+
+    async def aupdate_run_checkpoints(
+        self, run_id: str, first_checkpoint_id: str | None, final_checkpoint_id: str | None
+    ) -> None:
+        async with self.database.transaction() as connection:
+            await connection.execute(
+                "UPDATE agent_runs SET first_checkpoint_id=?, final_checkpoint_id=? WHERE id=?",
+                (first_checkpoint_id, final_checkpoint_id, run_id),
+            )
+
+    @staticmethod
+    def _checkpoint_thread_identity(thread_id: str) -> tuple[str, str, int] | None:
+        if not thread_id.startswith("discord:") or ":g" not in thread_id:
+            return None
+        prefix, generation = thread_id.rsplit(":g", 1)
+        parts = prefix.split(":")
+        if len(parts) != 3 or not generation.isdigit():
+            return None
+        return parts[1], parts[2], int(generation)
 
     async def achat_thread_by_id(self, thread_id: str) -> dict[str, Any] | None:
         async with self.database.transaction() as connection:

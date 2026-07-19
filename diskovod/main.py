@@ -10,6 +10,8 @@ import uvicorn
 from uvicorn.config import LOGGING_CONFIG
 
 from .config import RuntimeConfig
+from .admin_job_handlers import register_provider_jobs
+from .admin_jobs import AdminJobRepository, AdminJobService, AdminJobWorker
 from .discord import DiscordService
 from .http_client import PublicHTTPClient
 from .migration import LegacyMigrator
@@ -52,6 +54,9 @@ def build(
     account = ChatGPTAccount(store)
     models = ModelService(store, account)
     provider_setup = ProviderSetup(store, models)
+    jobs = AdminJobService(AdminJobRepository(store.database))
+    register_provider_jobs(jobs, store, models, provider_setup)
+    job_worker = AdminJobWorker(jobs)
     discord = DiscordService(store)
     public_http = PublicHTTPClient()
     runtime = AgentService(store, models, discord, secret, public_http)
@@ -66,6 +71,8 @@ def build(
             runtime,
             password,
             config.public_url,
+            jobs,
+            job_worker,
         ),
         store,
         account,
@@ -91,6 +98,8 @@ def main() -> None:
         await store.start()
         await account.start()
         await web.models.migrate_legacy_selection()
+        assert web.job_worker is not None
+        await web.job_worker.start()
         await runtime.start()
         await LegacyMigrator(store, runtime).run()
         await store.aprune()
@@ -98,6 +107,8 @@ def main() -> None:
 
     @web.app.on_event("shutdown")
     async def shutdown() -> None:
+        assert web.job_worker is not None
+        await web.job_worker.close()
         await discord.stop()
         await runtime.close()
         await account.close()

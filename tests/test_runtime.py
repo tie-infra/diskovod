@@ -86,14 +86,22 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp
 
     assert transport.messages == [("channel", ("Hello from the graph",))]
     async with store.database.transaction() as connection:
-        run = await (await connection.execute("SELECT status, thread_id FROM agent_runs")).fetchone()
+        run = await (await connection.execute("SELECT id, status, thread_id FROM agent_runs")).fetchone()
         queue = await (await connection.execute("SELECT disposition FROM chat_event_queue")).fetchone()
         checkpoint_count = (await (await connection.execute("SELECT COUNT(*) FROM checkpoints")).fetchone())[
             0
         ]
-    assert dict(run) == {"status": "completed", "thread_id": "discord:owner:channel:g1"}
+        checkpoint_index = await (
+            await connection.execute(
+                "SELECT run_id, message_count FROM checkpoint_index ORDER BY created_at DESC LIMIT 1"
+            )
+        ).fetchone()
+    assert run["status"] == "completed"
+    assert run["thread_id"] == "discord:owner:channel:g1"
     assert queue["disposition"] == "completed"
     assert checkpoint_count > 0
+    assert checkpoint_index["run_id"] == run["id"]
+    assert checkpoint_index["message_count"] > 0
 
     await service.close()
     await store.aclose()

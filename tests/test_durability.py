@@ -162,6 +162,13 @@ async def test_event_queue_persists_live_steering_and_generation_rollover(tmp_pa
     queue = DiscordEventQueue(store.database)
     await queue.set_live_steering("account", "chat", False)
     assert await queue.live_steering("chat") is False
-    assert await queue.roll_generation("account", "chat") == "discord:account:chat:g2"
+    assert (
+        await queue.roll_generation("account", "chat", reason="test_rollover", summary="Earlier conversation")
+        == "discord:account:chat:g2"
+    )
+    generations = await store.achat_thread_generations("chat")
+    assert [item["generation"] for item in generations] == [2, 1]
+    assert generations[1]["close_reason"] == "test_rollover"
+    assert generations[1]["summary"] == "Earlier conversation"
     assert await queue.thread_id("account", "chat") == "discord:account:chat:g2"
     await store.aclose()

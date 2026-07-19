@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .discord import DiscordService
+from .admin_jobs import AdminJobService, AdminJobWorker
 from .localization import (
     SUPPORTED_LOCALES,
     assistant_name_for,
@@ -90,6 +91,8 @@ class WebApp:
         runtime: AgentService,
         admin_password: str,
         public_url: str,
+        jobs: AdminJobService | None = None,
+        job_worker: AdminJobWorker | None = None,
     ):
         self.store = store
         self.account = account
@@ -100,6 +103,8 @@ class WebApp:
         self.admin_password = admin_password
         self.public_url = public_url.rstrip("/")
         self.public_origin = self._normalized_origin(self.public_url)
+        self.jobs = jobs
+        self.job_worker = job_worker
         self.security = HTTPBasic()
         self.provider_drafts: dict[str, ProviderDraft] = {}
         base = Path(__file__).parent

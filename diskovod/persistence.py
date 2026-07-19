@@ -30,7 +30,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 6
+TARGET_SCHEMA_VERSION = 7
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -240,6 +240,112 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     )
     WHERE json_extract(configuration, '$.provider_id') != 'chatgpt_subscription'
       AND json_type(configuration, '$.capabilities.output_token_limit') IS NULL;
+    """,
+    """
+    ALTER TABLE messages ADD COLUMN edited_at REAL;
+    ALTER TABLE messages ADD COLUMN deleted_at REAL;
+    ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT;
+
+    CREATE TABLE chat_thread_generations (
+      thread_id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      configuration_version_id INTEGER REFERENCES agent_configuration_versions(id),
+      created_at REAL NOT NULL,
+      closed_at REAL,
+      close_reason TEXT,
+      summary TEXT,
+      UNIQUE(channel_id, generation)
+    );
+    CREATE INDEX chat_thread_generations_chat
+      ON chat_thread_generations(channel_id, generation DESC);
+    INSERT INTO chat_thread_generations(
+      thread_id, channel_id, account_id, generation, configuration_version_id, created_at
+    )
+    SELECT thread_id, channel_id, account_id, generation,
+           (SELECT id FROM agent_configuration_versions WHERE active=1), updated_at
+    FROM chat_threads;
+
+    CREATE TABLE checkpoint_index (
+      thread_id TEXT NOT NULL REFERENCES chat_thread_generations(thread_id) ON DELETE CASCADE,
+      checkpoint_id TEXT NOT NULL,
+      parent_checkpoint_id TEXT,
+      run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+      created_at REAL NOT NULL,
+      step INTEGER,
+      source TEXT,
+      message_count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(thread_id, checkpoint_id)
+    );
+    CREATE INDEX checkpoint_index_run ON checkpoint_index(run_id, created_at DESC);
+
+    ALTER TABLE agent_runs ADD COLUMN configuration_version_id INTEGER
+      REFERENCES agent_configuration_versions(id);
+    ALTER TABLE agent_runs ADD COLUMN trigger_kind TEXT;
+    ALTER TABLE agent_runs ADD COLUMN trigger_message_id TEXT;
+    ALTER TABLE agent_runs ADD COLUMN first_checkpoint_id TEXT;
+    ALTER TABLE agent_runs ADD COLUMN final_checkpoint_id TEXT;
+    ALTER TABLE agent_runs ADD COLUMN model_call_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agent_runs ADD COLUMN tool_call_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agent_runs ADD COLUMN delivery_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agent_runs ADD COLUMN input_tokens INTEGER;
+    ALTER TABLE agent_runs ADD COLUMN output_tokens INTEGER;
+    CREATE INDEX agent_runs_status_time ON agent_runs(status, started_at DESC);
+    CREATE INDEX agent_runs_channel_time ON agent_runs(channel_id, started_at DESC);
+
+    CREATE TABLE admin_jobs (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      schema_version INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN (
+        'queued','running','cancellation_requested','succeeded','failed','cancelled'
+      )),
+      idempotency_key TEXT,
+      requested_at REAL NOT NULL,
+      started_at REAL,
+      completed_at REAL,
+      cancellation_requested_at REAL,
+      lease_owner TEXT,
+      lease_expires_at REAL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      progress_stage TEXT,
+      progress_current INTEGER,
+      progress_total INTEGER,
+      input_payload TEXT NOT NULL,
+      target_kind TEXT,
+      target_id TEXT,
+      result_kind TEXT,
+      result_id TEXT,
+      error_code TEXT,
+      error_summary TEXT
+    );
+    CREATE INDEX admin_jobs_status_time ON admin_jobs(status, requested_at DESC);
+    CREATE INDEX admin_jobs_target ON admin_jobs(target_kind, target_id, requested_at DESC);
+    CREATE INDEX admin_jobs_lease ON admin_jobs(status, lease_expires_at);
+    CREATE UNIQUE INDEX admin_jobs_active_idempotency
+      ON admin_jobs(idempotency_key)
+      WHERE idempotency_key IS NOT NULL
+        AND status IN ('queued','running','cancellation_requested');
+    CREATE TABLE admin_job_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL REFERENCES admin_jobs(id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL,
+      occurred_at REAL NOT NULL,
+      kind TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      UNIQUE(job_id, sequence)
+    );
+    CREATE INDEX admin_job_events_job ON admin_job_events(job_id, sequence);
+    CREATE TABLE provider_setup_drafts (
+      id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      secret INTEGER NOT NULL DEFAULT 1,
+      fingerprint TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      expires_at REAL NOT NULL
+    );
+    CREATE INDEX provider_setup_drafts_expiry ON provider_setup_drafts(expires_at);
     """,
 )
 

@@ -6,6 +6,7 @@ import random
 import time
 import uuid
 from contextlib import AbstractAsyncContextManager
+from datetime import datetime
 from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage, SystemMessage
@@ -93,6 +94,7 @@ class AgentService:
         await self.memory.start()
         self._checkpoint_context = open_checkpointer(self.store.path, self.checkpoint_secret)
         self.checkpointer = await self._checkpoint_context.__aenter__()
+        await self._backfill_checkpoint_index()
         for channel_id in await self.store.apending_channels():
             self._ensure_task(channel_id)
 
@@ -312,6 +314,69 @@ class AgentService:
             result.append(thread)
         return result
 
+    async def _backfill_checkpoint_index(self) -> None:
+        if self.checkpointer is None or self.store._get("admin.checkpoint_index_backfilled", False):
+            return
+        try:
+            indexed: list[dict[str, Any]] = []
+            async for item in self.checkpointer.alist(None):
+                indexed.append(self._checkpoint_metadata(item))
+                if len(indexed) >= 200:
+                    await self.store.aindex_checkpoints(indexed)
+                    indexed.clear()
+            await self.store.aindex_checkpoints(indexed)
+            await self.store._aset("admin.checkpoint_index_backfilled", True)
+        except Exception:
+            log.exception("Could not backfill the administrative checkpoint index")
+
+    async def _index_run_checkpoints(
+        self,
+        thread_id: str,
+        run_id: str,
+        previous_checkpoint_id: str | None,
+    ) -> tuple[str | None, str | None]:
+        try:
+            if self.checkpointer is None:
+                return None, None
+            newest_first: list[dict[str, Any]] = []
+            async for item in self.checkpointer.alist(
+                {"configurable": {"thread_id": thread_id}},
+                limit=100,
+            ):
+                checkpoint_id = str(item.config["configurable"]["checkpoint_id"])
+                if checkpoint_id == previous_checkpoint_id:
+                    break
+                metadata = self._checkpoint_metadata(item)
+                metadata["run_id"] = run_id
+                newest_first.append(metadata)
+            await self.store.aindex_checkpoints(newest_first)
+            first = str(newest_first[-1]["checkpoint_id"]) if newest_first else None
+            final = str(newest_first[0]["checkpoint_id"]) if newest_first else previous_checkpoint_id
+            await self.store.aupdate_run_checkpoints(run_id, first, final)
+            return first, final
+        except Exception:
+            log.exception("Could not update the administrative checkpoint index for run %s", run_id)
+            return None, None
+
+    @staticmethod
+    def _checkpoint_metadata(item) -> dict[str, Any]:
+        created = str(item.checkpoint.get("ts") or "")
+        try:
+            created_at = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            created_at = time.time()
+        values = item.checkpoint.get("channel_values", {})
+        parent = item.parent_config or {}
+        return {
+            "thread_id": str(item.config["configurable"]["thread_id"]),
+            "checkpoint_id": str(item.config["configurable"]["checkpoint_id"]),
+            "parent_checkpoint_id": parent.get("configurable", {}).get("checkpoint_id"),
+            "created_at": created_at,
+            "step": item.metadata.get("step"),
+            "source": item.metadata.get("source"),
+            "message_count": len(values.get("messages", [])),
+        }
+
     async def replay_checkpoint(self, thread_id: str, checkpoint_id: str) -> str:
         """Replay a historical state with isolated memory and emulated Discord actions."""
         if self.checkpointer is None or not self.models.ready:
@@ -471,6 +536,8 @@ class AgentService:
         new_thread_id = await self.events.roll_generation(
             str(thread["account_id"]),
             str(thread["channel_id"]),
+            reason=reason,
+            summary=summary,
         )
 
         async def seed(state: DiskovodAgentState) -> dict[str, Any]:
@@ -786,11 +853,19 @@ class AgentService:
             "run_id": uuid.UUID(run_id),
             "recursion_limit": 40,
         }
+        previous_snapshot = await self.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+        previous_checkpoint_id = (
+            str(previous_snapshot.config["configurable"]["checkpoint_id"])
+            if previous_snapshot is not None
+            else None
+        )
         await self.store.astart_agent_run(
             run_id=run_id,
             thread_id=thread_id,
             channel_id=channel_id,
             trace_id=trace_id,
+            trigger_kind="force_reply" if force else claimed[-1].kind,
+            trigger_message_id=trigger_message_id,
         )
         await self.store.arecord_agent_trace(
             run_id,
@@ -802,11 +877,13 @@ class AgentService:
         except asyncio.CancelledError:
             await self.events.release(channel_id, run_id)
             await self._flush_trace(trace_id, run_id)
+            await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
             await self.store.afinish_agent_run(run_id, "cancelled")
             raise
         except Exception as error:
             await self.events.release(channel_id, run_id)
             await self._flush_trace(trace_id, run_id)
+            await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
             await self.store.afinish_agent_run(
                 run_id,
                 "failed",
@@ -820,6 +897,7 @@ class AgentService:
             raise
         interrupted = bool(result.get("__interrupt__"))
         await self._flush_trace(trace_id, run_id)
+        await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
         await self.events.complete(channel_id, run_id)
         await self.store.afinish_agent_run(
             run_id,

@@ -246,6 +246,7 @@ class PrivateDiscordClient(discord.Client):
         channel_id = str(payload.channel_id)
         if await self.store.aconversation(channel_id) is None:
             return
+        await self.store.amark_message_deleted(str(payload.message_id))
         await self.runtime.submit_delete(
             message_id=str(payload.message_id),
             channel_id=channel_id,

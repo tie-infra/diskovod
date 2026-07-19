@@ -6,6 +6,7 @@
   h2,
   hatch-fancy-pypi-readme,
   hatchling,
+  socksio,
   truststore,
   uv-dynamic-versioning,
 }:
@@ -35,6 +36,7 @@ buildPythonPackage rec {
     anyio
     h11
     h2
+    socksio
     truststore
   ];
 

@@ -7,6 +7,7 @@
   hatchling,
   httpcore2,
   idna,
+  socksio,
   truststore,
   uv-dynamic-versioning,
 }:
@@ -37,6 +38,7 @@ buildPythonPackage rec {
     h2
     httpcore2
     idna
+    socksio
     truststore
   ];
 

@@ -176,17 +176,51 @@ class PublicAsyncHTTPTransport(httpx2.AsyncBaseTransport):
         *,
         network_backend: PublicNetworkBackend | None = None,
         limits: httpx2.Limits | None = None,
+        proxy: httpx2.Proxy | None = None,
     ) -> None:
         limits = limits or httpx2.Limits(max_connections=100, max_keepalive_connections=20)
-        self._pool = httpcore2.AsyncConnectionPool(
-            ssl_context=httpx2.create_ssl_context(trust_env=False),
-            max_connections=limits.max_connections,
-            max_keepalive_connections=limits.max_keepalive_connections,
-            keepalive_expiry=limits.keepalive_expiry,
-            http1=True,
-            http2=True,
-            network_backend=network_backend or PublicNetworkBackend(),
-        )
+        ssl_context = httpx2.create_ssl_context(trust_env=True)
+        backend = network_backend or PublicNetworkBackend()
+        pool_options = {
+            "ssl_context": ssl_context,
+            "max_connections": limits.max_connections,
+            "max_keepalive_connections": limits.max_keepalive_connections,
+            "keepalive_expiry": limits.keepalive_expiry,
+            "http1": True,
+            "http2": True,
+            "network_backend": backend,
+        }
+        if proxy is None:
+            self._pool = httpcore2.AsyncConnectionPool(**pool_options)
+        elif proxy.url.scheme in {"http", "https"}:
+            proxy_options = (
+                {"proxy_ssl_context": proxy.ssl_context or ssl_context} if proxy.url.scheme == "https" else {}
+            )
+            self._pool = httpcore2.AsyncHTTPProxy(
+                proxy_url=httpcore2.URL(
+                    scheme=proxy.url.raw_scheme,
+                    host=proxy.url.raw_host,
+                    port=proxy.url.port,
+                    target=proxy.url.raw_path,
+                ),
+                proxy_auth=proxy.raw_auth,
+                proxy_headers=proxy.headers.raw,
+                **pool_options,
+                **proxy_options,
+            )
+        elif proxy.url.scheme in {"socks5", "socks5h"}:
+            self._pool = httpcore2.AsyncSOCKSProxy(
+                proxy_url=httpcore2.URL(
+                    scheme=proxy.url.raw_scheme,
+                    host=proxy.url.raw_host,
+                    port=proxy.url.port,
+                    target=proxy.url.raw_path,
+                ),
+                proxy_auth=proxy.raw_auth,
+                **pool_options,
+            )
+        else:
+            raise ValueError(f"Unsupported untrusted-URL proxy scheme: {proxy.url.scheme}")
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         if (
@@ -225,14 +259,17 @@ class PublicAsyncHTTPTransport(httpx2.AsyncBaseTransport):
 class PublicHTTPClient:
     """Application-owned HTTP/2 client for bounded reads from untrusted URLs."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, network_backend: PublicNetworkBackend | None = None) -> None:
+        backend = network_backend or PublicNetworkBackend()
+        mounts = _environment_proxy_mounts(backend)
         self._client = httpx2.AsyncClient(
-            transport=PublicAsyncHTTPTransport(),
+            transport=PublicAsyncHTTPTransport(network_backend=backend),
+            mounts=mounts,
             timeout=httpx2.Timeout(20, connect=8),
             headers={"User-Agent": USER_AGENT},
             follow_redirects=True,
             max_redirects=5,
-            trust_env=False,
+            trust_env=True,
         )
 
     async def get(
@@ -268,3 +305,24 @@ class PublicHTTPClient:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+
+def _environment_proxy_mounts(
+    network_backend: PublicNetworkBackend,
+) -> dict[str, PublicAsyncHTTPTransport | None]:
+    # HTTPX2 intentionally disables automatic environment proxies when an explicit
+    # transport is supplied. Reuse its pinned environment/NO_PROXY interpretation,
+    # but replace every generated proxy transport with our guarded connector.
+    from httpx2._utils import get_environment_proxies
+
+    mounts: dict[str, PublicAsyncHTTPTransport | None] = {}
+    for pattern, proxy_url in get_environment_proxies().items():
+        mounts[pattern] = (
+            None
+            if proxy_url is None
+            else PublicAsyncHTTPTransport(
+                network_backend=network_backend,
+                proxy=httpx2.Proxy(proxy_url),
+            )
+        )
+    return mounts

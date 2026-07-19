@@ -47,6 +47,7 @@ def test_multipage_admin_templates_parse_and_use_the_shared_shell():
         t=lambda key, **values: ui_text("en", key, **values),
     )
     assert 'href="/static/bootstrap.min.css"' in rendered
+    assert 'src="/static/bootstrap.bundle.min.js"' in rendered
     assert 'src="/static/app.js"' in rendered
     assert 'href="/inbox"' in rendered
     assert 'href="/chats"' in rendered
@@ -86,3 +87,16 @@ def test_live_updates_use_fetch_readable_stream_not_websockets_or_eventsource():
     assert "application/x-ndjson" in script
     assert "WebSocket" not in script
     assert "EventSource" not in script
+
+
+def test_admin_assets_are_self_hosted_and_old_dashboard_css_is_removed():
+    static_dir = Path(__file__).parents[1] / "diskovod" / "static"
+    bootstrap_bundle = (static_dir / "bootstrap.bundle.min.js").read_text()
+    stylesheet = (static_dir / "style.css").read_text()
+
+    assert "Bootstrap v5.3.8" in bootstrap_bundle
+    assert ".admin-layout" in stylesheet
+    assert ".chat-layout" in stylesheet
+    assert ".tab-navigation" not in stylesheet
+    assert ".usage-breakdown" not in stylesheet
+    assert ".connection-grid" not in stylesheet

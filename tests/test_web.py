@@ -86,6 +86,7 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/api/jobs" in route_paths
     assert "/api/jobs/{job_id}" in route_paths
     assert "/api/search" in route_paths
+    assert "/static/bootstrap.bundle.min.js" in route_paths
     assert "/discord/settings" not in route_paths
     assert "/discord/captcha/{request_id}" in route_paths
     assert "/system/database/delete" in route_paths

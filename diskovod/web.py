@@ -413,6 +413,13 @@ class WebApp:
         async def bootstrap_css():
             return FileResponse(Path(__file__).parent / "static" / "bootstrap.min.css", media_type="text/css")
 
+        @self.app.get("/static/bootstrap.bundle.min.js")
+        async def bootstrap_javascript():
+            return FileResponse(
+                Path(__file__).parent / "static" / "bootstrap.bundle.min.js",
+                media_type="text/javascript",
+            )
+
         @self.app.get("/static/app.js")
         async def javascript():
             return FileResponse(Path(__file__).parent / "static" / "app.js", media_type="text/javascript")
@@ -1369,36 +1376,6 @@ class WebApp:
             captcha_requests=self.discord.captcha_requests(),
         )
 
-    async def _conversation_views(self) -> list[dict]:
-        now = time.time()
-        result = await self.store.aconversations_with_steering()
-        for conversation in result:
-            until = conversation["snoozed_until"]
-            conversation["snoozed"] = bool(until and until > now)
-            conversation["quiet_minutes_remaining"] = (
-                max(1, int((until - now + 59) // 60)) if until and until > now else 0
-            )
-        return result
-
-    async def _agent_run_views(self) -> list[dict[str, Any]]:
-        runs, traces = await self.store.aagent_diagnostics()
-        by_run: dict[str, list[dict[str, Any]]] = {}
-        for trace in traces:
-            item = dict(trace)
-            item["payload_json"] = json.dumps(
-                json.loads(item["payload"]), ensure_ascii=False, indent=2, sort_keys=True
-            )
-            by_run.setdefault(str(item["run_id"]), []).append(item)
-        result = []
-        for row in runs:
-            item = dict(row)
-            item["started_at_label"] = (
-                datetime.fromtimestamp(item["started_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-            )
-            item["traces"] = by_run.get(str(item["id"]), [])
-            result.append(item)
-        return result
-
     async def _capability_probe_views(self) -> list[dict[str, Any]]:
         rows = await self.store.acapability_probes()
         result = []
@@ -1458,24 +1435,6 @@ class WebApp:
         source = str(personality.get("source") or "").lower().replace(" ", "_")
         personality["source_label"] = self._t(f"source_{source}") if source else self._t("inferred_history")
         return personality
-
-    async def _escalation_views(self) -> list[dict[str, Any]]:
-        result = await self.store.aactive_interrupts()
-        for escalation in result:
-            payload = escalation["payload"]
-            escalation["reason"] = str(payload.get("reason") or "other_explicit_request")
-            escalation["delivery_error"] = None
-            escalation["requested_at"] = escalation["created_at"]
-            escalation["reason_label"] = ui_text(
-                self.store.interface_settings().locale,
-                f"reason_{escalation['reason']}",
-            )
-            escalation["requested_at_label"] = (
-                datetime.fromtimestamp(escalation["requested_at"])
-                .astimezone()
-                .strftime("%Y-%m-%d %H:%M:%S %Z")
-            )
-        return result
 
     async def _database_view(self, table: str, page: int, query: str) -> dict:
         tables = await self.store.adatabase_tables()

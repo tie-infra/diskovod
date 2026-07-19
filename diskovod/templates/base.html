@@ -13,6 +13,7 @@
     <title>{{ page_title }} · Diskovod</title>
     <link rel="stylesheet" href="/static/bootstrap.min.css">
     <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/bootstrap.bundle.min.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
   <body
@@ -26,12 +27,15 @@
   >
     <a class="visually-hidden-focusable" href="#main-content">{{ t("skip") }}</a>
     <div class="admin-layout">
-      <aside class="sidebar" id="admin-sidebar" aria-label="{{ t('admin_navigation') }}">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">◉</span>
-          <span>Diskovod</span>
+      <aside class="sidebar offcanvas-lg offcanvas-start" tabindex="-1" id="admin-sidebar" aria-label="{{ t('admin_navigation') }}">
+        <div class="offcanvas-header">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">◉</span>
+            <span>Diskovod</span>
+          </div>
+          <button class="btn-close d-lg-none" type="button" data-bs-dismiss="offcanvas" data-bs-target="#admin-sidebar" aria-label="{{ t('close') }}"></button>
         </div>
-        <nav class="nav nav-pills flex-column gap-1">
+        <div class="offcanvas-body d-block"><nav class="nav nav-pills flex-column gap-1">
           <a class="nav-link {{ 'active' if active_section == 'overview' }}" href="/">
             <span aria-hidden="true">⌂</span> {{ t("overview") }}
           </a>
@@ -56,11 +60,11 @@
           <a class="nav-link {{ 'active' if active_section == 'system' }}" href="/system/diagnostics">
             <span aria-hidden="true">⋯</span> {{ t("system") }}
           </a>
-        </nav>
+        </nav></div>
       </aside>
       <div class="content-column">
         <header class="topbar">
-          <button class="btn btn-outline-secondary sidebar-toggle" type="button" aria-controls="admin-sidebar" aria-expanded="false">
+          <button class="btn btn-outline-secondary sidebar-toggle" type="button" data-bs-toggle="offcanvas" data-bs-target="#admin-sidebar" aria-controls="admin-sidebar">
             <span aria-hidden="true">☰</span><span class="visually-hidden">{{ t("admin_navigation") }}</span>
           </button>
           <div class="ms-auto d-flex align-items-center gap-2">

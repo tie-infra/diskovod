@@ -12,17 +12,7 @@
   applySystemTheme();
   colorScheme.addEventListener("change", applySystemTheme);
 
-  const sidebarButton = document.querySelector(".sidebar-toggle");
-  sidebarButton?.addEventListener("click", () => {
-    const open = body.classList.toggle("sidebar-open");
-    sidebarButton.setAttribute("aria-expanded", String(open));
-  });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && body.classList.contains("sidebar-open")) {
-      body.classList.remove("sidebar-open");
-      sidebarButton?.setAttribute("aria-expanded", "false");
-      sidebarButton?.focus();
-    }
     if (event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey) {
       const target = event.target;
       if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement)) {

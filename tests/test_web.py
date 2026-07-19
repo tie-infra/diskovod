@@ -10,7 +10,13 @@ from diskovod.automation import Automation
 from diskovod.chatgpt import ChatGPTClient
 from diskovod.discord import DiscordService
 from diskovod.store import Store
-from diskovod.web import PERSONALITY_INSTRUCTIONS, WebApp, personality_source_hash
+from diskovod.models import AppSettings
+from diskovod.web import (
+    PERSONALITY_INSTRUCTIONS,
+    WebApp,
+    assistant_settings_defaults,
+    personality_source_hash,
+)
 
 
 def make_web(public_url: str = "https://diskovod.example/base") -> WebApp:
@@ -50,6 +56,7 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/provider/select" in route_paths
     assert "/discord/connect" in route_paths
     assert "/settings/theme" in route_paths
+    assert "/settings/reset" in route_paths
     assert "/discord/settings" not in route_paths
     assert "/discord/captcha/{request_id}" in route_paths
     assert "/database/delete" in route_paths
@@ -63,6 +70,24 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert web._database_url("messages", 2, "hello world") == (
         "https://diskovod.example/base/?tab=database&db_table=messages&db_page=2&db_query=hello+world"
     )
+
+
+def test_assistant_settings_defaults_preserve_only_admin_appearance():
+    current = AppSettings(
+        enabled=True,
+        admin_locale="fr",
+        admin_theme="black",
+        prompt_locale="ja",
+        assistant_name="Helper",
+        provider="custom",
+        model="custom-model",
+        owner_details="Private details",
+        base_instructions="Custom instructions",
+    )
+
+    reset = assistant_settings_defaults(current)
+
+    assert reset == AppSettings(admin_locale="fr", admin_theme="black")
 
 
 @pytest.mark.asyncio

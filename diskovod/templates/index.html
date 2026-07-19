@@ -382,7 +382,7 @@
       {% endif %}
 
       {% if active_tab == "assistant" %}
-      <section class="card-grid page-section" aria-label="{{ t('behavior') }}">
+      <section class="d-grid gap-4 page-section" aria-label="{{ t('behavior') }}">
         <article class="card" id="personality">
           <div class="card-header">
             <div>
@@ -754,6 +754,16 @@
             </label>
 
             <button>{{ t("save_behavior") }}</button>
+          </form>
+
+          <form method="post" action="/settings/reset" class="form-stack border-top mt-4 pt-4">
+            <h3>{{ t("reset_assistant_settings") }}</h3>
+            <p class="field-help">{{ t("reset_assistant_settings_help") }}</p>
+            <label class="toggle">
+              <input type="checkbox" name="confirm" value="reset" required>
+              {{ t("reset_assistant_settings_confirmation") }}
+            </label>
+            <button class="button-danger">{{ t("reset_assistant_settings") }}</button>
           </form>
         </article>
       </section>

@@ -203,6 +203,10 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert 'action="/discord/connect"' not in rendered_by_tab["assistant"]
     assert 'action="/personality/save"' in rendered_by_tab["assistant"]
     assert 'action="/personality/save"' not in rendered_by_tab["connections"]
+    assert 'class="d-grid gap-4 page-section"' in rendered_by_tab["assistant"]
+    assert rendered_by_tab["assistant"].index('id="personality"') < rendered_by_tab["assistant"].index(
+        'id="behavior"'
+    )
     assert 'action="/conversations/dm-1/force-reply"' in rendered_by_tab["conversations"]
     assert 'action="/conversations/dm-1/mode"' in rendered_by_tab["conversations"]
     assert "Inline collaboration" in rendered_by_tab["conversations"]
@@ -239,6 +243,9 @@ def test_admin_template_is_script_free_and_contains_human_quiet_controls():
     assert "Prefix generated replies with 🤖" in rendered
     assert 'action="/personality/save"' in rendered
     assert 'action="/personality/infer-history"' in rendered
+    assert 'action="/settings/reset"' in rendered
+    assert 'name="confirm" value="reset" required' in rendered
+    assert "Reset assistant settings" in rendered
     assert 'action="/discord/connect"' in rendered
     assert 'action="/provider/custom"' in rendered
     assert 'formaction="/provider/custom/detect"' in rendered

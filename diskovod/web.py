@@ -64,6 +64,15 @@ def localized_base_instructions(previous_locale: str, new_locale: str, submitted
     return submitted
 
 
+def assistant_settings_defaults(current: AppSettings) -> AppSettings:
+    """Reset assistant behavior without changing admin appearance preferences."""
+    return replace(
+        AppSettings(),
+        admin_locale=current.admin_locale,
+        admin_theme=current.admin_theme,
+    )
+
+
 class WebApp:
     def __init__(
         self,
@@ -580,6 +589,24 @@ class WebApp:
             return self._back(
                 tab="assistant",
                 message=ui_text(value.admin_locale, "settings_saved"),
+            )
+
+        @self.app.post("/settings/reset")
+        async def settings_reset(
+            confirm: str = Form(""),
+            _: str = Depends(auth),
+        ):
+            current = self.store.app_settings()
+            if confirm != "reset":
+                return self._back(
+                    tab="assistant",
+                    error=ui_text(current.admin_locale, "assistant_settings_reset_confirm"),
+                )
+            value = assistant_settings_defaults(current)
+            self.store.set_app_settings(value)
+            return self._back(
+                tab="assistant",
+                message=ui_text(value.admin_locale, "assistant_settings_reset"),
             )
 
         @self.app.post("/personality/infer")

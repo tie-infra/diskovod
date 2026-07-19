@@ -32,7 +32,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 2
+TARGET_SCHEMA_VERSION = 3
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -174,6 +174,21 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX IF NOT EXISTS provider_capability_probes_time
       ON provider_capability_probes(completed_at DESC);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS attachment_references (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      attachment_id TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      object_sha256 TEXT NOT NULL REFERENCES attachment_objects(sha256) ON DELETE CASCADE,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at REAL NOT NULL,
+      UNIQUE(message_id, attachment_id)
+    );
+    CREATE INDEX IF NOT EXISTS attachment_references_chat
+      ON attachment_references(channel_id, created_at DESC);
     """,
 )
 

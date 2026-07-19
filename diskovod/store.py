@@ -769,6 +769,63 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def active_interrupts(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """
+                SELECT i.*, c.peer_name FROM escalation_interrupts i
+                LEFT JOIN conversations c ON c.channel_id=i.channel_id
+                WHERE i.state IN ('pending', 'claimed')
+                ORDER BY i.created_at DESC
+                """
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item["payload"])
+            result.append(item)
+        return result
+
+    def escalation_interrupt(self, escalation_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM escalation_interrupts WHERE id=?", (escalation_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["payload"] = json.loads(item["payload"])
+        return item
+
+    def set_interrupt_state(self, escalation_id: str, state: str) -> bool:
+        if state not in {"claimed", "resolved", "dismissed"}:
+            raise ValueError("Unknown interrupt state")
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """
+                UPDATE escalation_interrupts SET state=?, updated_at=?
+                WHERE id=? AND state IN ('pending', 'claimed')
+                """,
+                (state, time.time(), escalation_id),
+            )
+        return cursor.rowcount > 0
+
+    def active_interrupt_for_channel(self, channel_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT * FROM escalation_interrupts
+                WHERE channel_id=? AND state IN ('pending', 'claimed')
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (channel_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["payload"] = json.loads(item["payload"])
+        return item
+
     def can_automate(self, channel_id: str, now: float | None = None) -> bool:
         conversation = self.conversation(channel_id)
         if not conversation or conversation["paused"]:

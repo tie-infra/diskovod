@@ -40,7 +40,11 @@ def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path):
         "attachment_objects",
         "escalation_interrupts",
     } <= tables
-    assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [(1,), (2,)]
+    assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [
+        (1,),
+        (2,),
+        (3,),
+    ]
     assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     connection.close()
 

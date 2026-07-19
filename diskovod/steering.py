@@ -107,8 +107,15 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
         if event.kind == "delete":
             return RemoveMessage(id=str(event.payload["message_id"]))
         message_id = str(event.payload.get("message_id") or event.id)
+        content = str(event.payload.get("content") or "")
+        attachments = event.payload.get("attachments") or []
+        if attachments:
+            names = [
+                str(item.get("filename") or "attachment") for item in attachments if isinstance(item, dict)
+            ]
+            content += "\n\nDiscord attachments (untrusted conversation data): " + ", ".join(names)
         return HumanMessage(
-            content=str(event.payload.get("content") or ""),
+            content=content,
             id=message_id,
             additional_kwargs={
                 "diskovod_participant": {
@@ -117,6 +124,7 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
                     "role": str(event.payload.get("participant_role") or "peer"),
                     "discord_event_id": event.id,
                     "edited": event.kind == "edit",
-                }
+                },
+                "diskovod_attachments": attachments,
             },
         )

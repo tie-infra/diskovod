@@ -106,6 +106,10 @@ class SideEffectLedger:
     ) -> None:
         now = time.time()
         with self._lock, self._connection:
+            if self._connection.execute(
+                "SELECT 1 FROM escalation_interrupts WHERE id=?", (escalation_id,)
+            ).fetchone():
+                return
             self._connection.execute(
                 """
                 INSERT INTO escalation_interrupts(

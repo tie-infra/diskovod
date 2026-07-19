@@ -12,7 +12,6 @@ import discord
 
 from .agent_actions import DeliveryRecord
 from .agent_types import AgentRuntimeContext
-from .models import capture_discord_attachments
 from .runtime import AgentService
 from .store import Store
 
@@ -107,7 +106,11 @@ class PrivateDiscordClient(discord.Client):
         if not self.user or not isinstance(message.channel, discord.DMChannel):
             return
         channel_id = str(message.channel.id)
-        attachments = await capture_discord_attachments(getattr(message, "attachments", ()))
+        attachments = await self.runtime.attachments.capture(
+            getattr(message, "attachments", ()),
+            channel_id=channel_id,
+            message_id=str(message.id),
+        )
         if message.author == self.user:
             nonce = str(message.nonce) if message.nonce is not None else ""
             if (nonce and self.store.consume_nonce(nonce)) or self.store.is_bot_message(str(message.id)):
@@ -126,8 +129,12 @@ class PrivateDiscordClient(discord.Client):
                 timestamp=message.created_at.timestamp(),
                 attachments=attachments,
             )
-            if self.store.resolve_escalation_on_owner_reply(channel_id):
-                log.info("Manual owner reply resolved the active escalation for %s", channel_id)
+            resumed = await self.runtime.resume_escalation_for_owner_reply(
+                channel_id,
+                message.content,
+            )
+            if resumed:
+                log.info("Manual owner reply resumed the interrupted agent for %s", channel_id)
             conversation = self.store.conversation(channel_id)
             self.runtime.submit_message(
                 message_id=str(message.id),
@@ -139,8 +146,11 @@ class PrivateDiscordClient(discord.Client):
                 content=message.content,
                 attachments=attachments,
                 observed_at=message.created_at.timestamp(),
+                agent_input=False if resumed else None,
             )
-            if not (conversation and conversation["mode"] == "inline" and not conversation["paused"]):
+            if not resumed and not (
+                conversation and conversation["mode"] == "inline" and not conversation["paused"]
+            ):
                 self.runtime.human_activity(channel_id)
             return
         if message.author.bot:

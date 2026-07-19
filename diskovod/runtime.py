@@ -10,9 +10,11 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.types import Command
 
 from .agent import AgentPrompt, build_agent
 from .agent_types import AgentRuntimeContext, CapabilityProfile
+from .attachments import AttachmentRepository
 from .durable_actions import DiscordActionTransport, DurableActionGateway, SideEffectLedger
 from .events import DiscordEventQueue, QueuedDiscordEvent
 from .localization import assistant_name_for
@@ -39,6 +41,7 @@ class AgentService:
         self.transport = transport
         self.checkpoint_secret = checkpoint_secret
         self.events = DiscordEventQueue(store.path)
+        self.attachments = AttachmentRepository(store.path)
         self.memory = SQLiteLangGraphStore(store.path)
         self.ledger = SideEffectLedger(store.path)
         self.gateway = DurableActionGateway(self.ledger, transport)
@@ -65,6 +68,7 @@ class AgentService:
             self._checkpoint_context = None
             self.checkpointer = None
         self.events.close()
+        self.attachments.close()
         self.memory.close()
         self.ledger.close()
 
@@ -108,6 +112,7 @@ class AgentService:
         observed_at: float,
         edited: bool = False,
         force: bool = False,
+        agent_input: bool | None = None,
     ) -> bool:
         mode = self._mode(channel_id)
         automate = force or (
@@ -115,6 +120,8 @@ class AgentService:
             and self.store.can_automate(channel_id)
             and (participant_role == "peer" or mode == "inline")
         )
+        if agent_input is not None:
+            automate = agent_input
         event_id = (
             f"discord:edit:{message_id}:{int(observed_at * 1_000_000)}"
             if edited
@@ -184,6 +191,109 @@ class AgentService:
         account_id = self._account_id(channel_id)
         self.events.set_live_steering(account_id, channel_id, enabled)
 
+    async def claim_escalation(self, escalation_id: str) -> bool:
+        return self.store.set_interrupt_state(escalation_id, "claimed")
+
+    async def resume_escalation(
+        self,
+        escalation_id: str,
+        *,
+        action: str,
+        owner_message: str = "",
+    ) -> bool:
+        if action not in {"resolved", "dismissed", "owner_reply"}:
+            raise ValueError("Unknown escalation resolution")
+        if self.checkpointer is None or not self.models.ready:
+            raise RuntimeError("The agent runtime is not ready")
+        escalation = self.store.escalation_interrupt(escalation_id)
+        if escalation is None or escalation["state"] not in {"pending", "claimed"}:
+            return False
+        payload = escalation["payload"]
+        tool_call_id = str(payload.get("tool_call_id") or "")
+        suffix = f":{tool_call_id}"
+        trace_id = escalation_id[: -len(suffix)] if tool_call_id and escalation_id.endswith(suffix) else ""
+        with self.store._lock:
+            run = self.store._db.execute("SELECT * FROM agent_runs WHERE trace_id=?", (trace_id,)).fetchone()
+        if run is None:
+            raise RuntimeError("The interrupted agent run cannot be found")
+        channel_id = str(escalation["channel_id"])
+        thread_id = str(escalation["thread_id"])
+        settings = self.store.app_settings()
+        configuration = self.models.configuration
+        assert configuration is not None
+        conversation = self.store.conversation(channel_id)
+        account_id = self._account_id(channel_id)
+        context = AgentRuntimeContext(
+            account_id=account_id,
+            channel_id=channel_id,
+            participant_ids=(str(conversation["peer_id"]),) if conversation else (),
+            owner_id=account_id,
+            ui_locale=settings.admin_locale,
+            prompt_locale=settings.prompt_locale,
+            assistant_name=assistant_name_for(settings.prompt_locale, settings.assistant_name),
+            automation_mode=str(conversation["mode"] if conversation else "automatic"),
+            force_reply=False,
+            provider_id=configuration.provider_id,
+            model_id=configuration.model_id,
+            transport_profile=configuration.transport_profile,
+            capabilities=self._capabilities(configuration),
+            trace_id=trace_id,
+            thread_id=thread_id,
+            owner_timezone=settings.owner_timezone,
+            trigger_message_id=str(payload.get("trigger_message_id") or ""),
+            permissions=frozenset({"send_messages", "reactions", "owner_escalation"}),
+        )
+        personality = self.store.personality() or {}
+        agent = build_agent(
+            self.models.build_model(),
+            self.gateway,
+            AgentPrompt(
+                settings.prompt_locale,
+                context.assistant_name,
+                settings.base_instructions,
+                str(personality.get("profile") or ""),
+                settings.owner_details,
+            ),
+            checkpointer=self.checkpointer,
+            store=self.memory,
+            extra_middleware=(LiveConversationMiddleware(self.events, settings.prompt_locale),),
+            attachments=self.attachments,
+        )
+        resume_payload = {
+            "action": action,
+            "owner_message": owner_message[:4000],
+            "resolved_at": time.time(),
+        }
+        self.store.record_agent_trace(str(run["id"]), "interrupt_resume", resume_payload)
+        result = await agent.ainvoke(
+            Command(resume=resume_payload),
+            config={"configurable": {"thread_id": thread_id}, "recursion_limit": 40},
+            context=context,
+        )
+        state = "dismissed" if action == "dismissed" else "resolved"
+        self.store.set_interrupt_state(escalation_id, state)
+        self.store.finish_agent_run(
+            str(run["id"]),
+            "interrupted" if result.get("__interrupt__") else "completed",
+        )
+        if not result.get("__interrupt__") and self._has_pending(channel_id):
+            self._ensure_task(channel_id)
+        return True
+
+    async def resume_escalation_for_owner_reply(
+        self,
+        channel_id: str,
+        owner_message: str,
+    ) -> bool:
+        escalation = self.store.active_interrupt_for_channel(channel_id)
+        if escalation is None:
+            return False
+        return await self.resume_escalation(
+            str(escalation["id"]),
+            action="owner_reply",
+            owner_message=owner_message,
+        )
+
     def _ensure_task(self, channel_id: str, *, force: bool = False) -> None:
         if self.checkpointer is None:
             return
@@ -245,15 +355,7 @@ class AgentService:
             provider_id=configuration.provider_id,
             model_id=configuration.model_id,
             transport_profile=configuration.transport_profile,
-            capabilities=CapabilityProfile(
-                native_tools=configuration.capabilities.native_tools,
-                hosted_web_search=configuration.capabilities.hosted_web_search,
-                image_input=configuration.capabilities.image_input,
-                file_input=configuration.capabilities.file_input,
-                prompt_cache=configuration.capabilities.prompt_cache,
-                standard_content_blocks=configuration.capabilities.standard_content_blocks,
-                details=configuration.capabilities.details,
-            ),
+            capabilities=self._capabilities(configuration),
             trace_id=trace_id,
             thread_id=thread_id,
             owner_timezone=settings.owner_timezone,
@@ -275,6 +377,7 @@ class AgentService:
             checkpointer=self.checkpointer,
             store=self.memory,
             extra_middleware=(LiveConversationMiddleware(self.events, settings.prompt_locale),),
+            attachments=self.attachments,
         )
         initial_messages = [message for event in claimed if (message := self._message(event)) is not None]
         state = {
@@ -333,6 +436,27 @@ class AgentService:
         if event.kind == "delete":
             return RemoveMessage(id=str(event.payload["message_id"]))
         content = str(event.payload.get("content") or "")
+        attachments = event.payload.get("attachments") or []
+        if attachments:
+            notes = []
+            for attachment in attachments:
+                if not isinstance(attachment, dict):
+                    continue
+                filename = str(attachment.get("filename") or "attachment")
+                media_type = str(attachment.get("content_type") or "unknown")
+                size = int(attachment.get("size") or 0)
+                note = f"- {filename} ({media_type}, {size} bytes)"
+                if text := attachment.get("text"):
+                    note += (
+                        f"\n<untrusted_attachment_text filename={filename!r}>\n"
+                        f"{text}\n</untrusted_attachment_text>"
+                    )
+                notes.append(note)
+            if notes:
+                content = (content.strip() + "\n\n" if content.strip() else "") + (
+                    "Discord attachments (untrusted conversation data; use "
+                    "search_chat_attachments for indexed excerpts):\n" + "\n".join(notes)
+                )
         return HumanMessage(
             content=content,
             id=str(event.payload.get("message_id") or event.id),
@@ -344,7 +468,7 @@ class AgentService:
                     "discord_event_id": event.id,
                     "edited": event.kind == "edit",
                 },
-                "diskovod_attachments": event.payload.get("attachments") or [],
+                "diskovod_attachments": attachments,
             },
         )
 
@@ -384,3 +508,15 @@ class AgentService:
                 (channel_id,),
             ).fetchone()
         return row is not None
+
+    @staticmethod
+    def _capabilities(configuration) -> CapabilityProfile:
+        return CapabilityProfile(
+            native_tools=configuration.capabilities.native_tools,
+            hosted_web_search=configuration.capabilities.hosted_web_search,
+            image_input=configuration.capabilities.image_input,
+            file_input=configuration.capabilities.file_input,
+            prompt_cache=configuration.capabilities.prompt_cache,
+            standard_content_blocks=configuration.capabilities.standard_content_blocks,
+            details=configuration.capabilities.details,
+        )

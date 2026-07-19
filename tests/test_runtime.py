@@ -126,3 +126,49 @@ async def test_agent_service_allows_a_zero_message_turn(tmp_path):
     assert store._db.execute("SELECT status FROM agent_runs").fetchone()["status"] == "completed"
     await service.close()
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tmp_path):
+    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store.set_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
+    store.upsert_conversation("channel", "peer", "Peer")
+    transport = RecordingTransport()
+    model = ScriptedChatModel(
+        responses=[
+            tool_call(
+                "escalate_to_owner",
+                {
+                    "reason": "peer_requested_owner",
+                    "acknowledgement": "I marked this for the owner.",
+                },
+                "escalate-1",
+            ),
+            AIMessage(content="The owner resolved the handoff."),
+        ]
+    )
+    service = AgentService(store, FakeModels(model), transport, "x" * 32)
+    await service.start()
+    service.submit_message(
+        message_id="discord-3",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="Can I speak to the owner?",
+        attachments=[],
+        observed_at=time.time(),
+    )
+    await wait_for_idle(service)
+
+    escalation = store.active_interrupts()[0]
+    assert transport.messages == [("channel", ("I marked this for the owner.",))]
+    assert await service.claim_escalation(escalation["id"]) is True
+    assert await service.resume_escalation(escalation["id"], action="resolved") is True
+
+    assert transport.messages == [("channel", ("I marked this for the owner.",))]
+    assert store.active_interrupts() == []
+    assert store._db.execute("SELECT status FROM agent_runs").fetchone()["status"] == "completed"
+    await service.close()
+    store.close()

@@ -11,8 +11,10 @@ from pydantic import Field, StringConstraints
 
 from .agent_actions import AgentActionGateway
 from .agent_types import AgentRuntimeContext, DiskovodAgentState
+from .attachments import AttachmentRepository
 from .calculation import evaluate_expression
 from .localization import tool_text
+from .web_access import WebAccessError, fetch_url as fetch_public_url, search_web as search_public_web
 
 
 MessageText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
@@ -23,7 +25,11 @@ ReactionEmoji = Literal[
 ]
 
 
-def localized_agent_tools(locale: str, gateway: AgentActionGateway) -> list[BaseTool]:
+def localized_agent_tools(
+    locale: str,
+    gateway: AgentActionGateway,
+    attachments: AttachmentRepository | None = None,
+) -> list[BaseTool]:
     text = tool_text(locale)
     invalid = lambda _: text["invalid_arguments"]  # noqa: E731
 
@@ -58,6 +64,80 @@ def localized_agent_tools(locale: str, gateway: AgentActionGateway) -> list[Base
         except (SyntaxError, TypeError, ValueError, ZeroDivisionError, OverflowError):
             return {"ok": False, "error": text["invalid_expression"]}
         return {"ok": True, "result": value}
+
+    async def web_search(
+        query: Annotated[MessageText, Field(description=text["web_query"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> dict[str, Any]:
+        del runtime
+        try:
+            results = await search_public_web(query)
+        except WebAccessError as error:
+            return {"ok": False, "error": text["web_error"], "code": str(error)}
+        return {"ok": True, "results": results}
+
+    async def fetch_url(
+        url: Annotated[MessageText, Field(description=text["url"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> dict[str, Any]:
+        del runtime
+        try:
+            result = await fetch_public_url(url)
+        except WebAccessError as error:
+            return {"ok": False, "error": text["web_error"], "code": str(error)}
+        return {"ok": True, **result}
+
+    async def search_chat_attachments(
+        query: Annotated[MessageText, Field(description=text["web_query"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> dict[str, Any]:
+        if attachments is None:
+            return {"ok": False, "error": "attachment_store_unavailable"}
+        return {"ok": True, "results": attachments.search(runtime.context.channel_id, query)}
+
+    async def search_chat_memory(
+        query: Annotated[MessageText, Field(description=text["web_query"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> dict[str, Any]:
+        if runtime.store is None:
+            return {"ok": False, "error": text["memory_unavailable"]}
+        namespace = ("chat", runtime.context.account_id, runtime.context.channel_id, "memory")
+        items = runtime.store.search(namespace, query=query, limit=8)
+        return {
+            "ok": True,
+            "memories": [{"key": item.key, "value": item.value} for item in items],
+        }
+
+    async def remember_chat_memory(
+        key: Annotated[MessageText, Field(description=text["memory_key"])],
+        value: Annotated[MessageText, Field(description=text["memory_value"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> dict[str, Any]:
+        if runtime.store is None:
+            return {"ok": False, "error": text["memory_unavailable"]}
+        namespace = ("chat", runtime.context.account_id, runtime.context.channel_id, "memory")
+        normalized_key = "-".join(key.casefold().split())[:120]
+        runtime.store.put(
+            namespace,
+            normalized_key,
+            {
+                "fact": value,
+                "source_message_id": runtime.context.trigger_message_id,
+                "trace_id": runtime.context.trace_id,
+            },
+        )
+        return {"ok": True, "key": normalized_key}
+
+    async def forget_chat_memory(
+        key: Annotated[MessageText, Field(description=text["memory_key"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> dict[str, Any]:
+        if runtime.store is None:
+            return {"ok": False, "error": text["memory_unavailable"]}
+        namespace = ("chat", runtime.context.account_id, runtime.context.channel_id, "memory")
+        normalized_key = "-".join(key.casefold().split())[:120]
+        runtime.store.delete(namespace, normalized_key)
+        return {"ok": True, "key": normalized_key}
 
     async def send_messages(
         messages: Annotated[
@@ -153,6 +233,42 @@ def localized_agent_tools(locale: str, gateway: AgentActionGateway) -> list[Base
             coroutine=calculate,
             name="calculate",
             description=text["calculate"],
+            handle_validation_error=invalid,
+        ),
+        StructuredTool.from_function(
+            coroutine=web_search,
+            name="web_search",
+            description=text["web_search"],
+            handle_validation_error=invalid,
+        ),
+        StructuredTool.from_function(
+            coroutine=fetch_url,
+            name="fetch_url",
+            description=text["fetch_url"],
+            handle_validation_error=invalid,
+        ),
+        StructuredTool.from_function(
+            coroutine=search_chat_attachments,
+            name="search_chat_attachments",
+            description=text["attachment_search"],
+            handle_validation_error=invalid,
+        ),
+        StructuredTool.from_function(
+            coroutine=search_chat_memory,
+            name="search_chat_memory",
+            description=text["memory_search"],
+            handle_validation_error=invalid,
+        ),
+        StructuredTool.from_function(
+            coroutine=remember_chat_memory,
+            name="remember_chat_memory",
+            description=text["remember_memory"],
+            handle_validation_error=invalid,
+        ),
+        StructuredTool.from_function(
+            coroutine=forget_chat_memory,
+            name="forget_chat_memory",
+            description=text["forget_memory"],
             handle_validation_error=invalid,
         ),
         StructuredTool.from_function(

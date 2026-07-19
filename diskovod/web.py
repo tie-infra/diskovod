@@ -729,23 +729,24 @@ class WebApp:
             return self._back(tab="conversations", message=self._t("forced_reply_scheduled"))
 
         @self.app.post("/escalations/{escalation_id}/claim")
-        async def escalation_claim(escalation_id: int, _: str = Depends(auth)):
-            if not self.store.set_escalation_state(escalation_id, "claimed"):
+        async def escalation_claim(escalation_id: str, _: str = Depends(auth)):
+            if not await self.runtime.claim_escalation(escalation_id):
                 return self._back(tab="conversations", error=self._t("escalation_not_found"))
             return self._back(tab="conversations", message=self._t("escalation_claimed"))
 
         @self.app.post("/escalations/{escalation_id}/resolve")
         async def escalation_resolve(
-            escalation_id: int,
+            escalation_id: str,
             resume: str | None = Form(None),
             _: str = Depends(auth),
         ):
-            if not self.store.set_escalation_state(
-                escalation_id,
-                "resolved",
-                resume=resume is not None,
-            ):
+            if not await self.runtime.resume_escalation(escalation_id, action="resolved"):
                 return self._back(tab="conversations", error=self._t("escalation_not_found"))
+            if resume is not None:
+                escalation = self.store.escalation_interrupt(escalation_id)
+                if escalation:
+                    self.store.set_permanent_pause(str(escalation["channel_id"]), False)
+                    self.store.clear_snooze(str(escalation["channel_id"]))
             return self._back(
                 tab="conversations",
                 message=self._t("escalation_resolved")
@@ -754,15 +755,11 @@ class WebApp:
 
         @self.app.post("/escalations/{escalation_id}/dismiss")
         async def escalation_dismiss(
-            escalation_id: int,
+            escalation_id: str,
             resume: str | None = Form(None),
             _: str = Depends(auth),
         ):
-            if not self.store.set_escalation_state(
-                escalation_id,
-                "dismissed",
-                resume=resume is not None,
-            ):
+            if not await self.runtime.resume_escalation(escalation_id, action="dismissed"):
                 return self._back(tab="conversations", error=self._t("escalation_not_found"))
             return self._back(
                 tab="conversations",
@@ -854,8 +851,12 @@ class WebApp:
         return personality
 
     def _escalation_views(self) -> list[dict[str, Any]]:
-        result = self.store.active_escalations()
+        result = self.store.active_interrupts()
         for escalation in result:
+            payload = escalation["payload"]
+            escalation["reason"] = str(payload.get("reason") or "other_explicit_request")
+            escalation["delivery_error"] = None
+            escalation["requested_at"] = escalation["created_at"]
             escalation["reason_label"] = ui_text(
                 self.store.app_settings().admin_locale,
                 f"reason_{escalation['reason']}",

@@ -13,8 +13,7 @@ from langchain.agents.middleware import (
     hook_config,
 )
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import ToolMessage
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 from langgraph.store.base import BaseStore
@@ -23,6 +22,7 @@ from langgraph.runtime import Runtime
 from .agent_actions import AgentActionGateway
 from .agent_tools import localized_agent_tools
 from .agent_types import AgentRuntimeContext, DiskovodAgentState
+from .attachments import AttachmentRepository
 from .localization import assistant_identity, escalation_fallback, prompts_for, tool_policy
 
 
@@ -67,6 +67,35 @@ class RuntimePromptMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeCo
         return await handler(
             request.override(system_message=SystemMessage(content=stable + "\n\n" + "\n".join(suffix)))
         )
+
+
+class AttachmentInputMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeContext]):
+    """Add current attachment URLs to one model request without persisting provider inputs."""
+
+    async def awrap_model_call(self, request, handler):
+        context = request.runtime.context
+        messages = []
+        changed = False
+        for message in request.messages:
+            if not isinstance(message, HumanMessage) or message.id != context.trigger_message_id:
+                messages.append(message)
+                continue
+            attachments = message.additional_kwargs.get("diskovod_attachments") or []
+            blocks: list[dict[str, Any]] = [{"type": "text", "text": message.text}]
+            for attachment in attachments:
+                if not isinstance(attachment, dict) or not attachment.get("url"):
+                    continue
+                media_type = str(attachment.get("content_type") or "")
+                if context.capabilities.image_input and media_type.startswith("image/"):
+                    blocks.append({"type": "image", "url": str(attachment["url"]), "mime_type": media_type})
+                elif context.capabilities.file_input:
+                    blocks.append({"type": "file", "url": str(attachment["url"]), "mime_type": media_type})
+            if len(blocks) > 1:
+                messages.append(message.model_copy(update={"content": blocks}))
+                changed = True
+            else:
+                messages.append(message)
+        return await handler(request.override(messages=messages) if changed else request)
 
 
 class ExplicitSendTerminationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeContext]):
@@ -144,15 +173,17 @@ def build_agent(
     model_call_limit: int = 12,
     tool_call_limit: int = 24,
     extra_middleware: Sequence[AgentMiddleware] = (),
+    attachments: AttachmentRepository | None = None,
 ):
     """Build Diskovod's provider-neutral LangChain agent loop."""
     return create_agent(
         model=model,
-        tools=localized_agent_tools(prompt.locale, gateway),
+        tools=localized_agent_tools(prompt.locale, gateway, attachments),
         system_prompt=prompt.stable_prefix(),
         middleware=(
             *extra_middleware,
             RuntimePromptMiddleware(),
+            AttachmentInputMiddleware(),
             EscalationValidationMiddleware(gateway, prompt.locale),
             ExplicitSendTerminationMiddleware(),
             ModelCallLimitMiddleware(run_limit=model_call_limit, exit_behavior="error"),

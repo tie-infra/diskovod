@@ -37,7 +37,7 @@ class RecordingHTTP:
 async def test_attachment_is_content_addressed_and_searchable_per_chat(tmp_path: Path):
     body = b"The launch code name is blue heron."
     http = RecordingHTTP(body)
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     repository = AttachmentRepository(store.database, http)
     attachment = Attachment(
         id="attachment-1",

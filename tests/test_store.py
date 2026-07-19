@@ -1,6 +1,6 @@
-import sqlite3
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from diskovod.models import (
@@ -25,7 +25,7 @@ LEGACY_BASE_INSTRUCTIONS = (
 
 
 async def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
 
     assert store.app_settings().silent_replies is False
     assert store.app_settings().robot_prefix is False
@@ -44,7 +44,7 @@ async def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
         )
     )
     await store.aclose()
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     assert store.app_settings().silent_replies is True
     assert store.app_settings().robot_prefix is True
     assert store.app_settings().assistant_name == "Helper"
@@ -56,7 +56,7 @@ async def test_app_settings_persist_reply_and_owner_options(tmp_path: Path):
 
 
 async def test_removed_settings_are_ignored_when_loading_older_configuration(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store._aset("app.settings", {"multi_message_chance": 25, "max_reply_messages": 4})
 
     assert "max_reply_messages" not in store.app_settings().to_dict()
@@ -65,7 +65,7 @@ async def test_removed_settings_are_ignored_when_loading_older_configuration(tmp
 
 
 async def test_localization_settings_round_trip_and_unknown_values_fall_back(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     settings = AppSettings(admin_locale="fr", prompt_locale="uk")
     await store.aset_app_settings(settings)
 
@@ -81,7 +81,7 @@ async def test_localization_settings_round_trip_and_unknown_values_fall_back(tmp
 
 
 async def test_admin_theme_round_trip_and_unknown_value_falls_back(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
 
     assert store.app_settings().admin_theme == "system"
     await store.aset_app_settings(AppSettings(admin_theme="black"))
@@ -93,7 +93,7 @@ async def test_admin_theme_round_trip_and_unknown_value_falls_back(tmp_path: Pat
 
 
 async def test_legacy_impersonation_prompt_is_replaced_but_custom_prompt_is_preserved(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store._aset("app.settings", {"base_instructions": LEGACY_BASE_INSTRUCTIONS})
 
     assert store.app_settings().base_instructions == DEFAULT_BASE_INSTRUCTIONS
@@ -104,7 +104,7 @@ async def test_legacy_impersonation_prompt_is_replaced_but_custom_prompt_is_pres
 
 
 async def test_new_conversations_follow_default_without_changing_existing_enrollment(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aupsert_conversation("existing", "peer-1", "Existing")
     assert await store.acan_automate("existing") is True
 
@@ -124,7 +124,7 @@ async def test_new_conversations_follow_default_without_changing_existing_enroll
 
 async def test_secrets_are_encrypted_and_round_trip(tmp_path: Path):
     path = tmp_path / "state.sqlite3"
-    store = Store(path, SECRET)
+    store = await Store.open(path, SECRET)
     await store.aset_discord_token("very-secret-token")
     await store.aset_chat_credentials(
         ChatCredentials("access-secret", "refresh-secret", 123, "acct", "a@example.test")
@@ -141,7 +141,7 @@ async def test_secrets_are_encrypted_and_round_trip(tmp_path: Path):
 
 
 async def test_legacy_custom_provider_is_migrated_to_pinned_chat_completions(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store._aset(
         "openai_compatible.provider",
         {"name": "Legacy", "base_url": "https://models.example/v1", "api_key": "key"},
@@ -153,7 +153,7 @@ async def test_legacy_custom_provider_is_migrated_to_pinned_chat_completions(tmp
 
 
 async def test_custom_provider_capabilities_round_trip(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aset_custom_provider(
         CustomProvider(
             "Responses",
@@ -173,7 +173,7 @@ async def test_custom_provider_capabilities_round_trip(tmp_path: Path):
 
 
 async def test_database_explorer_redacts_secrets_searches_and_deletes_mutable_rows(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aset_discord_token("very-secret-token")
     await store.aupsert_conversation("dm", "peer", "Peer")
     await store.asave_message(
@@ -217,7 +217,7 @@ async def test_database_explorer_redacts_secrets_searches_and_deletes_mutable_ro
 
 
 async def test_database_management_rejects_unknown_and_read_only_tables(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
 
     with pytest.raises(ValueError, match="Unknown database table"):
         await store.adatabase_rows("sqlite_master")
@@ -227,7 +227,7 @@ async def test_database_management_rejects_unknown_and_read_only_tables(tmp_path
 
 
 async def test_human_quiet_window_expires_without_permanent_pause(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aupsert_conversation("dm-1", "peer-1", "Sam")
     until = await store.asnooze("dm-1", 60)
     assert (await store.aconversation("dm-1"))["paused"] is False
@@ -238,7 +238,7 @@ async def test_human_quiet_window_expires_without_permanent_pause(tmp_path: Path
 
 
 async def test_permanent_pause_remains_until_explicit_resume(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aupsert_conversation("dm-1", "peer-1", "Sam")
     await store.aset_permanent_pause("dm-1", True)
     assert await store.acan_automate("dm-1", now=10**12) is False
@@ -249,7 +249,7 @@ async def test_permanent_pause_remains_until_explicit_resume(tmp_path: Path):
 
 
 async def test_inline_conversation_mode_survives_pause_and_resume(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aupsert_conversation("dm-1", "peer-1", "Sam")
 
     assert (await store.aconversation("dm-1"))["mode"] == "automatic"
@@ -268,7 +268,7 @@ async def test_inline_conversation_mode_survives_pause_and_resume(tmp_path: Path
 
 
 async def test_bot_markers_are_consumed_once(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aremember_nonce("nonce")
     assert await store.aconsume_nonce("nonce") is True
     assert await store.aconsume_nonce("nonce") is False
@@ -278,7 +278,7 @@ async def test_bot_markers_are_consumed_once(tmp_path: Path):
 
 
 async def test_message_edits_replace_content_and_can_reclassify_owner_message(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aupsert_conversation("dm", "peer", "Peer")
     await store.asave_message(
         id="message",
@@ -301,7 +301,7 @@ async def test_message_edits_replace_content_and_can_reclassify_owner_message(tm
 
 
 async def test_message_attachments_round_trip_as_structured_history(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aupsert_conversation("dm", "peer", "Peer")
     attachments = [
         {
@@ -332,18 +332,17 @@ async def test_message_attachments_round_trip_as_structured_history(tmp_path: Pa
 
 async def test_existing_message_table_is_migrated_for_attachments(tmp_path: Path):
     path = tmp_path / "state.sqlite3"
-    database = sqlite3.connect(path)
-    database.execute(
-        """CREATE TABLE messages (
-             id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, author_id TEXT NOT NULL,
-             author_name TEXT NOT NULL, direction TEXT NOT NULL, source TEXT NOT NULL,
-             content TEXT NOT NULL, timestamp REAL NOT NULL
-           )"""
-    )
-    database.commit()
-    database.close()
+    async with aiosqlite.connect(path) as database:
+        await database.execute(
+            """CREATE TABLE messages (
+                 id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, author_id TEXT NOT NULL,
+                 author_name TEXT NOT NULL, direction TEXT NOT NULL, source TEXT NOT NULL,
+                 content TEXT NOT NULL, timestamp REAL NOT NULL
+               )"""
+        )
+        await database.commit()
 
-    store = Store(path, SECRET)
+    store = await Store.open(path, SECRET)
 
     async with store.database.transaction() as connection:
         rows = await (await connection.execute("PRAGMA table_info(messages)")).fetchall()
@@ -353,7 +352,7 @@ async def test_existing_message_table_is_migrated_for_attachments(tmp_path: Path
 
 
 async def test_store_has_no_long_lived_synchronous_sqlite_connection(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
 
     assert not hasattr(store, "_db")
     await store.aupsert_conversation("dm", "peer", "Peer")
@@ -362,7 +361,7 @@ async def test_store_has_no_long_lived_synchronous_sqlite_connection(tmp_path: P
 
 
 async def test_assistant_reactions_are_rate_limited_across_actions_and_channels(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aupsert_conversation("dm-1", "peer-1", "Sam")
     await store.aupsert_conversation("dm-2", "peer-2", "Lee")
     now = 2_000_000.0
@@ -393,7 +392,7 @@ async def test_assistant_reactions_are_rate_limited_across_actions_and_channels(
 
 
 async def test_personality_can_be_edited(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", SECRET)
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aset_personality("Inferred profile", "history-hash", source="Discord history")
     await store.aset_personality("Edited and expanded personality profile", "edit-hash", source="edited")
 

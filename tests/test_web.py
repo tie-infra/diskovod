@@ -91,7 +91,7 @@ def test_assistant_settings_defaults_preserve_only_admin_appearance():
 
 
 async def test_subscription_web_search_probe_view_exposes_safe_debug_metadata(tmp_path):
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     async with store.database.transaction() as connection:
         await connection.execute(
             """INSERT INTO provider_capability_probes

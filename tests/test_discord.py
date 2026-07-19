@@ -139,7 +139,7 @@ async def test_discord_connection_failure_retries_without_stopping_service(
     RetryClient.attempts = 0
     RetryClient.ready_event = asyncio.Event()
     monkeypatch.setattr(discord_module, "PrivateDiscordClient", RetryClient)
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     await store.aset_discord_token("discord-token")
     service = DiscordService(store)
     service.attach_runtime(cast(object, SimpleNamespace()))
@@ -161,7 +161,7 @@ async def test_discord_connection_failure_retries_without_stopping_service(
 
 @pytest.mark.asyncio
 async def test_force_reply_fetches_latest_incoming_discord_message(tmp_path: Path):
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     await store.aupsert_conversation("42", "peer", "Peer")
     await store.asave_message(
         id="123",
@@ -216,7 +216,7 @@ async def test_personality_history_is_limited_and_excludes_generated_messages(tm
         )
         for index in range(30)
     ]
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     await store.asave_message(
         id="4",
         channel_id="dm",
@@ -284,7 +284,7 @@ async def test_personality_history_marks_consecutive_owner_message_bursts(tmp_pa
             created_at=datetime.fromtimestamp(now + 5, timezone.utc),
         ),
     ]
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     service = DiscordService(store)
     service.client = cast(
         PrivateDiscordClient,
@@ -312,7 +312,7 @@ async def test_raw_owner_edit_updates_style_history_and_marks_human_activity(
     monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
     user = SimpleNamespace(id=999)
     runtime = EditRuntime()
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     await store.aupsert_conversation("42", "peer", "Peer")
     await store.asave_message(
         id="outgoing",
@@ -350,7 +350,7 @@ async def test_raw_owner_edit_reschedules_inline_collaboration(
     monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
     user = SimpleNamespace(id=999)
     runtime = EditRuntime()
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     await store.aupsert_conversation("42", "peer", "Peer")
     await store.aset_conversation_mode("42", "inline")
     await store.asave_message(
@@ -388,7 +388,7 @@ async def test_raw_remote_edit_updates_history_and_only_requests_pending_resched
     user = SimpleNamespace(id=999)
     remote = SimpleNamespace(id=123, bot=False)
     runtime = EditRuntime()
-    store = Store(tmp_path / "state.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     await store.aupsert_conversation("42", "peer", "Peer")
     await store.asave_message(
         id="incoming",

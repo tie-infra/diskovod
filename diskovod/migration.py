@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import hashlib
-import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -107,7 +106,7 @@ class LegacyMigrator:
     async def run(self) -> MigrationReport:
         if self.store._get(MIGRATION_KEY, None):
             return MigrationReport(None, 0, 0, 0, 0)
-        backup = await asyncio.to_thread(self._backup)
+        backup = await self._backup()
         conversations = await self.store.aconversations()
         event_count = 0
         checkpoint_count = 0
@@ -168,7 +167,7 @@ class LegacyMigrator:
         )
         return report
 
-    def _backup(self) -> Path:
+    async def _backup(self) -> Path:
         backup_dir = self.store.path.parent / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -177,23 +176,20 @@ class LegacyMigrator:
         while target.exists():
             target = backup_dir / f"pre-langgraph-{stamp}-{suffix}.sqlite3"
             suffix += 1
-        source = sqlite3.connect(self.store.path)
-        destination = sqlite3.connect(target)
-        destination.row_factory = sqlite3.Row
-        try:
-            source.backup(destination)
-            integrity = destination.execute("PRAGMA integrity_check").fetchone()[0]
+        async with aiosqlite.connect(self.store.path) as source, aiosqlite.connect(target) as destination:
+            destination.row_factory = aiosqlite.Row
+            await source.backup(destination)
+            integrity = (await (await destination.execute("PRAGMA integrity_check")).fetchone())[0]
             if integrity != "ok":
                 raise RuntimeError(f"Migration backup integrity check failed: {integrity}")
             objects = [
                 dict(row)
-                for row in destination.execute(
-                    "SELECT sha256, size, storage_path FROM attachment_objects ORDER BY sha256"
+                for row in await (
+                    await destination.execute(
+                        "SELECT sha256, size, storage_path FROM attachment_objects ORDER BY sha256"
+                    )
                 ).fetchall()
             ]
-        finally:
-            source.close()
-            destination.close()
         manifest = {
             "database": target.name,
             "created_at": time.time(),

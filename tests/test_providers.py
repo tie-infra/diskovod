@@ -206,7 +206,7 @@ def test_subscription_adapter_is_responses_only_and_uses_private_surface_narrowl
 
 
 async def test_subscription_configuration_omits_unsupported_token_limit(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     models = ModelService(store, SimpleNamespace(connected=True))
 
     await models.asave_subscription(
@@ -222,7 +222,7 @@ async def test_subscription_configuration_omits_unsupported_token_limit(tmp_path
 
 
 async def test_model_configuration_round_trips_as_an_immutable_active_version(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     first = configuration("openai", "responses")
     second = configuration("custom_openai", "chat_completions", endpoint="https://example.test/v1")
 
@@ -240,7 +240,7 @@ async def test_model_configuration_round_trips_as_an_immutable_active_version(tm
 
 
 async def test_provider_credentials_are_encrypted_and_profile_scoped(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     await store.aset_provider_credentials("custom_openai_default", {"api_key": "secret-value"})
 
     assert store.provider_credentials("custom_openai_default") == {"api_key": "secret-value"}
@@ -256,7 +256,7 @@ async def test_provider_credentials_are_encrypted_and_profile_scoped(tmp_path):
 
 
 async def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with_personality(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     models = ModelService(store, SimpleNamespace(connected=False))
     provider = CustomProvider(
         "Local",
@@ -292,7 +292,7 @@ async def test_prompt_cache_identity_is_shared_by_configuration_and_rotates_with
 
 
 async def test_custom_provider_without_token_limit_capability_omits_option(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     models = ModelService(store, SimpleNamespace(connected=False))
     provider = CustomProvider(
         "Limited",
@@ -316,7 +316,7 @@ async def test_custom_provider_without_token_limit_capability_omits_option(tmp_p
 
 @pytest.mark.asyncio
 async def test_provider_probe_capture_includes_v3_stream_events(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     setup = ProviderSetup(store, SimpleNamespace())
     model = StreamingChatModel(responses=[AIMessage(content="probe complete")])
 

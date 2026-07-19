@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import sqlite3
 import threading
 import time
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+
+import aiosqlite
 
 from .localization import normalize_locale
 from .models import (
@@ -150,29 +151,52 @@ class Store:
         self.database = AsyncSQLite(path)
         self._cache_lock = threading.RLock()
         self._cache_write_lock = asyncio.Lock()
+        self._start_lock = asyncio.Lock()
+        self._started = False
         self._box = SecretBox(secret)
-        with sqlite3.connect(path) as connection:
-            connection.row_factory = sqlite3.Row
-            initialize_target_schema(connection)
-            message_columns = {
-                row["name"] for row in connection.execute("PRAGMA table_info(messages)").fetchall()
-            }
-            if "attachments" not in message_columns:
-                connection.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
-            conversation_columns = {
-                row["name"] for row in connection.execute("PRAGMA table_info(conversations)").fetchall()
-            }
-            if "mode" not in conversation_columns:
-                connection.execute(
-                    "ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'automatic'"
-                )
-            self._config = {
-                str(row["key"]): self._decode_config(row["value"], bool(row["secret"]))
-                for row in connection.execute("SELECT key, value, secret FROM config")
-            }
-            active = connection.execute(
-                "SELECT configuration FROM agent_configuration_versions WHERE active=1"
-            ).fetchone()
+        self._config: dict[str, Any] = {}
+        self._active_configuration: dict[str, Any] | None = None
+
+    @classmethod
+    async def open(cls, path: Path, secret: str) -> Store:
+        store = cls(path, secret)
+        await store.start()
+        return store
+
+    async def start(self) -> None:
+        if self._started:
+            return
+        async with self._start_lock:
+            if self._started:
+                return
+            async with self.database.transaction() as connection:
+                await initialize_target_schema(connection)
+                await self._load(connection)
+            self._started = True
+
+    async def _load(self, connection: aiosqlite.Connection) -> None:
+        message_columns = {
+            row["name"] for row in await (await connection.execute("PRAGMA table_info(messages)")).fetchall()
+        }
+        if "attachments" not in message_columns:
+            await connection.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+        conversation_columns = {
+            row["name"]
+            for row in await (await connection.execute("PRAGMA table_info(conversations)")).fetchall()
+        }
+        if "mode" not in conversation_columns:
+            await connection.execute(
+                "ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'automatic'"
+            )
+        config = {
+            str(row["key"]): self._decode_config(row["value"], bool(row["secret"]))
+            for row in await (await connection.execute("SELECT key, value, secret FROM config")).fetchall()
+        }
+        active = await (
+            await connection.execute("SELECT configuration FROM agent_configuration_versions WHERE active=1")
+        ).fetchone()
+        with self._cache_lock:
+            self._config = config
             self._active_configuration = json.loads(active["configuration"]) if active else None
 
     async def aclose(self) -> None:
@@ -183,6 +207,7 @@ class Store:
         return json.loads(value)
 
     async def _aset(self, key: str, value: Any, *, secret: bool = False) -> None:
+        await self.start()
         raw = json.dumps(value)
         if secret:
             raw = self._box.seal(raw)
@@ -198,6 +223,7 @@ class Store:
                 self._config[key] = deepcopy(value)
 
     async def _adelete(self, key: str) -> None:
+        await self.start()
         async with self._cache_write_lock:
             async with self.database.transaction() as connection:
                 await connection.execute("DELETE FROM config WHERE key=?", (key,))

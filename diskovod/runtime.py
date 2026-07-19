@@ -89,7 +89,8 @@ class AgentService:
         if self.checkpointer is not None:
             return
         self._closing = False
-        await self.store.database.start()
+        await self.store.start()
+        await self.memory.start()
         self._checkpoint_context = open_checkpointer(self.store.path, self.checkpoint_secret)
         self.checkpointer = await self._checkpoint_context.__aenter__()
         for channel_id in await self.store.apending_channels():
@@ -106,7 +107,6 @@ class AgentService:
             await self._checkpoint_context.__aexit__(None, None, None)
             self._checkpoint_context = None
             self.checkpointer = None
-        self.memory.close()
 
     @property
     def ready(self) -> bool:

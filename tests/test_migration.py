@@ -15,7 +15,7 @@ from test_runtime import FakeModels, RecordingTransport
 
 @pytest.mark.asyncio
 async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_path: Path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     await store.aupsert_conversation("channel", "peer", "Peer")
     await store.asave_message(
         id="peer-message",
@@ -84,7 +84,7 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
 
 @pytest.mark.asyncio
 async def test_cutover_converts_active_legacy_escalation_to_real_interrupt(tmp_path: Path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     await store.aupsert_conversation("channel", "peer", "Peer")
     await store.asave_message(
         id="trigger",

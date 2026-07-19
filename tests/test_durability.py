@@ -60,7 +60,7 @@ def context(trace_id: str = "run-1") -> AgentRuntimeContext:
 
 @pytest.mark.asyncio
 async def test_completed_side_effect_is_replayed_without_duplicate_delivery(tmp_path: Path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     ledger = SideEffectLedger(store.database)
     transport = Transport()
     gateway = DurableActionGateway(ledger, transport)
@@ -75,7 +75,7 @@ async def test_completed_side_effect_is_replayed_without_duplicate_delivery(tmp_
 
 @pytest.mark.asyncio
 async def test_ambiguous_transport_failure_is_recorded_and_never_retried(tmp_path: Path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     ledger = SideEffectLedger(store.database)
     transport = Transport(raises=True)
     gateway = DurableActionGateway(ledger, transport)
@@ -92,7 +92,7 @@ async def test_ambiguous_transport_failure_is_recorded_and_never_retried(tmp_pat
 @pytest.mark.asyncio
 async def test_tool_sends_do_not_block_checkpoint_commits(tmp_path: Path):
     path = tmp_path / "diskovod.sqlite3"
-    store = Store(path, "x" * 32)
+    store = await Store.open(path, "x" * 32)
     ledger = ClaimSignalingLedger(store)
     transport = Transport()
     gateway = DurableActionGateway(ledger, transport)
@@ -137,7 +137,7 @@ async def test_tool_sends_do_not_block_checkpoint_commits(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_event_queue_is_ordered_deduplicated_and_isolated_by_chat(tmp_path: Path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     queue = DiscordEventQueue(store.database)
     assert await queue.thread_id("account", "chat-a") == "discord:account:chat-a:g1"
     assert await queue.thread_id("account", "chat-b") == "discord:account:chat-b:g1"
@@ -158,7 +158,7 @@ async def test_event_queue_is_ordered_deduplicated_and_isolated_by_chat(tmp_path
 
 @pytest.mark.asyncio
 async def test_event_queue_persists_live_steering_and_generation_rollover(tmp_path: Path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     queue = DiscordEventQueue(store.database)
     await queue.set_live_steering("account", "chat", False)
     assert await queue.live_steering("chat") is False

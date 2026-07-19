@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -56,7 +55,7 @@ class EscalationTransport:
 
 @pytest.mark.asyncio
 async def test_valid_escalation_interrupts_and_resumes_without_resending(tmp_path: Path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     ledger = SideEffectLedger(store.database)
     transport = EscalationTransport()
     gateway = DurableActionGateway(ledger, transport)
@@ -93,7 +92,7 @@ async def test_valid_escalation_interrupts_and_resumes_without_resending(tmp_pat
 
     assert resumed["messages"][-1].content == "done after owner resolution"
     assert transport.messages == 1
-    connection = sqlite3.connect(tmp_path / "diskovod.sqlite3")
-    assert connection.execute("SELECT state FROM escalation_interrupts").fetchone() == ("pending",)
-    connection.close()
+    async with store.database.transaction() as connection:
+        row = await (await connection.execute("SELECT state FROM escalation_interrupts")).fetchone()
+    assert row["state"] == "pending"
     await store.aclose()

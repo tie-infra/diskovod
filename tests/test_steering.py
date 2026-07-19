@@ -67,7 +67,7 @@ class InjectingGateway(RecordingGateway):
 
 @pytest.mark.asyncio
 async def test_new_input_cancels_unstarted_tool_and_returns_to_model(tmp_path: Path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     queue = DiscordEventQueue(store.database)
     await queue.thread_id("account", "channel")
     model = InjectingModel(
@@ -112,7 +112,7 @@ async def test_new_input_cancels_unstarted_tool_and_returns_to_model(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_recovery_reapplies_claimed_but_uncheckpointed_events(tmp_path: Path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     queue = DiscordEventQueue(store.database)
     await queue.thread_id("account", "channel")
     await queue.ingest("event", "channel", "message", {"content": "recovered"})
@@ -134,7 +134,7 @@ async def test_recovery_reapplies_claimed_but_uncheckpointed_events(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_live_input_wins_race_with_explicit_send_termination(tmp_path: Path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     queue = DiscordEventQueue(store.database)
     await queue.thread_id("account", "channel")
     gateway = InjectingGateway(queue)

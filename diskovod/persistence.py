@@ -4,8 +4,6 @@ import asyncio
 import hashlib
 import json
 import os
-import sqlite3
-import threading
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -291,24 +289,29 @@ class AsyncSQLite:
         return self._connection
 
 
-def initialize_target_schema(connection: sqlite3.Connection) -> None:
+async def initialize_target_schema(connection: aiosqlite.Connection) -> None:
     """Apply target-schema migrations to Diskovod's single relational database."""
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-    connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute(
+    await connection.execute("PRAGMA journal_mode=WAL")
+    await connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    await connection.execute("PRAGMA foreign_keys=ON")
+    await connection.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
     )
-    applied = {int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations").fetchall()}
+    applied = {
+        int(row[0])
+        for row in await (await connection.execute("SELECT version FROM schema_migrations")).fetchall()
+    }
     for version, migration in enumerate(TARGET_MIGRATIONS, start=1):
         if version in applied:
             continue
-        connection.executescript(migration)
-        connection.execute(
+        await connection.executescript(migration)
+        await connection.execute(
             "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
             (version, datetime.now(UTC).timestamp()),
         )
-    current = connection.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0]
+    current = (
+        await (await connection.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")).fetchone()
+    )[0]
     if current != TARGET_SCHEMA_VERSION:
         raise RuntimeError(f"Unsupported Diskovod schema version {current}")
 
@@ -360,47 +363,45 @@ class SQLiteLangGraphStore(BaseStore):
     def __init__(self, path: Path, database: AsyncSQLite | None = None):
         self.path = path
         self.database = database or AsyncSQLite(path)
-        self._connection: sqlite3.Connection | None = None
-        self._lock = threading.RLock()
-        with sqlite3.connect(path) as connection:
-            initialize_target_schema(connection)
-
-    def _sync_connection(self) -> sqlite3.Connection:
-        if self._connection is None:
-            connection = sqlite3.connect(self.path, check_same_thread=False)
-            connection.row_factory = sqlite3.Row
-            connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-            connection.execute("PRAGMA foreign_keys=ON")
-            self._connection = connection
-        return self._connection
-
-    def close(self) -> None:
-        with self._lock:
-            if self._connection is not None:
-                self._connection.close()
-                self._connection = None
+        self._schema_ready = False
+        self._schema_lock = asyncio.Lock()
 
     def batch(self, ops: Iterable[Op]) -> list[Result]:
-        operations = list(ops)
-        results: list[Result] = []
-        with self._lock, self._sync_connection():
-            for operation in operations:
-                if isinstance(operation, GetOp):
-                    results.append(self._get(operation))
-                elif isinstance(operation, PutOp):
-                    results.append(self._put(operation))
-                elif isinstance(operation, SearchOp):
-                    results.append(self._search(operation))
-                elif isinstance(operation, ListNamespacesOp):
-                    results.append(self._list_namespaces(operation))
-                else:
-                    raise TypeError(f"Unsupported Store operation: {type(operation).__name__}")
-        return results
+        """Adapt LangGraph's mandatory sync API to the canonical async implementation."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._adapt_sync_batch(list(ops)))
+        raise RuntimeError("Use the asynchronous LangGraph Store API from an async event loop")
+
+    async def _adapt_sync_batch(self, operations: list[Op]) -> list[Result]:
+        database = AsyncSQLite(self.path)
+        try:
+            await self._initialize_database(database)
+            return await self._abatch(database, operations)
+        finally:
+            await database.close()
 
     async def abatch(self, ops: Iterable[Op]) -> list[Result]:
-        operations = list(ops)
+        await self.start()
+        return await self._abatch(self.database, list(ops))
+
+    async def start(self) -> None:
+        if self._schema_ready:
+            return
+        async with self._schema_lock:
+            if not self._schema_ready:
+                await self._initialize_database(self.database)
+                self._schema_ready = True
+
+    @staticmethod
+    async def _initialize_database(database: AsyncSQLite) -> None:
+        async with database.transaction() as connection:
+            await initialize_target_schema(connection)
+
+    async def _abatch(self, database: AsyncSQLite, operations: list[Op]) -> list[Result]:
         results: list[Result] = []
-        async with self.database.transaction() as connection:
+        async with database.transaction() as connection:
             for operation in operations:
                 if isinstance(operation, GetOp):
                     results.append(await self._aget(connection, operation))
@@ -523,118 +524,8 @@ class SQLiteLangGraphStore(BaseStore):
         namespaces.sort()
         return namespaces[operation.offset : operation.offset + operation.limit]
 
-    def _get(self, operation: GetOp) -> Item | None:
-        namespace = self._namespace(operation.namespace)
-        row = (
-            self._sync_connection()
-            .execute(
-                "SELECT * FROM langgraph_store_items WHERE namespace=? AND key=?",
-                (namespace, operation.key),
-            )
-            .fetchone()
-        )
-        return self._item(row) if row else None
-
-    def _put(self, operation: PutOp) -> None:
-        namespace = self._namespace(operation.namespace)
-        if not operation.key:
-            raise ValueError("Store keys cannot be empty")
-        self._sync_connection().execute(
-            "DELETE FROM langgraph_store_fts WHERE namespace=? AND key=?",
-            (namespace, operation.key),
-        )
-        if operation.value is None:
-            self._sync_connection().execute(
-                "DELETE FROM langgraph_store_items WHERE namespace=? AND key=?",
-                (namespace, operation.key),
-            )
-            return None
-        value = self._json(operation.value)
-        index_text = self._index_text(operation.value, operation.index)
-        now = datetime.now(UTC).timestamp()
-        self._sync_connection().execute(
-            """
-            INSERT INTO langgraph_store_items(namespace, key, value, index_text, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?)
-            ON CONFLICT(namespace, key) DO UPDATE SET
-              value=excluded.value, index_text=excluded.index_text, updated_at=excluded.updated_at
-            """,
-            (namespace, operation.key, value, index_text, now, now),
-        )
-        if index_text:
-            self._sync_connection().execute(
-                "INSERT INTO langgraph_store_fts(namespace, key, body) VALUES(?, ?, ?)",
-                (namespace, operation.key, index_text),
-            )
-        return None
-
-    def _search(self, operation: SearchOp) -> list[SearchItem]:
-        rows = (
-            self._sync_connection()
-            .execute("SELECT * FROM langgraph_store_items ORDER BY updated_at DESC, namespace, key")
-            .fetchall()
-        )
-        prefix = operation.namespace_prefix
-        candidates = [
-            row for row in rows if self._decode_namespace(row["namespace"])[: len(prefix)] == prefix
-        ]
-        if operation.filter:
-            candidates = [
-                row for row in candidates if self._matches_filter(json.loads(row["value"]), operation.filter)
-            ]
-        scores: dict[tuple[str, str], float] = {}
-        if operation.query:
-            query = self._fts_query(operation.query)
-            if not query:
-                return []
-            matches = (
-                self._sync_connection()
-                .execute(
-                    "SELECT namespace, key, bm25(langgraph_store_fts) AS rank FROM langgraph_store_fts WHERE body MATCH ?",
-                    (query,),
-                )
-                .fetchall()
-            )
-            scores = {(row["namespace"], row["key"]): -float(row["rank"]) for row in matches}
-            candidates = [row for row in candidates if (row["namespace"], row["key"]) in scores]
-            candidates.sort(
-                key=lambda row: (scores[(row["namespace"], row["key"])], row["updated_at"]),
-                reverse=True,
-            )
-        selected = candidates[operation.offset : operation.offset + operation.limit]
-        return [
-            SearchItem(
-                namespace=self._decode_namespace(row["namespace"]),
-                key=row["key"],
-                value=json.loads(row["value"]),
-                created_at=self._datetime(row["created_at"]),
-                updated_at=self._datetime(row["updated_at"]),
-                score=scores.get((row["namespace"], row["key"])),
-            )
-            for row in selected
-        ]
-
-    def _list_namespaces(self, operation: ListNamespacesOp) -> list[tuple[str, ...]]:
-        rows = (
-            self._sync_connection().execute("SELECT DISTINCT namespace FROM langgraph_store_items").fetchall()
-        )
-        namespaces = [self._decode_namespace(row["namespace"]) for row in rows]
-        if operation.match_conditions:
-            namespaces = [
-                namespace
-                for namespace in namespaces
-                if all(
-                    self._matches_namespace(namespace, condition.match_type, condition.path)
-                    for condition in operation.match_conditions
-                )
-            ]
-        if operation.max_depth is not None:
-            namespaces = list({namespace[: operation.max_depth] for namespace in namespaces})
-        namespaces.sort()
-        return namespaces[operation.offset : operation.offset + operation.limit]
-
     @classmethod
-    def _item(cls, row: sqlite3.Row) -> Item:
+    def _item(cls, row: aiosqlite.Row) -> Item:
         return Item(
             namespace=cls._decode_namespace(row["namespace"]),
             key=row["key"],

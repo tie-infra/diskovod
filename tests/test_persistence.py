@@ -1,7 +1,7 @@
 import json
-import sqlite3
 from pathlib import Path
 
+import aiosqlite
 import pytest
 from langgraph.checkpoint.base import empty_checkpoint
 
@@ -16,50 +16,46 @@ from diskovod.persistence import (
 SECRET = "x" * 32
 
 
-def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path):
+async def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path):
     path = tmp_path / "diskovod.sqlite3"
-    connection = sqlite3.connect(path)
+    async with aiosqlite.connect(path) as connection:
+        await initialize_target_schema(connection)
+        await initialize_target_schema(connection)
 
-    with connection:
-        initialize_target_schema(connection)
-        initialize_target_schema(connection)
-
-    tables = {
-        row[0]
-        for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
-        ).fetchall()
-    }
-    assert {
-        "schema_migrations",
-        "chat_threads",
-        "discord_events",
-        "chat_event_queue",
-        "side_effect_deliveries",
-        "agent_runs",
-        "langgraph_store_items",
-        "attachment_objects",
-        "escalation_interrupts",
-    } <= tables
-    assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [
-        (1,),
-        (2,),
-        (3,),
-        (4,),
-        (5,),
-        (6,),
-    ]
-    assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-    connection.close()
+        tables = {
+            row[0]
+            for row in await (
+                await connection.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
+            ).fetchall()
+        }
+        assert {
+            "schema_migrations",
+            "chat_threads",
+            "discord_events",
+            "chat_event_queue",
+            "side_effect_deliveries",
+            "agent_runs",
+            "langgraph_store_items",
+            "attachment_objects",
+            "escalation_interrupts",
+        } <= tables
+        assert await (await connection.execute("SELECT version FROM schema_migrations")).fetchall() == [
+            (1,),
+            (2,),
+            (3,),
+            (4,),
+            (5,),
+            (6,),
+        ]
+        assert (await (await connection.execute("PRAGMA journal_mode")).fetchone())[0] == "wal"
 
 
-def test_schema_migration_removes_unsupported_subscription_token_limit(tmp_path: Path):
+async def test_schema_migration_removes_unsupported_subscription_token_limit(tmp_path: Path):
     path = tmp_path / "diskovod.sqlite3"
-    connection = sqlite3.connect(path)
-    with connection:
-        initialize_target_schema(connection)
-        connection.execute("DELETE FROM schema_migrations WHERE version=6")
-        connection.execute(
+    async with aiosqlite.connect(path) as connection:
+        await initialize_target_schema(connection)
+        await connection.execute("DELETE FROM schema_migrations WHERE version=6")
+        await connection.execute(
             "INSERT INTO agent_configuration_versions(created_at, configuration, active) VALUES(0, ?, 1)",
             (
                 json.dumps(
@@ -74,16 +70,19 @@ def test_schema_migration_removes_unsupported_subscription_token_limit(tmp_path:
                 ),
             ),
         )
+        await connection.commit()
 
-    with connection:
-        initialize_target_schema(connection)
+        await initialize_target_schema(connection)
 
-    saved = json.loads(
-        connection.execute("SELECT configuration FROM agent_configuration_versions").fetchone()[0]
-    )
-    assert saved["options"] == {"reasoning_effort": "low"}
-    assert saved["capabilities"]["output_token_limit"] is False
-    connection.close()
+        saved = json.loads(
+            (
+                await (
+                    await connection.execute("SELECT configuration FROM agent_configuration_versions")
+                ).fetchone()
+            )[0]
+        )
+        assert saved["options"] == {"reasoning_effort": "low"}
+        assert saved["capabilities"]["output_token_limit"] is False
 
 
 def test_sqlite_langgraph_store_conforms_to_sync_and_async_api(tmp_path: Path):
@@ -120,20 +119,25 @@ def test_sqlite_langgraph_store_conforms_to_sync_and_async_api(tmp_path: Path):
     asyncio.run(exercise_async_api())
     store.delete(namespace, "fact")
     assert store.get(namespace, "fact") is None
-    store.close()
 
 
-async def test_async_langgraph_store_does_not_open_sync_compatibility_connection(tmp_path: Path):
+async def test_async_langgraph_store_initializes_only_the_async_database(tmp_path: Path):
     store = SQLiteLangGraphStore(tmp_path / "diskovod.sqlite3")
     namespace = ("chat", "account", "channel", "memory")
 
-    assert store._connection is None
+    assert store._schema_ready is False
     await store.aput(namespace, "key", {"text": "async only"})
     assert (await store.aget(namespace, "key")).value == {"text": "async only"}
-    assert store._connection is None
+    assert store._schema_ready is True
 
     await store.database.close()
-    store.close()
+
+
+async def test_langgraph_sync_adapter_rejects_event_loop_blocking(tmp_path: Path):
+    store = SQLiteLangGraphStore(tmp_path / "diskovod.sqlite3")
+
+    with pytest.raises(RuntimeError, match="asynchronous LangGraph Store API"):
+        store.put(("chat", "account", "channel", "memory"), "key", {"text": "value"})
 
 
 def test_checkpoint_cipher_rejects_tampering_and_wrong_context():

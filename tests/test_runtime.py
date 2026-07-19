@@ -53,7 +53,7 @@ async def wait_for_idle(service: AgentService) -> None:
 
 @pytest.mark.asyncio
 async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     await store.aset_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
     await store.aupsert_conversation("channel", "peer", "Peer")
     transport = RecordingTransport()
@@ -99,7 +99,7 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp
 
 @pytest.mark.asyncio
 async def test_historical_replay_uses_emulated_discord_actions(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     await store.aset_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
     await store.aupsert_conversation("channel", "peer", "Peer")
     transport = RecordingTransport()
@@ -144,7 +144,7 @@ async def test_historical_replay_uses_emulated_discord_actions(tmp_path):
 
 @pytest.mark.asyncio
 async def test_model_change_rolls_checkpoint_to_portable_summary(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     await store.aset_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
     await store.aupsert_conversation("channel", "peer", "Peer")
     model = ScriptedChatModel(responses=[AIMessage(content="Initial answer")])
@@ -184,7 +184,7 @@ async def test_model_change_rolls_checkpoint_to_portable_summary(tmp_path):
 
 @pytest.mark.asyncio
 async def test_agent_service_allows_a_zero_message_turn(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     await store.aset_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
     await store.aupsert_conversation("channel", "peer", "Peer")
     transport = RecordingTransport()
@@ -219,7 +219,7 @@ async def test_agent_service_allows_a_zero_message_turn(tmp_path):
 
 @pytest.mark.asyncio
 async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tmp_path):
-    store = Store(tmp_path / "diskovod.sqlite3", "x" * 32)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     await store.aset_app_settings(replace(store.app_settings(), enabled=True, debounce_seconds=0))
     await store.aupsert_conversation("channel", "peer", "Peer")
     transport = RecordingTransport()

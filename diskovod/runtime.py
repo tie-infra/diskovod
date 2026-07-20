@@ -281,7 +281,7 @@ class AgentService:
             agent_input=agent_input,
         )
         if inserted and automate:
-            await self.waits.wake_for_input(channel_id)
+            await self._wake_followup_for_input(channel_id)
             self._ensure_task(channel_id, force=force)
         return inserted
 
@@ -350,7 +350,7 @@ class AgentService:
             observed_at=observed_at,
         )
         if inserted and automate:
-            await self.waits.wake_for_input(channel_id)
+            await self._wake_followup_for_input(channel_id)
             self._ensure_task(channel_id)
         return inserted
 
@@ -380,8 +380,21 @@ class AgentService:
             account_id=account_id,
             trigger_message_id=trigger_message_id,
         )
-        await self.waits.wake_for_input(channel_id)
+        await self._wake_followup_for_input(channel_id)
         self._ensure_task(channel_id, force=True)
+
+    async def _wake_followup_for_input(self, channel_id: str) -> bool:
+        wait_id = await self.waits.wake_for_input(channel_id)
+        if wait_id is None:
+            return False
+        wait = await self.waits.active(channel_id)
+        if wait is not None:
+            await self.store.arecord_agent_trace(
+                wait.run_id,
+                "followup_wait_woken",
+                {"wait_id": wait_id, "reason": "new_input"},
+            )
+        return True
 
     async def _ingest_force_reply(self, *, channel_id: str, account_id: str, trigger_message_id: str) -> None:
         event_id = f"diskovod:force:{uuid.uuid4()}"
@@ -1213,8 +1226,18 @@ class AgentService:
             )
             if persisted:
                 await self.waits.schedule(wait.id)
+                await self.store.arecord_agent_trace(
+                    wait.run_id,
+                    "followup_wait_reconciled",
+                    {"wait_id": wait.id, "outcome": "scheduled"},
+                )
             else:
                 await self.waits.cancel(wait.id, "arming_without_persisted_interrupt")
+                await self.store.arecord_agent_trace(
+                    wait.run_id,
+                    "followup_wait_reconciled",
+                    {"wait_id": wait.id, "outcome": "cancelled_without_interrupt"},
+                )
 
     def _finished(self, channel_id: str, task: asyncio.Task[None]) -> None:
         if self.tasks.get(channel_id) is task:
@@ -1381,6 +1404,11 @@ class AgentService:
         active_wait = await self.waits.active(channel_id)
         if interrupted and active_wait is not None and active_wait.run_id == run_id:
             await self.waits.schedule(active_wait.id)
+            self._buffer_trace(
+                trace_id,
+                "followup_wait_scheduled",
+                {"wait_id": active_wait.id, "resume_at": active_wait.resume_at},
+            )
         await self._flush_trace(trace_id, run_id)
         await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
         await self.mailbox.complete(channel_id, run_id)

@@ -193,6 +193,21 @@ async def test_service_resumes_a_durable_wait_when_new_input_arrives(tmp_path: P
         ("Never mind—got it.",),
     ]
     assert await service.waits.active("channel") is None
+    async with store.database.transaction() as connection:
+        trace_kinds = {
+            str(row["kind"])
+            for row in await (
+                await connection.execute("SELECT kind FROM agent_trace_events")
+            ).fetchall()
+        }
+    assert {
+        "followup_wait_armed",
+        "followup_wait_scheduled",
+        "followup_wait_woken",
+        "followup_wait_resume",
+        "mailbox_injection",
+        "followup_wait_result",
+    } <= trace_kinds
     await service.close()
     await store.aclose()
 
@@ -242,6 +257,15 @@ async def test_owner_can_cancel_a_durable_followup_without_another_model_call(tm
         ).fetchone()
     assert saved_wait["state"] == "cancelled"
     assert run["status"] == "cancelled"
+    async with store.database.transaction() as connection:
+        cancellation = await (
+            await connection.execute(
+                "SELECT payload FROM agent_trace_events "
+                "WHERE run_id=? AND kind='followup_wait_cancelled'",
+                (wait.run_id,),
+            )
+        ).fetchone()
+    assert "cancelled_by_owner" in cancellation["payload"]
     await service.close()
     await store.aclose()
 

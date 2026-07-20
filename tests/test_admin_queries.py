@@ -72,6 +72,26 @@ async def test_run_projection_redacts_nested_credentials_but_preserves_usage_cou
             "usage": {"input_tokens": 12, "output_tokens": 3},
         },
     )
+    async with store.database.transaction() as connection:
+        await connection.execute(
+            """
+            INSERT INTO conversation_mailbox(
+              id, channel_id, sequence, kind, available_at, observed_at,
+              payload, state
+            ) VALUES('wake', 'channel', 1, 'continuation_due', 20, 10, '{}', 'pending')
+            """
+        )
+        await connection.execute(
+            """
+            INSERT INTO conversation_waits(
+              id, thread_id, channel_id, run_id, trace_id, tool_call_id,
+              wake_event_id, state, resume_at, created_at, updated_at, payload
+            ) VALUES(
+              'wait', 'thread', 'channel', 'run', 'trace', 'tool',
+              'wake', 'scheduled', 20, 10, 10, '{"api_key":"private"}'
+            )
+            """
+        )
 
     queries = AdminQueryService(store)
     view = await queries.run("run")
@@ -86,6 +106,9 @@ async def test_run_projection_redacts_nested_credentials_but_preserves_usage_cou
     diagnostic = await queries.run_diagnostic("run")
     assert "private" not in repr(diagnostic)
     assert diagnostic["events"][0]["payload"]["api_key"] == REDACTED
+    assert view["waits"][0]["state"] == "scheduled"
+    assert view["waits"][0]["payload"]["api_key"] == REDACTED
+    assert diagnostic["waits"] == view["waits"]
     await store.aclose()
 
 

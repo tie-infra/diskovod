@@ -2130,6 +2130,8 @@ class WebApp:
             )
         for checkpoint in view.get("checkpoints") or []:
             checkpoint["source_label"] = self._checkpoint_source_label(checkpoint.get("source"))
+        for wait in view.get("waits") or []:
+            wait["state_label"] = self._t(f"wait_state_{wait['state']}")
         for delivery in view.get("deliveries") or []:
             action = str(delivery.get("action") or "")
             state = str(delivery.get("state") or "")

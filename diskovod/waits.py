@@ -167,7 +167,7 @@ class ConversationWaits:
                 )
         return changed == 1
 
-    async def wake_for_input(self, channel_id: str) -> bool:
+    async def wake_for_input(self, channel_id: str) -> str | None:
         now = time.time()
         async with self.database.transaction() as connection:
             row = await (
@@ -180,7 +180,7 @@ class ConversationWaits:
                 )
             ).fetchone()
             if row is None:
-                return False
+                return None
             await connection.execute(
                 """
                 UPDATE conversation_mailbox SET available_at=?, payload=?
@@ -199,7 +199,7 @@ class ConversationWaits:
                 "UPDATE conversation_waits SET resume_at=?, updated_at=? WHERE id=?",
                 (now, now, row["id"]),
             )
-        return True
+        return str(row["id"])
 
     async def claim_ready(self, channel_id: str) -> ConversationWait | None:
         now = time.time()

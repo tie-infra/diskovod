@@ -568,6 +568,12 @@ class AdminQueryService:
                     "SELECT * FROM checkpoint_index WHERE run_id=? ORDER BY created_at", (run_id,)
                 )
             ).fetchall()
+            waits = await (
+                await connection.execute(
+                    "SELECT * FROM conversation_waits WHERE run_id=? ORDER BY created_at",
+                    (run_id,),
+                )
+            ).fetchall()
             messages = await (
                 await connection.execute(
                     "SELECT * FROM messages WHERE channel_id=? AND timestamp<=? "
@@ -583,6 +589,7 @@ class AdminQueryService:
             "timeline": [self._trace(row, payload) for row, payload in parsed_traces],
             "deliveries": [self._delivery(row) for row in deliveries],
             "checkpoints": [dict(row) for row in checkpoints],
+            "waits": [self._wait(row) for row in waits],
             "conversation": [self._message(row) for row in reversed(messages)],
             "model_exchanges": self._model_exchanges(parsed_traces),
             "event_count": event_count,
@@ -639,6 +646,7 @@ class AdminQueryService:
             "events": events,
             "deliveries": deliveries,
             "checkpoints": view["checkpoints"],
+            "waits": view["waits"],
             "truncated": view["event_count"] > 500,
         }
 
@@ -980,6 +988,14 @@ class AdminQueryService:
         return item
 
     @classmethod
+    def _wait(cls, row) -> dict[str, Any]:
+        item = dict(row)
+        item["payload"] = redact_sensitive(cls._payload(item.get("payload")))
+        item["created_at_label"] = cls._time(float(item["created_at"]))
+        item["resume_at_label"] = cls._time(float(item["resume_at"]))
+        return item
+
+    @classmethod
     def _model_exchanges(cls, traces: list[tuple[Any, Any]]) -> list[dict[str, Any]]:
         exchanges: list[dict[str, Any]] = []
         pending: dict[str, Any] | None = None
@@ -1013,9 +1029,15 @@ class AdminQueryService:
             "model"
             if kind.startswith("model_")
             else "tool"
-            if kind.startswith("tool_") or kind == "emulated_actions"
+            if kind.startswith("tool_")
+            or kind == "emulated_actions"
+            or kind.startswith("outbound_action_")
             else "state"
-            if "checkpoint" in kind or "interrupt" in kind
+            if "checkpoint" in kind
+            or "interrupt" in kind
+            or kind.startswith("followup_wait_")
+            or kind.startswith("public_output_cutover_")
+            or kind in {"mailbox_injection", "abandoned_run_reconciled"}
             else "run"
         )
         failed = kind.endswith("error") or kind in {"run_error", "tool_error", "model_error"}

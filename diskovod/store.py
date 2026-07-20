@@ -84,6 +84,24 @@ DATABASE_TABLES = {
         "order_by": "claimed_at",
         "read_only": True,
     },
+    "conversation_mailbox": {
+        "label": "Conversation mailbox",
+        "primary_key": "id",
+        "order_by": "observed_at",
+        "read_only": True,
+    },
+    "outbound_actions": {
+        "label": "Outbound actions",
+        "primary_key": "id",
+        "order_by": "created_at",
+        "read_only": True,
+    },
+    "conversation_waits": {
+        "label": "Conversation waits",
+        "primary_key": "id",
+        "order_by": "created_at",
+        "read_only": True,
+    },
     "agent_runs": {
         "label": "Agent runs",
         "primary_key": "id",

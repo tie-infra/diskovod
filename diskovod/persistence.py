@@ -30,7 +30,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 8
+TARGET_SCHEMA_VERSION = 9
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -356,6 +356,133 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
       expires_at REAL NOT NULL
     );
     CREATE INDEX admin_job_inputs_expiry ON admin_job_inputs(expires_at);
+    """,
+    """
+    CREATE TABLE conversation_mailbox (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      available_at REAL NOT NULL,
+      observed_at REAL NOT NULL,
+      payload TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN (
+        'pending','claimed','completed','cancelled','failed'
+      )),
+      run_id TEXT,
+      injection_batch INTEGER,
+      claimed_at REAL,
+      completed_at REAL,
+      failure TEXT,
+      UNIQUE(channel_id, sequence)
+    );
+    CREATE INDEX conversation_mailbox_ready
+      ON conversation_mailbox(channel_id, state, available_at, sequence);
+    CREATE INDEX conversation_mailbox_run
+      ON conversation_mailbox(run_id, state, sequence);
+
+    INSERT INTO conversation_mailbox(
+      id, channel_id, sequence, kind, available_at, observed_at, payload,
+      state, run_id, injection_batch, claimed_at, completed_at
+    )
+    SELECT e.id, e.channel_id, e.sequence, e.kind, e.observed_at, e.observed_at, e.payload,
+      CASE COALESCE(q.disposition, 'completed')
+        WHEN 'pending' THEN 'pending'
+        WHEN 'claimed' THEN 'claimed'
+        ELSE 'completed'
+      END,
+      q.logical_request_id, q.injection_batch, q.claimed_at,
+      COALESCE(q.completed_at,
+        CASE WHEN q.event_id IS NULL THEN e.observed_at ELSE NULL END)
+    FROM discord_events e
+    LEFT JOIN chat_event_queue q ON q.event_id=e.id;
+
+    CREATE TABLE outbound_actions (
+      id TEXT PRIMARY KEY,
+      batch_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      thread_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('discord_message','discord_reaction')),
+      payload TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN (
+        'pending','dispatching','succeeded','failed','ambiguous'
+      )),
+      result TEXT,
+      remote_id TEXT,
+      error_code TEXT,
+      lease_owner TEXT,
+      lease_expires_at REAL,
+      created_at REAL NOT NULL,
+      completed_at REAL,
+      UNIQUE(batch_id, ordinal)
+    );
+    CREATE INDEX outbound_actions_run ON outbound_actions(run_id, created_at, ordinal);
+    CREATE INDEX outbound_actions_state ON outbound_actions(state, lease_expires_at);
+    CREATE INDEX outbound_actions_source
+      ON outbound_actions(thread_id, source_kind, source_id, ordinal);
+
+    INSERT INTO outbound_actions(
+      id, batch_id, ordinal, thread_id, channel_id, run_id,
+      source_kind, source_id, kind, payload, state, result,
+      error_code, created_at, completed_at
+    )
+    SELECT
+      'legacy:' || legacy.run_id || ':' || legacy.tool_call_id,
+      'legacy:' || legacy.run_id || ':' || legacy.tool_call_id,
+      0,
+      COALESCE((SELECT thread_id FROM agent_runs WHERE id=legacy.run_id),
+               'legacy:' || legacy.run_id),
+      COALESCE(json_extract(legacy.request, '$.channel_id'),
+               (SELECT channel_id FROM agent_runs WHERE id=legacy.run_id), ''),
+      legacy.run_id,
+      'legacy_tool',
+      legacy.tool_call_id,
+      CASE legacy.action
+        WHEN 'react_to_message' THEN 'discord_reaction'
+        ELSE 'discord_message'
+      END,
+      legacy.request,
+      CASE legacy.state
+        WHEN 'claimed' THEN 'ambiguous'
+        WHEN 'ambiguous' THEN 'ambiguous'
+        ELSE CASE
+          WHEN EXISTS(
+            SELECT 1 FROM json_each(legacy.result)
+            WHERE json_extract(value, '$.status') != 'accepted'
+          ) THEN 'failed'
+          ELSE 'succeeded'
+        END
+      END,
+      legacy.result,
+      CASE WHEN legacy.state='claimed' THEN 'legacy_incomplete_attempt' ELSE NULL END,
+      legacy.claimed_at,
+      legacy.completed_at
+    FROM side_effect_deliveries AS legacy;
+
+    CREATE TABLE conversation_waits (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      trace_id TEXT NOT NULL,
+      tool_call_id TEXT NOT NULL,
+      wake_event_id TEXT NOT NULL REFERENCES conversation_mailbox(id) ON DELETE CASCADE,
+      state TEXT NOT NULL CHECK(state IN (
+        'arming','scheduled','resuming','completed','cancelled','failed'
+      )),
+      resume_at REAL NOT NULL,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      failure TEXT
+    );
+    CREATE INDEX conversation_waits_due ON conversation_waits(state, resume_at);
+    CREATE UNIQUE INDEX conversation_waits_active_channel
+      ON conversation_waits(channel_id)
+      WHERE state IN ('arming','scheduled','resuming');
     """,
 )
 

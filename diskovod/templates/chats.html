@@ -9,7 +9,7 @@
   <button class="btn btn-primary">{{ t("search") }}</button>
 </form>
 <div class="chat-list card">
-  {% for chat in chats.items %}
+  {% for chat in chats["items"] %}
   <a class="chat-row" href="/chats/{{ chat.channel_id }}">
     <span class="avatar">{{ (chat.peer_name or '?')[:1]|upper }}</span>
     <span class="chat-copy"><strong>{{ chat.peer_name or t("unknown_peer") }}</strong><small>{{ chat.latest_content or t("no_messages") }}</small><span class="d-flex gap-1 mt-1">{% if chat.attachment_count %}<span>📎 {{ chat.attachment_count }}</span>{% endif %}{% if chat.active_run_count %}<span class="text-primary">● {{ t("status_running") }}</span>{% endif %}{% if chat.failed_run_count %}<span class="text-danger">● {{ t("status_failed") }}</span>{% endif %}</span></span>
@@ -17,5 +17,5 @@
   </a>
   {% else %}<div class="empty-state">{{ t("no_dms") }}</div>{% endfor %}
 </div>
-{% if chats.previous_offset is not none or chats.next_offset is not none %}<nav class="pagination-bar" aria-label="{{ t('pagination') }}">{% if chats.previous_offset is not none %}<a class="btn btn-outline-secondary" href="/chats?q={{ chats.query|urlencode }}&state={{ chats.state|urlencode }}&offset={{ chats.previous_offset }}">{{ t("previous") }}</a>{% endif %}<span>{{ chats.offset + 1 }}–{{ [chats.offset + chats.items|length, chats.total]|min }} / {{ chats.total }}</span>{% if chats.next_offset is not none %}<a class="btn btn-outline-secondary" href="/chats?q={{ chats.query|urlencode }}&state={{ chats.state|urlencode }}&offset={{ chats.next_offset }}">{{ t("next") }}</a>{% endif %}</nav>{% endif %}
+{% if chats.previous_offset is not none or chats.next_offset is not none %}<nav class="pagination-bar" aria-label="{{ t('pagination') }}">{% if chats.previous_offset is not none %}<a class="btn btn-outline-secondary" href="/chats?q={{ chats.query|urlencode }}&state={{ chats.state|urlencode }}&offset={{ chats.previous_offset }}">{{ t("previous") }}</a>{% endif %}<span>{{ chats.offset + 1 }}–{{ [chats.offset + chats["items"]|length, chats.total]|min }} / {{ chats.total }}</span>{% if chats.next_offset is not none %}<a class="btn btn-outline-secondary" href="/chats?q={{ chats.query|urlencode }}&state={{ chats.state|urlencode }}&offset={{ chats.next_offset }}">{{ t("next") }}</a>{% endif %}</nav>{% endif %}
 {% endblock %}

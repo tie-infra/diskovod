@@ -97,7 +97,7 @@ def test_live_updates_use_fetch_readable_stream_not_websockets_or_eventsource():
     assert "application/x-ndjson" in script
     assert "WebSocket" not in script
     assert "EventSource" not in script
-    assert 'details[data-json-url]' in script
+    assert "details[data-json-url]" in script
     assert "JSON.stringify(payload, null, 2)" in script
     assert "beforeunload" in script
 
@@ -108,6 +108,56 @@ def test_admin_templates_do_not_depend_on_csp_blocked_inline_javascript():
 
     for template in template_dir.glob("*.html"):
         assert inline_handler.search(template.read_text()) is None, template.name
+
+
+def test_paginated_template_items_never_use_attribute_lookup():
+    template_dir = Path(__file__).parents[1] / "diskovod" / "templates"
+    collision = re.compile(
+        r"\b(?:attachments|chats|capability_probes|escalations|jobs|memories|runs)\.items\b"
+    )
+
+    for template in template_dir.glob("*.html"):
+        assert collision.search(template.read_text()) is None, template.name
+
+
+def test_inbox_renders_a_nonempty_escalation_page():
+    template_dir = Path(__file__).parents[1] / "diskovod" / "templates"
+    environment = Environment(
+        loader=FileSystemLoader(template_dir),
+        autoescape=select_autoescape(["html"]),
+    )
+    rendered = environment.get_template("inbox.html").render(
+        locale="en",
+        page_title="Inbox",
+        active_section="inbox",
+        interface_settings=InterfaceSettings(),
+        automation_settings=AutomationSettings(),
+        active_job_count=0,
+        inbox_count=1,
+        t=lambda key, **values: ui_text("en", key, **values),
+        escalations={
+            "items": [
+                {
+                    "id": "escalation-1",
+                    "channel_id": "channel-1",
+                    "peer_name": "Alice",
+                    "state": "pending",
+                    "reason": "peer_requested_owner",
+                    "acknowledgement": "I will ask the owner.",
+                }
+            ],
+            "offset": 0,
+            "total": 1,
+            "previous_offset": None,
+            "next_offset": None,
+        },
+        failed_runs=[],
+        captcha_requests=[],
+        connection_errors=[],
+    )
+
+    assert "Alice" in rendered
+    assert "I will ask the owner." in rendered
 
 
 def test_admin_assets_are_self_hosted_and_old_dashboard_css_is_removed():

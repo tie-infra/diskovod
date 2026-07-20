@@ -5,15 +5,16 @@ import time
 import uuid
 import warnings
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.tools import tool
 from langchain_core._api import LangChainBetaWarning
+from langchain_core.tools import tool
+from pydantic import Field
 
-from diskovod.store import Store
-from diskovod.localization import tool_text
+from ..localization import tool_text
+from ..store import Store
 
 from .base import ModelConfiguration, ProviderCapabilities, ProviderCredentials
 from .service import ModelService
@@ -65,11 +66,13 @@ class ProviderSetup:
         text = tool_text(self.store.assistant_profile().prompt_locale)
 
         @tool("diskovod_setup_probe", description=text["connection_test_tool"])
-        def diskovod_setup_probe(value: str) -> str:
+        def diskovod_setup_probe(
+            value: Annotated[str, Field(description=text["connection_test_value"])],
+        ) -> str:
             return value
 
         model = self.models.build_configuration(configuration, credentials)
-        prompt = f"{text['connection_test_system']} {text['connection_test_tool']} value=ready."
+        prompt = text["connection_test_prompt"]
         request = {
             "messages": [{"role": "user", "content": prompt}],
             "tool_choice": "required",

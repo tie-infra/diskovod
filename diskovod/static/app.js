@@ -116,15 +116,15 @@
         const copy = document.createElement("button");
         copy.type = "button";
         copy.className = "btn btn-sm btn-outline-secondary mt-2";
-        copy.textContent = body.dataset.copyLabel || "Copy";
+        copy.textContent = body.dataset.copyLabel;
         copy.addEventListener("click", async () => {
           await navigator.clipboard.writeText(code?.textContent || "");
-          copy.textContent = body.dataset.copiedLabel || "Copied";
+          copy.textContent = body.dataset.copiedLabel;
         });
         details.append(copy);
         details.dataset.loaded = "true";
       } catch (_error) {
-        if (code) code.textContent = body.dataset.loadFailedLabel || "Could not load details";
+        if (code) code.textContent = body.dataset.loadFailedLabel;
         if (pre) pre.hidden = false;
         delete details.dataset.loaded;
       }
@@ -136,12 +136,12 @@
 
   const terminalStates = new Set(["succeeded", "failed", "cancelled"]);
   const labels = {
-    live: body.dataset.liveLabel || "Live",
-    reconnecting: body.dataset.reconnectingLabel || "Reconnecting…",
-    offline: body.dataset.offlineLabel || "Offline",
-    deleted: body.dataset.deletedMessageLabel || "Message deleted",
-    newMessages: body.dataset.newMessagesLabel || "New messages",
-    edited: body.dataset.editedLabel || "Edited",
+    live: body.dataset.liveLabel,
+    reconnecting: body.dataset.reconnectingLabel,
+    offline: body.dataset.offlineLabel,
+    deleted: body.dataset.deletedMessageLabel,
+    newMessages: body.dataset.newMessagesLabel,
+    edited: body.dataset.editedLabel,
   };
   let stopped = false;
   let controller = null;
@@ -192,7 +192,7 @@
     if (result) {
       result.replaceChildren();
       if (job.result_id) {
-        const value = `${job.result_kind}:${job.result_id}`;
+        const value = `${job.result_kind_label}: ${job.result_id}`;
         if (job.result_url) {
           const link = document.createElement("a");
           link.href = job.result_url;
@@ -238,7 +238,7 @@
     for (const attachment of message.attachments || []) {
       const chip = document.createElement("span");
       chip.className = "attachment-chip";
-      chip.textContent = `📎 ${attachment.filename || attachment.name || "attachment"}`;
+      chip.textContent = `📎 ${attachment.filename || attachment.name || body.dataset.attachmentLabel}`;
       article.append(chip);
     }
     localizeTimes(article);
@@ -326,7 +326,7 @@
       marker.className = "timeline-marker";
       const copy = document.createElement("div");
       const name = document.createElement("strong");
-      name.textContent = event.kind;
+      name.textContent = event.kind_label;
       copy.append(name);
       article.append(marker, copy);
       timeline.append(article);

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, fields, is_dataclass
 from typing import Any
 
 from langchain.agents import create_agent
@@ -34,6 +34,7 @@ from .localization import (
     runtime_context_text,
     summarization_prompt,
     tool_policy,
+    tool_text,
 )
 
 
@@ -68,8 +69,9 @@ class RuntimePromptMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeCo
         context = request.runtime.context
         prompts = prompts_for(context.prompt_locale)
         runtime_text = runtime_context_text(context.prompt_locale)
+        mode = runtime_text.get(f"mode_{context.automation_mode}", context.automation_mode)
         suffix = [
-            runtime_text["mode"].format(mode=context.automation_mode),
+            runtime_text["mode"].format(mode=mode),
             runtime_text["participants"].format(channel=context.channel_id),
         ]
         if context.force_reply:
@@ -218,7 +220,7 @@ class EscalationValidationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRu
         )
         result = {
             "ok": False,
-            "error": "invalid_arguments",
+            "error": tool_text(self.locale)["invalid_arguments"],
             "fallback_deliveries": [delivery.to_dict() for delivery in deliveries],
         }
         return Command(

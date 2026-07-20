@@ -9,11 +9,13 @@ from typing import Any, cast
 import pytest
 
 from diskovod.agent import AgentPrompt
+from diskovod.agent_tools import localized_agent_tools
 from diskovod.localization import (
     ASSISTANT_IDENTITIES,
     ASSISTANT_NAMES,
     INLINE_TOOL_TEXT,
     PROMPTS,
+    RUNTIME_CONTEXT_TEXT,
     SUPPORTED_LOCALES,
     TOOL_TEXT,
     TOOL_POLICIES,
@@ -226,9 +228,7 @@ def test_database_explorer_can_label_every_managed_table_in_every_locale():
             specific_key = f"table_{table}"
             specific = ui_text(locale, specific_key)
             label = (
-                ui_text(locale, "database_table_label", name=table)
-                if specific == specific_key
-                else specific
+                ui_text(locale, "database_table_label", name=table) if specific == specific_key else specific
             )
             assert label and label != specific_key
 
@@ -271,6 +271,145 @@ def test_every_tool_string_supports_every_locale():
     for locale, translations in INLINE_TOOL_TEXT.items():
         assert set(translations) == inline_keys, locale
         assert all(translations.values()), locale
+
+
+def test_tool_schemas_and_validation_errors_use_the_selected_locale():
+    parameter_keys = {
+        "get_current_datetime": {"timezone": "timezone"},
+        "calculate": {"expression": "expression"},
+        "web_search": {"query": "web_query"},
+        "fetch_url": {"url": "url"},
+        "search_chat_attachments": {"query": "attachment_query"},
+        "search_chat_memory": {"query": "memory_query"},
+        "remember_chat_memory": {"key": "memory_key", "value": "memory_value"},
+        "forget_chat_memory": {"key": "memory_key"},
+        "send_messages": {
+            "messages": "messages",
+            "continue_after_sending": "continue_after_sending",
+        },
+        "react_to_message": {"emoji": "emoji"},
+        "escalate_to_owner": {
+            "reason": "escalation_reason",
+            "acknowledgement": "acknowledgement",
+        },
+    }
+    description_keys = {
+        "get_current_datetime": "current_datetime",
+        "calculate": "calculate",
+        "web_search": "web_search",
+        "fetch_url": "fetch_url",
+        "search_chat_attachments": "attachment_search",
+        "search_chat_memory": "memory_search",
+        "remember_chat_memory": "remember_memory",
+        "forget_chat_memory": "forget_memory",
+        "send_messages": "send_messages",
+        "react_to_message": "react",
+        "escalate_to_owner": "escalate",
+    }
+
+    for locale in SUPPORTED_LOCALES:
+        translations = TOOL_TEXT[locale]
+        tools = localized_agent_tools(locale, cast(Any, None), cast(Any, None))
+        for tool in tools:
+            assert tool.description == translations[description_keys[tool.name]]
+            assert callable(tool.handle_validation_error)
+            assert tool.handle_validation_error(None) == translations["invalid_arguments"]
+            for field, key in parameter_keys[tool.name].items():
+                assert tool.args_schema.model_fields[field].description == translations[key]
+
+
+def test_runtime_prompt_fragments_are_catalogued_for_every_locale():
+    expected = set(RUNTIME_CONTEXT_TEXT["en"])
+    for locale, translations in RUNTIME_CONTEXT_TEXT.items():
+        assert set(translations) == expected, locale
+        assert all(translations.values()), locale
+
+    sources = "\n".join(
+        (Path(__file__).parents[1] / "diskovod" / name).read_text(encoding="utf-8")
+        for name in ("agent.py", "discord.py", "runtime.py", "steering.py")
+    )
+    for obsolete_literal in (
+        "standalone owner message",
+        "continuation in an owner message burst",
+        "A written reply is required because a reaction is unavailable.",
+    ):
+        assert obsolete_literal not in sources
+
+
+def test_dynamic_admin_presentation_values_are_localized():
+    keys = {
+        "trace_category_model",
+        "trace_category_tool",
+        "trace_category_state",
+        "trace_category_run",
+        "trace_kind_model_error",
+        "trace_kind_tool_request",
+        "trace_kind_tool_response",
+        "trace_kind_tool_error",
+        "trace_kind_run_input",
+        "trace_kind_run_output",
+        "trace_kind_run_error",
+        "trace_kind_interrupt_resume",
+        "trace_kind_interrupt_resume_error",
+        "trace_kind_emulated_actions",
+        "trace_kind_historical_replay",
+        "checkpoint_source_input",
+        "checkpoint_source_loop",
+        "checkpoint_source_update",
+        "checkpoint_source_fork",
+        "trigger_message",
+        "trigger_edit",
+        "trigger_delete",
+        "delivery_action_send_messages",
+        "delivery_action_react_to_message",
+        "delivery_action_escalate_to_owner",
+        "delivery_state_accepted",
+        "delivery_state_ambiguous",
+        "delivery_state_completed",
+        "result_kind_agent_run",
+        "result_kind_assistant_personality",
+        "result_kind_provider_capability_probe",
+        "provider_custom_openai",
+        "role_peer",
+        "role_assistant",
+        "role_owner",
+        "role_tool",
+        "role_system",
+    }
+    for locale in SUPPORTED_LOCALES:
+        for key in keys:
+            assert ui_text(locale, key) != key
+
+
+def test_templates_and_javascript_do_not_embed_ui_copy_fallbacks():
+    root = Path(__file__).parents[1] / "diskovod"
+    templates = "\n".join(
+        template.read_text(encoding="utf-8") for template in (root / "templates").glob("*.html")
+    )
+    visible_literals = {
+        match.group(1).strip() for match in re.finditer(r">\s*([A-Za-z][A-Za-z0-9 ._-]*)\s*<", templates)
+    }
+    assert visible_literals <= {
+        "Diskovod",
+        "Responses API",
+        "Chat Completions",
+        "SQLite",
+        "run_id",
+        "trace_id",
+        "thread_id",
+        "checkpoint_id",
+    }
+
+    javascript = (root / "static" / "app.js").read_text(encoding="utf-8")
+    for fallback in (
+        '|| "Copy"',
+        '|| "Copied"',
+        '|| "Could not load details"',
+        '|| "Live"',
+        '|| "New messages"',
+        '|| "attachment"',
+    ):
+        assert fallback not in javascript
 
 
 def test_every_literal_admin_template_key_exists_in_the_catalog():

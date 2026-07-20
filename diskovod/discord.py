@@ -12,6 +12,7 @@ import discord
 
 from .agent_actions import DeliveryRecord
 from .agent_types import AgentRuntimeContext
+from .localization import runtime_context_text
 from .runtime import AgentService
 from .store import Store
 
@@ -461,6 +462,7 @@ class DiscordService:
             return []
 
         per_channel = max(1, (requested + len(channels) - 1) // len(channels))
+        text = runtime_context_text(self.store.assistant_profile().prompt_locale)
         messages: list[tuple[float, str]] = []
         remaining = requested
         for channel_index, channel in enumerate(channels, start=1):
@@ -489,10 +491,16 @@ class DiscordService:
                 timestamp = message.created_at.timestamp()
                 if previous_was_manual_owner and previous_owner_timestamp is not None:
                     gap = max(0.0, timestamp - previous_owner_timestamp)
-                    shape = f"continuation in an owner message burst; {gap:.1f}s after its previous part"
+                    shape = text["personality_sample_continuation"].format(seconds=f"{gap:.1f}")
                 else:
-                    shape = "standalone owner message"
-                annotated = f"[anonymous conversation {channel_index}; {shape}]\n{content}"
+                    shape = text["personality_sample_standalone"]
+                annotated = (
+                    text["personality_sample_header"].format(
+                        index=channel_index,
+                        shape=shape,
+                    )
+                    + f"\n{content}"
+                )
                 messages.append((timestamp, annotated))
                 previous_was_manual_owner = True
                 previous_owner_timestamp = timestamp

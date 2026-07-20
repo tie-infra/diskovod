@@ -959,10 +959,14 @@ class AgentService:
             for attachment in attachments:
                 if not isinstance(attachment, dict):
                     continue
-                filename = str(attachment.get("filename") or "attachment")
-                media_type = str(attachment.get("content_type") or "unknown")
+                filename = str(attachment.get("filename") or text_bundle["attachment_filename"])
+                media_type = str(attachment.get("content_type") or text_bundle["unknown_media_type"])
                 size = int(attachment.get("size") or 0)
-                note = f"- {filename} ({media_type}, {size} bytes)"
+                note = text_bundle["attachment_summary"].format(
+                    filename=filename,
+                    media_type=media_type,
+                    size=size,
+                )
                 if text := attachment.get("text"):
                     note += (
                         f"\n<untrusted_attachment_text filename={filename!r}>\n"

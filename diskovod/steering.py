@@ -97,7 +97,9 @@ class LiveConversationMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntim
         attachments = event.payload.get("attachments") or []
         if attachments:
             names = [
-                str(item.get("filename") or "attachment") for item in attachments if isinstance(item, dict)
+                str(item.get("filename") or self.runtime_text["attachment_filename"])
+                for item in attachments
+                if isinstance(item, dict)
             ]
             content += "\n\n" + self.runtime_text["attachments"] + " " + ", ".join(names)
         return HumanMessage(

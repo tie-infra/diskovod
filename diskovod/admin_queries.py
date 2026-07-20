@@ -38,9 +38,7 @@ class AdminQueryService:
                 )
             ).fetchall()
             mode_rows = await (
-                await connection.execute(
-                    "SELECT mode, COUNT(*) AS count FROM conversations GROUP BY mode"
-                )
+                await connection.execute("SELECT mode, COUNT(*) AS count FROM conversations GROUP BY mode")
             ).fetchall()
             chats = await (
                 await connection.execute(
@@ -117,9 +115,7 @@ class AdminQueryService:
             total = int(
                 (
                     await (
-                        await connection.execute(
-                            f"SELECT COUNT(*) FROM conversations c{where}", parameters
-                        )
+                        await connection.execute(f"SELECT COUNT(*) FROM conversations c{where}", parameters)
                     ).fetchone()
                 )[0]
             )
@@ -458,9 +454,7 @@ class AdminQueryService:
             for topic in sorted(topics):
                 if topic == "jobs":
                     row = await (
-                        await connection.execute(
-                            "SELECT COALESCE(MAX(id), 0) FROM admin_job_events"
-                        )
+                        await connection.execute("SELECT COALESCE(MAX(id), 0) FROM admin_job_events")
                     ).fetchone()
                 elif topic == "inbox":
                     row = await (
@@ -575,9 +569,7 @@ class AdminQueryService:
             ).fetchall()
         parsed_traces = [(row, self._payload(row["payload"])) for row in traces]
         run_summary = self._run_summary(run, include_error=True)
-        run_summary["configuration"] = redact_sensitive(
-            self._payload(run_summary.pop("configuration", None))
-        )
+        run_summary["configuration"] = redact_sensitive(self._payload(run_summary.pop("configuration", None)))
         return {
             "run": run_summary,
             "timeline": [self._trace(row, payload) for row, payload in parsed_traces],
@@ -588,13 +580,9 @@ class AdminQueryService:
             "event_count": event_count,
             "event_offset": bounded_offset,
             "event_limit": bounded_limit,
-            "previous_event_offset": (
-                max(0, bounded_offset - bounded_limit) if bounded_offset else None
-            ),
+            "previous_event_offset": (max(0, bounded_offset - bounded_limit) if bounded_offset else None),
             "next_event_offset": (
-                bounded_offset + bounded_limit
-                if bounded_offset + bounded_limit < event_count
-                else None
+                bounded_offset + bounded_limit if bounded_offset + bounded_limit < event_count else None
             ),
         }
 
@@ -635,10 +623,7 @@ class AdminQueryService:
                     (run_id,),
                 )
             ).fetchall()
-        events = [
-            self._trace(row, self._payload(row["payload"]), include_payload=True)
-            for row in event_rows
-        ]
+        events = [self._trace(row, self._payload(row["payload"]), include_payload=True) for row in event_rows]
         deliveries = [self._delivery(row, include_payload=True) for row in delivery_rows]
         return {
             "schema": "diskovod.run-diagnostic.v1",
@@ -657,8 +642,7 @@ class AdminQueryService:
                 (
                     await (
                         await connection.execute(
-                            "SELECT COUNT(*) FROM escalation_interrupts "
-                            "WHERE state IN ('pending','claimed')"
+                            "SELECT COUNT(*) FROM escalation_interrupts WHERE state IN ('pending','claimed')"
                         )
                     ).fetchone()
                 )[0]
@@ -699,9 +683,7 @@ class AdminQueryService:
         channel_id = str(escalation["channel_id"])
         async with self.store.database.transaction() as connection:
             conversation = await (
-                await connection.execute(
-                    "SELECT * FROM conversations WHERE channel_id=?", (channel_id,)
-                )
+                await connection.execute("SELECT * FROM conversations WHERE channel_id=?", (channel_id,))
             ).fetchone()
             rows = await (
                 await connection.execute(
@@ -763,18 +745,14 @@ class AdminQueryService:
             "offset": bounded_offset,
             "previous_offset": max(0, bounded_offset - bounded_limit) if bounded_offset else None,
             "next_offset": (
-                bounded_offset + bounded_limit
-                if bounded_offset + bounded_limit < total
-                else None
+                bounded_offset + bounded_limit if bounded_offset + bounded_limit < total else None
             ),
         }
 
     async def capability_probe(self, probe_id: str) -> dict[str, Any] | None:
         async with self.store.database.transaction() as connection:
             row = await (
-                await connection.execute(
-                    "SELECT * FROM provider_capability_probes WHERE id=?", (probe_id,)
-                )
+                await connection.execute("SELECT * FROM provider_capability_probes WHERE id=?", (probe_id,))
             ).fetchone()
         if row is None:
             return None
@@ -799,9 +777,7 @@ class AdminQueryService:
         async with self.store.database.transaction() as connection:
             for name, statement in queries.items():
                 result[name] = int((await (await connection.execute(statement)).fetchone())[0])
-            schema = await (
-                await connection.execute("SELECT MAX(version) FROM schema_migrations")
-            ).fetchone()
+            schema = await (await connection.execute("SELECT MAX(version) FROM schema_migrations")).fetchone()
             result["schema_version"] = int(schema[0] or 0)
             sqlite_version = await (await connection.execute("SELECT sqlite_version()")).fetchone()
             result["sqlite_version"] = str(sqlite_version[0])
@@ -811,8 +787,7 @@ class AdminQueryService:
         async with self.store.database.transaction() as connection:
             rows = await (
                 await connection.execute(
-                    "SELECT * FROM agent_configuration_versions "
-                    "ORDER BY created_at DESC, id DESC LIMIT ?",
+                    "SELECT * FROM agent_configuration_versions ORDER BY created_at DESC, id DESC LIMIT ?",
                     (max(1, min(limit, 50)),),
                 )
             ).fetchall()
@@ -1034,13 +1009,24 @@ class AdminQueryService:
             else "run"
         )
         failed = kind.endswith("error") or kind in {"run_error", "tool_error", "model_error"}
+        summary_key = ""
+        summary_values: dict[str, object] = {}
         if isinstance(payload, dict):
             if kind == "model_request":
-                summary = f"{len(payload.get('messages') or [])} messages · {len(payload.get('tools') or [])} tools"
+                summary_key = "trace_summary_model_request"
+                summary_values = {
+                    "messages": len(payload.get("messages") or []),
+                    "tools": len(payload.get("tools") or []),
+                }
+                summary = ""
             elif kind == "run_input":
-                summary = f"{len(payload.get('event_ids') or [])} input events"
+                summary_key = "trace_summary_run_input"
+                summary_values = {"events": len(payload.get("event_ids") or [])}
+                summary = ""
             elif kind == "run_output":
-                summary = f"{payload.get('successful_written_sends', 0)} messages sent"
+                summary_key = "trace_summary_run_output"
+                summary_values = {"messages": payload.get("successful_written_sends", 0)}
+                summary = ""
             elif kind in {"model_error", "tool_error", "run_error", "interrupt_resume_error"}:
                 summary = str(payload.get("detail") or payload.get("type") or "")[:240]
             elif kind in {"tool_request", "tool_response"}:
@@ -1050,7 +1036,13 @@ class AdminQueryService:
                 summary = cls._value_preview(payload)
         else:
             summary = cls._value_preview(payload)
-        return {"category": category, "failed": failed, "summary": summary}
+        return {
+            "category": category,
+            "failed": failed,
+            "summary": summary,
+            "summary_key": summary_key,
+            "summary_values": summary_values,
+        }
 
     @staticmethod
     def _value_preview(value: Any) -> str:

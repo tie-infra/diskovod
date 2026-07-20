@@ -10,7 +10,7 @@
   </div></article>
   {% endfor %}
   {% for problem in connection_errors %}
-  <article class="alert alert-danger mb-0"><strong>{{ t("connections") }} · {{ problem.kind }}</strong><div>{{ problem.summary }}</div><a href="/settings/connections">{{ t("open_related") }}</a></article>
+  <article class="alert alert-danger mb-0"><strong>{{ t("connections") }} · {{ problem.kind_label }}</strong><div>{{ problem.summary }}</div><a href="/settings/connections">{{ t("open_related") }}</a></article>
   {% endfor %}
   {% for run in failed_runs %}
   <article class="card border-danger"><div class="card-body d-flex justify-content-between gap-3"><div><h2 class="h6">{{ t("failed_runs") }} · {{ run.channel_id }}</h2><p class="small text-danger mb-0">{{ run.error or t("status_" ~ run.status) }}</p></div><a href="/activity/runs/{{ run.id }}">{{ t("inspect") }}</a></div></article>

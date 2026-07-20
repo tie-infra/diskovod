@@ -9,7 +9,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command, interrupt
 from pydantic import Field, StringConstraints
 
-from .agent_actions import AgentActionGateway
+from .agent_actions import AgentActionGateway, DeliveryRecord
 from .agent_types import AgentRuntimeContext, DiskovodAgentState
 from .attachments import AttachmentRepository
 from .calculation import evaluate_expression
@@ -36,6 +36,15 @@ def localized_agent_tools(
 ) -> list[BaseTool]:
     text = tool_text(locale)
     invalid = lambda _: text["invalid_arguments"]  # noqa: E731
+
+    def delivery_result(delivery: DeliveryRecord) -> dict[str, object]:
+        result = delivery.to_dict()
+        if delivery.error_code:
+            result["error"] = text.get(
+                f"delivery_error_{delivery.error_code}",
+                text["delivery_error_unknown"],
+            )
+        return result
 
     async def get_current_datetime(
         timezone: Annotated[str | None, Field(description=text["timezone"])],
@@ -92,16 +101,16 @@ def localized_agent_tools(
         return {"ok": True, **result}
 
     async def search_chat_attachments(
-        query: Annotated[MessageText, Field(description=text["web_query"])],
+        query: Annotated[MessageText, Field(description=text["attachment_query"])],
         runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
     ) -> dict[str, Any]:
         if attachments is None:
-            return {"ok": False, "error": text["memory_unavailable"]}
+            return {"ok": False, "error": text["attachment_unavailable"]}
         results = await attachments.search(runtime.context.channel_id, query)
         return {"ok": True, "results": results}
 
     async def search_chat_memory(
-        query: Annotated[MessageText, Field(description=text["web_query"])],
+        query: Annotated[MessageText, Field(description=text["memory_query"])],
         runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
     ) -> dict[str, Any]:
         if runtime.store is None:
@@ -168,7 +177,7 @@ def localized_agent_tools(
         terminate = not continue_after_sending and accepted and sole_pending_call
         result = {
             "ok": accepted,
-            "deliveries": [item.to_dict() for item in deliveries],
+            "deliveries": [delivery_result(item) for item in deliveries],
             "continue_after_sending": not terminate,
             "termination_requested": not continue_after_sending,
             "termination_honored": terminate,
@@ -197,7 +206,7 @@ def localized_agent_tools(
             emoji,
             tool_call_id=runtime.tool_call_id or "missing-tool-call-id",
         )
-        return {"ok": delivery.accepted, "delivery": delivery.to_dict()}
+        return {"ok": delivery.accepted, "delivery": delivery_result(delivery)}
 
     async def escalate_to_owner(
         reason: Annotated[EscalationReason, Field(description=text["escalation_reason"])],
@@ -211,7 +220,7 @@ def localized_agent_tools(
             tool_call_id=call_id,
         )
         if not deliveries or not all(delivery.accepted for delivery in deliveries):
-            return {"ok": False, "deliveries": [item.to_dict() for item in deliveries]}
+            return {"ok": False, "deliveries": [delivery_result(item) for item in deliveries]}
         payload: dict[str, object] = {
             "channel_id": runtime.context.channel_id,
             "trigger_message_id": runtime.context.trigger_message_id,
@@ -224,7 +233,7 @@ def localized_agent_tools(
         return {
             "ok": True,
             "resolution": resolution,
-            "deliveries": [item.to_dict() for item in deliveries],
+            "deliveries": [delivery_result(item) for item in deliveries],
         }
 
     tools = [

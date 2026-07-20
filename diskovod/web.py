@@ -148,7 +148,9 @@ class WebApp:
     ) -> str:
         if credentials.username != "admin" or not password_matches(credentials.password, self.admin_password):
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, headers={"WWW-Authenticate": "Basic"}
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=self._t("authentication_required"),
+                headers={"WWW-Authenticate": "Basic"},
             )
         if origin := request.headers.get("origin"):
             if self._normalized_origin(origin) != self.public_origin:
@@ -185,7 +187,7 @@ class WebApp:
                 model_id=self._model_view()["model"],
                 discord_connected=self.discord.connected,
                 discord_identity=self.discord.identity,
-                discord_error=self.discord.error,
+                discord_error=self._localized_error(self.discord.error),
                 chat_connected=self.account.connected,
                 automation_enabled=self.store.automation_settings().enabled,
             )
@@ -205,15 +207,23 @@ class WebApp:
                 "inbox",
                 "inbox",
                 escalations=await self.queries.inbox(offset=offset),
-                failed_runs=await self.queries.actionable_runs(),
+                failed_runs=self._localize_run_items(await self.queries.actionable_runs()),
                 captcha_requests=self.discord.captcha_requests(),
                 connection_errors=[
-                    {"kind": "chatgpt", "summary": self.account.last_error}
+                    {
+                        "kind": "chatgpt",
+                        "kind_label": self._t("service_chatgpt"),
+                        "summary": self._localized_error(self.account.last_error),
+                    }
                     for _ in (0,)
                     if self.account.last_error
                 ]
                 + [
-                    {"kind": "discord", "summary": self.discord.error}
+                    {
+                        "kind": "discord",
+                        "kind_label": self._t("discord"),
+                        "summary": self._localized_error(self.discord.error),
+                    }
                     for _ in (0,)
                     if self.discord.error
                 ],
@@ -279,9 +289,7 @@ class WebApp:
             await self._prepare_chat_view(view)
             return await self._render(request, "chat.html", "chats", "chat", chat=view)
 
-        @self.app.get(
-            "/chats/{channel_id}/generations/{generation}/checkpoints/{checkpoint_id}"
-        )
+        @self.app.get("/chats/{channel_id}/generations/{generation}/checkpoints/{checkpoint_id}")
         async def checkpoint_detail(
             request: Request,
             channel_id: str,
@@ -327,7 +335,13 @@ class WebApp:
                 "runs.html",
                 "activity",
                 "activity",
-                runs=await self.queries.runs(status=run_status, channel_id=channel_id, offset=offset),
+                runs=self._localize_run_page(
+                    await self.queries.runs(
+                        status=run_status,
+                        channel_id=channel_id,
+                        offset=offset,
+                    )
+                ),
             )
 
         @self.app.get("/activity/runs/{run_id}")
@@ -346,6 +360,7 @@ class WebApp:
             view = await self.queries.run(run_id, event_offset=offset)
             if view is None:
                 raise HTTPException(404, self._t("run_not_found"))
+            self._localize_run_view(view)
             return await self._render(
                 request,
                 "run.html",
@@ -407,10 +422,7 @@ class WebApp:
             job = await self.jobs.get(job_id) if self.jobs else None
             if job is None:
                 raise HTTPException(404, self._t("job_not_found"))
-            events = [
-                self._job_event_view(event)
-                for event in await self.jobs.repository.events(job_id)
-            ]
+            events = [self._job_event_view(event) for event in await self.jobs.repository.events(job_id)]
             return await self._render(
                 request,
                 "job.html",
@@ -491,7 +503,9 @@ class WebApp:
                 ),
                 subscription_web_search=self._hosted_search_capability(),
                 latest_probe=await self._subscription_web_search_probe_view(self._model_view()["model"]),
-                configuration_versions=await self.queries.configuration_versions(),
+                configuration_versions=self._localize_configuration_versions(
+                    await self.queries.configuration_versions()
+                ),
                 probe_jobs=probe_jobs,
                 live_topic="jobs",
             )
@@ -545,18 +559,20 @@ class WebApp:
                 "diagnostics.html",
                 "system",
                 "diagnostics",
-                capability_probes=await self.queries.capability_probes(offset=offset),
+                capability_probes=self._localize_probe_page(
+                    await self.queries.capability_probes(offset=offset)
+                ),
                 diagnostic_counts=counts,
                 diagnostic_metrics=[
                     {"label": self._t(name), "value": value}
                     for name, value in counts.items()
                     if name != "sqlite_version"
                 ],
-                health={
-                    "discord": self.discord.connected,
-                    "model": self.models.ready,
-                    "chatgpt": self.account.connected,
-                },
+                health=[
+                    {"label": self._t("discord"), "ok": self.discord.connected},
+                    {"label": self._t("model"), "ok": self.models.ready},
+                    {"label": self._t("service_chatgpt"), "ok": self.account.connected},
+                ],
                 versions=self._diagnostic_versions(),
             )
 
@@ -579,9 +595,7 @@ class WebApp:
             return Response(
                 json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
                 media_type="application/json",
-                headers={
-                    "Content-Disposition": 'attachment; filename="diskovod-diagnostic.json"'
-                },
+                headers={"Content-Disposition": 'attachment; filename="diskovod-diagnostic.json"'},
             )
 
         @self.app.get("/system/database")
@@ -647,7 +661,7 @@ class WebApp:
                 )
                 total = await self.jobs.repository.count(status=job_status or None)
             except ValueError as error:
-                raise HTTPException(400, str(error)) from error
+                raise HTTPException(400, self._localized_error(error)) from error
             bounded_limit = max(1, min(limit, 500))
             bounded_offset = max(0, offset)
             return JSONResponse(
@@ -655,9 +669,7 @@ class WebApp:
                     "items": [self._job_view(item) for item in items],
                     "active_count": await self.jobs.repository.active_count(),
                     "next_offset": (
-                        bounded_offset + bounded_limit
-                        if bounded_offset + bounded_limit < total
-                        else None
+                        bounded_offset + bounded_limit if bounded_offset + bounded_limit < total else None
                     ),
                 }
             )
@@ -670,9 +682,7 @@ class WebApp:
             offset: int = 0,
             _: str = Depends(auth),
         ):
-            return JSONResponse(
-                await self.queries.chats(query=q, state=state, limit=limit, offset=offset)
-            )
+            return JSONResponse(await self.queries.chats(query=q, state=state, limit=limit, offset=offset))
 
         @self.app.get("/api/chats/{channel_id}/messages")
         async def chat_messages_api(
@@ -704,11 +714,13 @@ class WebApp:
             _: str = Depends(auth),
         ):
             return JSONResponse(
-                await self.queries.runs(
-                    status=run_status,
-                    channel_id=channel_id,
-                    limit=limit,
-                    offset=offset,
+                self._localize_run_page(
+                    await self.queries.runs(
+                        status=run_status,
+                        channel_id=channel_id,
+                        limit=limit,
+                        offset=offset,
+                    )
                 )
             )
 
@@ -747,7 +759,7 @@ class WebApp:
             result = await self.queries.run(run_id)
             if result is None:
                 raise HTTPException(404, self._t("run_not_found"))
-            result["run"]["status_label"] = self._t(f"status_{result['run']['status']}")
+            self._localize_run_view(result)
             return JSONResponse(result)
 
         @self.app.get("/api/search")
@@ -775,10 +787,13 @@ class WebApp:
                 previous: dict[str, str] = {}
                 deadline = time.monotonic() + 25
                 heartbeat_at = 0.0
-                yield json.dumps(
-                    {"type": "hello", "server_epoch": self.server_epoch},
-                    separators=(",", ":"),
-                ) + "\n"
+                yield (
+                    json.dumps(
+                        {"type": "hello", "server_epoch": self.server_epoch},
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
                 while time.monotonic() < deadline and not await request.is_disconnected():
                     versions = await self.queries.resource_versions(selected)
                     for topic, version in versions.items():
@@ -916,9 +931,7 @@ class WebApp:
                     max_message_gap_seconds,
                 ) = AUTOMATION_PRESETS[preset]
             elif preset != "custom":
-                return self._redirect(
-                    "/settings/automation", error=self._t("unknown_automation_preset")
-                )
+                return self._redirect("/settings/automation", error=self._t("unknown_automation_preset"))
             if (
                 min_delay_seconds > max_delay_seconds
                 or min_typing_cps > max_typing_cps
@@ -976,7 +989,7 @@ class WebApp:
                     max_output_tokens=max(32, min(max_reply_tokens, 2048)),
                 )
             except (RuntimeError, ValueError) as error:
-                return self._redirect("/settings/model", error=str(error))
+                return self._redirect("/settings/model", error=self._localized_error(error))
             return self._redirect("/settings/model", message=self._t("settings_saved"))
 
         @self.app.post("/chatgpt/connect")
@@ -984,7 +997,7 @@ class WebApp:
             try:
                 return RedirectResponse(await self.account.begin_oauth(), status_code=303)
             except Exception as exc:
-                return self._redirect("/settings/connections", error=str(exc))
+                return self._redirect("/settings/connections", error=self._localized_error(exc))
 
         @self.app.get("/chatgpt/oauth/callback")
         async def chat_callback(
@@ -995,7 +1008,7 @@ class WebApp:
             try:
                 await self.account.finish_oauth(code=code, state=state, error=error)
             except Exception as exc:
-                return self._redirect("/settings/connections", error=str(exc))
+                return self._redirect("/settings/connections", error=self._localized_error(exc))
             selected = self._model_view()
             try:
                 await self._save_provider_selection(
@@ -1005,7 +1018,7 @@ class WebApp:
                     max_output_tokens=selected["max_output_tokens"],
                 )
             except RuntimeError as exc:
-                return self._redirect("/settings/connections", error=str(exc))
+                return self._redirect("/settings/connections", error=self._localized_error(exc))
             return self._redirect("/settings/connections", message=self._t("chatgpt_connected"))
 
         @self.app.post("/chatgpt/disconnect")
@@ -1084,7 +1097,9 @@ class WebApp:
                 "hosted_web_search": hosted_web_search is not None and protocol == "responses",
             }
             if self.store.automation_settings().enabled and not capabilities["native_function_calls"]:
-                return self._redirect("/settings/connections", error=self._t("disable_automation_for_provider"))
+                return self._redirect(
+                    "/settings/connections", error=self._t("disable_automation_for_provider")
+                )
             saved_provider = CustomProvider(name, base_url, api_key, protocol, capabilities)
             await self.store.aset_custom_provider(saved_provider)
             if draft_token:
@@ -1098,7 +1113,7 @@ class WebApp:
                     max_output_tokens=selected["max_output_tokens"],
                 )
             except RuntimeError as exc:
-                return self._redirect("/settings/connections", error=str(exc))
+                return self._redirect("/settings/connections", error=self._localized_error(exc))
             return self._redirect("/settings/connections", message=self._t("provider_saved", name=name))
 
         @self.app.post("/provider/custom/detect")
@@ -1207,7 +1222,7 @@ class WebApp:
                         target_id=token,
                     )
             except Exception as exc:
-                return self._provider_draft_back(token, error=str(exc))
+                return self._provider_draft_back(token, error=self._localized_error(exc))
             return self._provider_draft_back(
                 token,
                 message=self._t("connecting"),
@@ -1226,7 +1241,9 @@ class WebApp:
             if provider == "chatgpt" and not self.account.connected:
                 return self._redirect("/settings/connections", error=self._t("connect_chatgpt_first"))
             if provider == "custom" and self.store.custom_provider() is None:
-                return self._redirect("/settings/connections", error=self._t("configure_custom_provider_first"))
+                return self._redirect(
+                    "/settings/connections", error=self._t("configure_custom_provider_first")
+                )
             custom = self.store.custom_provider()
             if (
                 provider == "custom"
@@ -1234,7 +1251,9 @@ class WebApp:
                 and custom
                 and not custom.supports("native_function_calls")
             ):
-                return self._redirect("/settings/connections", error=self._t("detect_native_calls_before_select"))
+                return self._redirect(
+                    "/settings/connections", error=self._t("detect_native_calls_before_select")
+                )
             selected = self._model_view()
             await self._save_provider_selection(
                 provider,
@@ -1242,7 +1261,9 @@ class WebApp:
                 reasoning_effort=selected["reasoning_effort"],
                 max_output_tokens=selected["max_output_tokens"],
             )
-            return self._redirect("/settings/connections", message=self._t("provider_selected", name=self.models.provider_label))
+            return self._redirect(
+                "/settings/connections", message=self._t("provider_selected", name=self.models.provider_label)
+            )
 
         @self.app.post("/discord/connect")
         async def discord_connect(token: str = Form(...), _: str = Depends(auth)):
@@ -1294,24 +1315,16 @@ class WebApp:
         @self.app.post("/settings/automation/reset")
         async def automation_reset(confirm: str = Form(""), _: str = Depends(auth)):
             if confirm != "reset":
-                return self._redirect(
-                    "/settings/automation", error=self._t("settings_reset_confirm")
-                )
+                return self._redirect("/settings/automation", error=self._t("settings_reset_confirm"))
             await self.store.aset_automation_settings(AutomationSettings())
-            return self._redirect(
-                "/settings/automation", message=self._t("automation_settings_reset")
-            )
+            return self._redirect("/settings/automation", message=self._t("automation_settings_reset"))
 
         @self.app.post("/settings/interface/reset")
         async def interface_reset(confirm: str = Form(""), _: str = Depends(auth)):
             if confirm != "reset":
-                return self._redirect(
-                    "/settings/interface", error=self._t("settings_reset_confirm")
-                )
+                return self._redirect("/settings/interface", error=self._t("settings_reset_confirm"))
             await self.store.aset_interface_settings(InterfaceSettings())
-            return self._redirect(
-                "/settings/interface", message=ui_text("en", "interface_settings_reset")
-            )
+            return self._redirect("/settings/interface", message=ui_text("en", "interface_settings_reset"))
 
         @self.app.post("/personality/infer")
         async def personality_infer(samples: str = Form(...), _: str = Depends(auth)):
@@ -1395,9 +1408,7 @@ class WebApp:
         @self.app.post("/chats/{channel_id}/pause")
         async def pause(channel_id: str, _: str = Depends(auth)):
             await self.runtime.permanently_pause(channel_id)
-            return self._redirect(
-                f"/chats/{channel_id}", message=self._t("conversation_paused")
-            )
+            return self._redirect(f"/chats/{channel_id}", message=self._t("conversation_paused"))
 
         @self.app.post("/chats/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
@@ -1407,9 +1418,7 @@ class WebApp:
                 await self.runtime.resume_escalation(str(escalation["id"]), action="resolved")
             await self.store.aset_permanent_pause(channel_id, False)
             await self.store.aclear_snooze(channel_id)
-            return self._redirect(
-                f"/chats/{channel_id}", message=self._t("conversation_resumed")
-            )
+            return self._redirect(f"/chats/{channel_id}", message=self._t("conversation_resumed"))
 
         @self.app.post("/chats/{channel_id}/mode")
         async def conversation_mode(
@@ -1443,12 +1452,8 @@ class WebApp:
             try:
                 await self.discord.force_reply(channel_id)
             except Exception as exc:
-                return self._redirect(
-                    f"/chats/{channel_id}", error=self._localized_known_error(exc)
-                )
-            return self._redirect(
-                f"/chats/{channel_id}", message=self._t("forced_reply_scheduled")
-            )
+                return self._redirect(f"/chats/{channel_id}", error=self._localized_error(exc))
+            return self._redirect(f"/chats/{channel_id}", message=self._t("forced_reply_scheduled"))
 
         @self.app.post("/chats/{channel_id}/steering")
         async def live_steering(
@@ -1457,13 +1462,9 @@ class WebApp:
             _: str = Depends(auth),
         ):
             if await self.store.aconversation(channel_id) is None:
-                return self._redirect(
-                    f"/chats/{channel_id}", error=self._t("conversation_not_found")
-                )
+                return self._redirect(f"/chats/{channel_id}", error=self._t("conversation_not_found"))
             await self.runtime.set_live_steering(channel_id, enabled is not None)
-            return self._redirect(
-                f"/chats/{channel_id}", message=self._t("settings_saved")
-            )
+            return self._redirect(f"/chats/{channel_id}", message=self._t("settings_saved"))
 
         @self.app.post("/inbox/escalations/{escalation_id}/claim")
         async def escalation_claim(escalation_id: str, _: str = Depends(auth)):
@@ -1583,18 +1584,14 @@ class WebApp:
             _: str = Depends(auth),
         ):
             if confirm != "delete":
-                return self._redirect(
-                    "/knowledge/memories", error=self._t("delete_confirmation_required")
-                )
+                return self._redirect("/knowledge/memories", error=self._t("delete_confirmation_required"))
             try:
                 labels = tuple(json.loads(namespace))
                 if not labels or not all(isinstance(label, str) for label in labels):
                     raise ValueError
                 await self.runtime.memory.adelete(labels, key)
             except (TypeError, ValueError, json.JSONDecodeError):
-                return self._redirect(
-                    "/knowledge/memories", error=self._t("memory_identity_invalid")
-                )
+                return self._redirect("/knowledge/memories", error=self._t("memory_identity_invalid"))
             return self._redirect("/knowledge/memories", message=self._t("memory_deleted"))
 
     async def _render(
@@ -1665,13 +1662,13 @@ class WebApp:
             "connections",
             chat_connected=self.account.connected,
             chat_email=self.account.email,
-            chat_error=self.account.last_error,
+            chat_error=self._localized_error(self.account.last_error),
             active_provider=self._active_provider(),
             provider_label=self.models.provider_label,
             custom_provider=provider_view,
             discord_connected=self.discord.connected,
             discord_identity=self.discord.identity,
-            discord_error=self.discord.error,
+            discord_error=self._localized_error(self.discord.error),
             has_discord_token=self.store.discord_token() is not None,
             captcha_requests=self.discord.captcha_requests(),
         )
@@ -1699,13 +1696,14 @@ class WebApp:
             (
                 name
                 for name, values in AUTOMATION_PRESETS.items()
-                if all(abs(actual - expected) < 1e-9 for actual, expected in zip(current, values, strict=True))
+                if all(
+                    abs(actual - expected) < 1e-9 for actual, expected in zip(current, values, strict=True)
+                )
             ),
             "custom",
         )
 
-    @classmethod
-    def _checkpoint_view(cls, metadata: dict[str, Any], snapshot, parent) -> dict[str, Any]:
+    def _checkpoint_view(self, metadata: dict[str, Any], snapshot, parent) -> dict[str, Any]:
         values = snapshot.checkpoint.get("channel_values", {})
         messages = list(values.get("messages") or [])
         parent_messages = (
@@ -1716,21 +1714,28 @@ class WebApp:
         current_ids = {str(getattr(message, "id", "")) for message in messages}
         parent_ids = {str(getattr(message, "id", "")) for message in parent_messages}
         state = {
-            str(key): redact_sensitive(cls._serializable(value))
+            str(key): redact_sensitive(self._serializable(value))
             for key, value in values.items()
             if key != "messages"
         }
         return {
-            "metadata": metadata,
-            "messages": [cls._checkpoint_message(message) for message in messages],
+            "metadata": metadata | {"source_label": self._checkpoint_source_label(metadata.get("source"))},
+            "messages": [self._checkpoint_message(message) for message in messages],
             "state": state,
             "added_messages": len(current_ids - parent_ids),
             "removed_messages": len(parent_ids - current_ids),
-            "checkpoint_metadata": redact_sensitive(cls._serializable(snapshot.metadata)),
+            "checkpoint_metadata": redact_sensitive(self._serializable(snapshot.metadata)),
         }
 
     async def _prepare_chat_view(self, view: dict[str, Any]) -> None:
         view["runtime_ready"] = self.runtime.ready
+        configuration = view.get("configuration") or {}
+        configuration["provider_label"] = self._provider_label(configuration.get("provider_id"))
+        for generation in view.get("generations") or []:
+            reason = str(generation.get("close_reason") or "")
+            generation["close_reason_label"] = self._t(f"generation_reason_{reason}") if reason else ""
+        for checkpoint in view.get("checkpoints") or []:
+            checkpoint["source_label"] = self._checkpoint_source_label(checkpoint.get("source"))
         if not view["historical"] or not view["checkpoints"] or self.runtime.checkpointer is None:
             return
         checkpoint = view["checkpoints"][0]
@@ -1745,32 +1750,32 @@ class WebApp:
         if snapshot is None:
             return
         values = snapshot.checkpoint.get("channel_values", {})
-        view["messages"] = [
-            self._checkpoint_message(message) for message in values.get("messages") or []
-        ]
+        view["messages"] = [self._checkpoint_message(message) for message in values.get("messages") or []]
         view["older_messages_before"] = None
 
-    @classmethod
-    def _checkpoint_message(cls, message: Any) -> dict[str, Any]:
+    def _checkpoint_message(self, message: Any) -> dict[str, Any]:
         additional = getattr(message, "additional_kwargs", {}) or {}
         participant = additional.get("diskovod_participant") or {}
         message_type = str(getattr(message, "type", type(message).__name__)).lower()
         role = str(
-            participant.get("role")
-            or {"human": "peer", "ai": "assistant"}.get(message_type, message_type)
+            participant.get("role") or {"human": "peer", "ai": "assistant"}.get(message_type, message_type)
         )
         content = getattr(message, "content", "")
         if not isinstance(content, str):
             content = json.dumps(
-                redact_sensitive(cls._serializable(content)),
+                redact_sensitive(self._serializable(content)),
                 ensure_ascii=False,
                 indent=2,
             )
+        author = str(participant.get("name") or "")
+        if not author:
+            role_key = f"role_{role}"
+            author = self._t(role_key) if self._t(role_key) != role_key else self._t("unknown_peer")
         return {
             "id": str(getattr(message, "id", "") or ""),
             "role": role,
-            "author": str(participant.get("name") or role),
-            "author_name": str(participant.get("name") or role),
+            "author": author,
+            "author_name": author,
             "content": content,
             "direction": "in" if role == "peer" else "out",
             "timestamp": None,
@@ -1809,7 +1814,7 @@ class WebApp:
             "effort": str(configuration.get("options", {}).get("reasoning_effort") or "—"),
             "result_label": self._t(f"web_search_probe_result_{outcome}"),
             "response_id": str(report["id"]),
-            "error": str(report["conclusion"] if status == "error" else ""),
+            "error": self._localized_error(report["conclusion"] if status == "error" else ""),
         }
 
     def _personality_view(self) -> dict[str, Any] | None:
@@ -1827,9 +1832,7 @@ class WebApp:
             label_key = f"table_{item['name']}"
             label = ui_text(locale, label_key)
             item["label"] = (
-                ui_text(locale, "database_table_label", name=item["name"])
-                if label == label_key
-                else label
+                ui_text(locale, "database_table_label", name=item["name"]) if label == label_key else label
             )
         table_names = {item["name"] for item in tables}
         selected = table if table in table_names else "messages"
@@ -1936,8 +1939,10 @@ class WebApp:
             self._t(stage_key) if progress_stage and self._t(stage_key) != stage_key else progress_stage
         )
         item["status_label"] = self._t(f"status_{item.get('status')}")
+        item["error_summary"] = self._localized_error(item.get("error_summary"))
         result_kind = str(item.get("result_kind") or "")
         result_id = str(item.get("result_id") or "")
+        item["result_kind_label"] = self._t(f"result_kind_{result_kind}") if result_kind else ""
         item["result_url"] = (
             self._url(f"/activity/runs/{result_id}")
             if result_kind == "agent_run" and result_id
@@ -1945,15 +1950,15 @@ class WebApp:
                 self._url("/settings/assistant")
                 if result_kind == "assistant_personality"
                 else (
-                    self._url("/system/diagnostics")
-                    if result_kind == "provider_capability_probe"
-                    else None
+                    self._url("/system/diagnostics") if result_kind == "provider_capability_probe" else None
                 )
             )
         )
         if item.get("target_kind") == "provider_setup_draft" and item.get("target_id"):
-            item["target_url"] = self._url("/settings/connections") + "?" + urlencode(
-                {"provider_draft": str(item["target_id"])}
+            item["target_url"] = (
+                self._url("/settings/connections")
+                + "?"
+                + urlencode({"provider_draft": str(item["target_id"])})
             )
         else:
             item["target_url"] = None
@@ -1964,8 +1969,7 @@ class WebApp:
         kind = str(item.get("kind") or "")
         key = (
             f"status_{kind}"
-            if kind
-            in {"queued", "running", "cancellation_requested", "succeeded", "failed", "cancelled"}
+            if kind in {"queued", "running", "cancellation_requested", "succeeded", "failed", "cancelled"}
             else f"job_event_{kind}"
         )
         item["kind_label"] = self._t(key) if self._t(key) != key else kind
@@ -1992,7 +1996,10 @@ class WebApp:
         locale = self.store.interface_settings().locale if self.store is not None else "en"
         return ui_text(locale, key, **values)
 
-    def _localized_known_error(self, error: Exception) -> str:
+    def _localized_error(self, error: object) -> str:
+        if not error:
+            return ""
+        detail = str(error)
         key = {
             "Discord must be connected before forcing a reply": "discord_required_force",
             "Invalid Discord channel ID": "discord_channel_invalid",
@@ -2000,8 +2007,106 @@ class WebApp:
             "This conversation has no incoming message to answer": "discord_no_incoming_message",
             "The latest incoming Discord message ID is invalid": "discord_message_id_invalid",
             "Discord must be connected before loading message history": "discord_required_history",
-        }.get(str(error))
-        return self._t(key) if key else str(error)
+            "Invalid or expired ChatGPT OAuth state": "oauth_state_invalid",
+            "ChatGPT OAuth callback did not include an authorization code": "oauth_callback_code_missing",
+            "ChatGPT OAuth service has not started": "oauth_service_not_started",
+            "ChatGPT Subscription is not connected": "chatgpt_subscription_not_connected",
+            "Model configuration cannot change while an agent run is active": "model_change_run_active",
+            "Resolve active owner escalations before changing the model": "model_change_escalation_active",
+            "Administrative job service is not ready": "admin_job_service_unavailable",
+            "ChatGPT Subscription is not the selected model provider": "subscription_provider_not_selected",
+            "Unknown or unavailable model provider": "unknown_model_provider",
+            "Discord connection closed; retrying": "discord_connection_retrying",
+            "The model configuration no longer exists": "job_error_configuration_missing",
+            "The provider setup draft expired or does not exist": "job_error_setup_draft_expired",
+            "The provider setup draft expired before the result could be saved": (
+                "job_error_setup_draft_save_expired"
+            ),
+            "The encrypted personality input expired or does not exist": (
+                "job_error_personality_input_expired"
+            ),
+            "Not enough representative message history was available": (
+                "job_error_personality_history_insufficient"
+            ),
+            "Assistant settings changed while personality inference was running": (
+                "job_error_assistant_profile_changed"
+            ),
+            "Administrative job lease was lost": "job_error_lease_expired",
+            "Replay cancelled by owner": "replay_cancelled_by_owner",
+        }.get(detail)
+        return self._t(key) if key else self._t("operation_failed", detail=detail)
+
+    def _provider_label(self, provider_id: object) -> str:
+        provider = str(provider_id or "")
+        key = {
+            "chatgpt_subscription": "chatgpt_subscription",
+            "custom_openai": "provider_custom_openai",
+        }.get(provider)
+        return self._t(key) if key else provider
+
+    def _checkpoint_source_label(self, source: object) -> str:
+        value = str(source or "")
+        return self._t(f"checkpoint_source_{value}") if value else ""
+
+    def _localize_configuration_versions(self, versions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for item in versions:
+            configuration = item.get("configuration") or {}
+            configuration["provider_label"] = self._provider_label(configuration.get("provider_id"))
+        return versions
+
+    def _localize_probe_page(self, page: dict[str, Any]) -> dict[str, Any]:
+        for probe in page.get("items") or []:
+            conclusion = str(probe.get("conclusion") or "")
+            key = f"probe_conclusion_{conclusion}"
+            probe["conclusion_label"] = (
+                self._t(key)
+                if conclusion and self._t(key) != key
+                else self._t("probe_conclusion_request_error")
+            )
+        return page
+
+    def _localize_run_view(self, view: dict[str, Any]) -> None:
+        run = view["run"]
+        run["status_label"] = self._t(f"status_{run['status']}")
+        run["trigger_label"] = (
+            self._t("force_reply")
+            if run.get("trigger_kind") == "force_reply"
+            else self._t(f"trigger_{run.get('trigger_kind')}")
+        )
+        run["error"] = self._localized_error(run.get("error"))
+        configuration = run.get("configuration") or {}
+        configuration["provider_label"] = self._provider_label(configuration.get("provider_id"))
+        kind_keys = {
+            "model_request": "model_request",
+            "model_response": "model_response",
+        }
+        for event in view.get("timeline") or []:
+            event["category_label"] = self._t(f"trace_category_{event['category']}")
+            event["kind_label"] = self._t(kind_keys.get(event["kind"], f"trace_kind_{event['kind']}"))
+            summary_key = str(event.get("summary_key") or "")
+            event["summary_label"] = (
+                self._t(summary_key, **(event.get("summary_values") or {}))
+                if summary_key
+                else str(event.get("summary") or "")
+            )
+        for checkpoint in view.get("checkpoints") or []:
+            checkpoint["source_label"] = self._checkpoint_source_label(checkpoint.get("source"))
+        for delivery in view.get("deliveries") or []:
+            action = str(delivery.get("action") or "")
+            state = str(delivery.get("state") or "")
+            delivery["action_label"] = self._t(f"delivery_action_{action}")
+            delivery["state_label"] = self._t(
+                {"failed": "status_failed", "claimed": "claimed"}.get(state, f"delivery_state_{state}")
+            )
+
+    def _localize_run_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for run in items:
+            run["error"] = self._localized_error(run.get("error"))
+        return items
+
+    def _localize_run_page(self, page: dict[str, Any]) -> dict[str, Any]:
+        self._localize_run_items(page.get("items") or [])
+        return page
 
     def _database_url(self, table: str, page: int, query: str) -> str:
         parameters = {"table": table, "page": max(1, page)}

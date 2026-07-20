@@ -871,6 +871,7 @@ class WebApp:
             owner_timezone: str = Form("UTC"),
             owner_details: str = Form(""),
             base_instructions: str = Form(...),
+            allow_conversational_followups: str | None = Form(None),
             _: str = Depends(auth),
         ):
             if prompt_locale not in SUPPORTED_LOCALES:
@@ -895,6 +896,7 @@ class WebApp:
                     base_instructions=localized_base_instructions(
                         previous.prompt_locale, prompt_locale, base_instructions
                     ),
+                    allow_conversational_followups=allow_conversational_followups is not None,
                 )
             )
             await self.models.arefresh_prompt_cache_identity()
@@ -1454,6 +1456,12 @@ class WebApp:
             except Exception as exc:
                 return self._redirect(f"/chats/{channel_id}", error=self._localized_error(exc))
             return self._redirect(f"/chats/{channel_id}", message=self._t("forced_reply_scheduled"))
+
+        @self.app.post("/chats/{channel_id}/followup/cancel")
+        async def cancel_chat_followup(channel_id: str, _: str = Depends(auth)):
+            if not await self.runtime.cancel_followup(channel_id):
+                return self._redirect(f"/chats/{channel_id}", error=self._t("followup_not_active"))
+            return self._redirect(f"/chats/{channel_id}", message=self._t("followup_cancelled"))
 
         @self.app.post("/chats/{channel_id}/steering")
         async def live_steering(

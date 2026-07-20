@@ -1,11 +1,12 @@
 from datetime import datetime
-from typing import Annotated, Any, Literal
+import json
+from typing import Annotated, Any, Literal, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from langgraph.types import interrupt
+from langgraph.types import Command, interrupt
 from pydantic import Field, StringConstraints
 
 from .agent_types import AgentRuntimeContext, DiskovodAgentState
@@ -22,6 +23,21 @@ ExpressionText = Annotated[str, StringConstraints(strip_whitespace=True, min_len
 ReactionEmoji = Literal[
     "👍", "❤️", "😂", "🔥", "🎉", "😮", "😢", "🙏", "👀", "✅", "💯", "🤝", "👌", "😊", "😅", "🤔", "🙌"
 ]
+FollowupPause = Literal["brief", "short"]
+
+
+class FollowupScheduler(Protocol):
+    async def arm_followup(
+        self,
+        context: AgentRuntimeContext,
+        state: DiskovodAgentState,
+        *,
+        tool_call_id: str,
+        pause: FollowupPause,
+        max_duration: float,
+    ) -> tuple[str, float, float]: ...
+
+    async def resolve_followup(self, wait_id: str) -> None: ...
 
 
 def localized_agent_tools(
@@ -29,6 +45,7 @@ def localized_agent_tools(
     outbound: OutboundActions,
     http: PublicHTTP,
     attachments: AttachmentRepository | None = None,
+    followup_scheduler: FollowupScheduler | None = None,
     *,
     include_web_search: bool = True,
 ) -> list[BaseTool]:
@@ -203,6 +220,54 @@ def localized_agent_tools(
             "resolution": resolution,
         }
 
+    async def wait_before_followup(
+        pause: Annotated[FollowupPause, Field(description=text["followup_pause"])],
+        runtime: ToolRuntime[AgentRuntimeContext, DiskovodAgentState],
+    ) -> Command | dict[str, Any]:
+        if followup_scheduler is None:
+            return {"ok": False, "error": text["followup_unavailable"]}
+        count = int(runtime.state.get("followup_wait_count", 0))
+        used = float(runtime.state.get("followup_wait_seconds", 0.0))
+        remaining = max(0.0, 10.0 - used)
+        if count >= 2 or remaining < 1.0:
+            return {"ok": False, "error": text["followup_limit"]}
+        call_id = runtime.tool_call_id or "missing-tool-call-id"
+        wait_id, resume_at, duration = await followup_scheduler.arm_followup(
+            runtime.context,
+            runtime.state,
+            tool_call_id=call_id,
+            pause=pause,
+            max_duration=remaining,
+        )
+        resolution = interrupt(
+            {
+                "kind": "conversational_followup",
+                "wait_id": wait_id,
+                "resume_at": resume_at,
+            }
+        )
+        await followup_scheduler.resolve_followup(wait_id)
+        reason = resolution.get("reason", "deadline") if isinstance(resolution, dict) else "deadline"
+        result = {
+            "ok": True,
+            "message": text["followup_resumed"].format(reason=text.get(f"followup_reason_{reason}", reason)),
+            "reason": reason,
+        }
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+                        tool_call_id=call_id,
+                        name="wait_before_followup",
+                    )
+                ],
+                "followup_wait_count": count + 1,
+                "followup_wait_seconds": used + duration,
+                "continuation_resume": True,
+            }
+        )
+
     tools = [
         StructuredTool.from_function(
             coroutine=get_current_datetime,
@@ -267,4 +332,13 @@ def localized_agent_tools(
     ]
     if not include_web_search:
         tools = [tool for tool in tools if tool.name != "web_search"]
+    if followup_scheduler is not None:
+        tools.append(
+            StructuredTool.from_function(
+                coroutine=wait_before_followup,
+                name="wait_before_followup",
+                description=text["wait_followup"],
+                handle_validation_error=invalid,
+            )
+        )
     return tools

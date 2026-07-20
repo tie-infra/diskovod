@@ -19,13 +19,15 @@ from langgraph.types import Command
 from .agent import AgentPrompt, build_agent
 from .agent_types import AgentRuntimeContext, CapabilityProfile, DiskovodAgentState
 from .attachments import AttachmentRepository
-from .mailbox import ConversationEvent, ConversationMailbox
-from .outbound import DeliveryRecord, DiscordActionTransport, OutboundPublisher
 from .http_client import PublicHTTP
+from .mailbox import ConversationEvent, ConversationMailbox
+from .models import AssistantProfile
+from .outbound import DeliveryRecord, DiscordActionTransport, OutboundPublisher
 from .localization import assistant_name_for, runtime_context_text, summarization_prompt
 from .persistence import SQLiteLangGraphStore, open_checkpointer
-from .providers import ModelService
+from .providers import ModelConfiguration, ModelService
 from .store import Store
+from .waits import ConversationWait, ConversationWaits
 
 log = logging.getLogger(__name__)
 ROLLOVER_MESSAGE_LIMIT = 400
@@ -90,10 +92,12 @@ class AgentService:
         self.attachments = AttachmentRepository(store.database, http)
         self.memory = SQLiteLangGraphStore(store.path, store.database)
         self.publisher = OutboundPublisher(store.database, transport)
+        self.waits = ConversationWaits(store.database)
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self._trace_buffers: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         self._checkpoint_context: AbstractAsyncContextManager[AsyncSqliteSaver] | None = None
         self.checkpointer: AsyncSqliteSaver | None = None
+        self._wait_notifier: asyncio.Task[None] | None = None
         self._closing = False
 
     async def start(self) -> None:
@@ -105,6 +109,8 @@ class AgentService:
         self._checkpoint_context = open_checkpointer(self.store.path, self.checkpoint_secret)
         self.checkpointer = await self._checkpoint_context.__aenter__()
         await self._backfill_checkpoint_index()
+        await self._reconcile_arming_waits()
+        self._wait_notifier = asyncio.create_task(self._notify_due_waits(), name="conversation-wait-notifier")
         for channel_id in await self.mailbox.pending_channels():
             self._ensure_task(channel_id)
 
@@ -115,6 +121,10 @@ class AgentService:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self.tasks.clear()
+        if self._wait_notifier is not None:
+            self._wait_notifier.cancel()
+            await asyncio.gather(self._wait_notifier, return_exceptions=True)
+            self._wait_notifier = None
         if self._checkpoint_context is not None:
             await self._checkpoint_context.__aexit__(None, None, None)
             self._checkpoint_context = None
@@ -132,6 +142,26 @@ class AgentService:
     async def permanently_pause(self, channel_id: str) -> None:
         await self.store.aset_permanent_pause(channel_id, True)
         self.cancel(channel_id)
+
+    async def cancel_followup(self, channel_id: str) -> bool:
+        wait = await self.waits.active(channel_id)
+        if wait is None:
+            return False
+        task = self.tasks.pop(channel_id, None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if not await self.waits.cancel(wait.id, "cancelled_by_owner"):
+            return False
+        await self.mailbox.release(channel_id, wait.run_id)
+        await self.store.afinish_agent_run(
+            wait.run_id,
+            "cancelled",
+            "Conversational follow-up cancelled by owner",
+        )
+        if await self.mailbox.has_pending(channel_id):
+            self._ensure_task(channel_id)
+        return True
 
     async def human_activity(self, channel_id: str) -> float:
         snoozed_until, should_cancel = await self._record_human_activity(channel_id)
@@ -181,6 +211,7 @@ class AgentService:
             agent_input=agent_input,
         )
         if inserted and automate:
+            await self.waits.wake_for_input(channel_id)
             self._ensure_task(channel_id, force=force)
         return inserted
 
@@ -249,6 +280,7 @@ class AgentService:
             observed_at=observed_at,
         )
         if inserted and automate:
+            await self.waits.wake_for_input(channel_id)
             self._ensure_task(channel_id)
         return inserted
 
@@ -278,6 +310,7 @@ class AgentService:
             account_id=account_id,
             trigger_message_id=trigger_message_id,
         )
+        await self.waits.wake_for_input(channel_id)
         self._ensure_task(channel_id, force=True)
 
     async def _ingest_force_reply(self, *, channel_id: str, account_id: str, trigger_message_id: str) -> None:
@@ -436,6 +469,7 @@ class AgentService:
             thread_id=f"replay:{thread_id}:{checkpoint_id}",
             owner_timezone=profile.owner_timezone,
             trigger_message_id="historical-replay",
+            allow_conversational_followups=False,
             permissions=frozenset({"reactions", "owner_escalation"}),
         )
         personality = self.store.personality() or {}
@@ -636,6 +670,32 @@ class AgentService:
         if escalation is None or escalation["state"] not in {"pending", "claimed"}:
             return False
         payload = escalation["payload"]
+        if payload.get("migrated"):
+            channel_id = str(escalation["channel_id"])
+            if action == "owner_reply" and owner_message.strip():
+                account_id = await self._account_id(channel_id)
+                inserted, automate = await self._ingest_message(
+                    message_id=owner_message_id or f"migrated-owner-reply:{time.time_ns()}",
+                    channel_id=channel_id,
+                    account_id=account_id,
+                    author_id=owner_author_id or account_id,
+                    author_name=owner_author_name
+                    or runtime_context_text(self.store.assistant_profile().prompt_locale)["account_owner"],
+                    participant_role="owner",
+                    content=owner_message[:4000],
+                    attachments=[],
+                    observed_at=time.time(),
+                    edited=False,
+                    force=False,
+                    agent_input=True,
+                )
+                if inserted and automate:
+                    self._ensure_task(channel_id)
+            await self.store.aset_interrupt_state(
+                escalation_id,
+                "dismissed" if action == "dismissed" else "resolved",
+            )
+            return True
         trace_id = str(payload.get("trace_id") or "")
         run = await self.store.aagent_run_for_trace(trace_id)
         if run is None:
@@ -666,6 +726,7 @@ class AgentService:
             thread_id=thread_id,
             owner_timezone=profile.owner_timezone,
             trigger_message_id=str(payload.get("trigger_message_id") or ""),
+            allow_conversational_followups=profile.allow_conversational_followups,
             permissions=frozenset({"reactions", "owner_escalation"}),
         )
         personality = self.store.personality() or {}
@@ -686,6 +747,7 @@ class AgentService:
             attachments=self.attachments,
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
+            followup_scheduler=(self if context.allow_conversational_followups else None),
         )
         resume_payload = {
             "action": action,
@@ -781,9 +843,44 @@ class AgentService:
         running = self.tasks.get(channel_id)
         if running is not None and not running.done():
             return
-        task = asyncio.create_task(self._run(channel_id, force=force), name=f"agent-{channel_id}")
+        task = asyncio.create_task(self._drive(channel_id, force=force), name=f"agent-{channel_id}")
         self.tasks[channel_id] = task
         task.add_done_callback(lambda done: self._finished(channel_id, done))
+
+    async def _drive(self, channel_id: str, *, force: bool) -> None:
+        if await self.waits.active(channel_id) is not None:
+            wait = await self.waits.claim_ready(channel_id)
+            if wait is not None:
+                await self._resume_followup(wait)
+            return
+        if await self.store.ahas_active_interrupt(channel_id):
+            return
+        await self._run(channel_id, force=force)
+
+    async def _notify_due_waits(self) -> None:
+        try:
+            while not self._closing:
+                for channel_id in await self.waits.due_channels():
+                    self._ensure_task(channel_id)
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Conversation wait notifier failed")
+
+    async def _reconcile_arming_waits(self) -> None:
+        if self.checkpointer is None:
+            return
+        for wait in await self.waits.arming():
+            snapshot = await self.checkpointer.aget_tuple({"configurable": {"thread_id": wait.thread_id}})
+            writes = snapshot.pending_writes if snapshot is not None else None
+            persisted = any(
+                channel == "__interrupt__" and wait.id in str(value) for _, channel, value in (writes or [])
+            )
+            if persisted:
+                await self.waits.schedule(wait.id)
+            else:
+                await self.waits.cancel(wait.id, "arming_without_persisted_interrupt")
 
     def _finished(self, channel_id: str, task: asyncio.Task[None]) -> None:
         if self.tasks.get(channel_id) is task:
@@ -856,6 +953,7 @@ class AgentService:
             thread_id=thread_id,
             owner_timezone=profile.owner_timezone,
             trigger_message_id=trigger_message_id,
+            allow_conversational_followups=profile.allow_conversational_followups,
             permissions=frozenset({"reactions", "owner_escalation"}),
         )
         personality = self.store.personality() or {}
@@ -877,6 +975,7 @@ class AgentService:
             attachments=self.attachments,
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
+            followup_scheduler=(self if context.allow_conversational_followups else None),
         )
         initial_messages = [message for event in claimed if (message := self._message(event)) is not None]
         state = {
@@ -933,6 +1032,9 @@ class AgentService:
             )
             raise
         interrupted = bool(result.get("__interrupt__"))
+        active_wait = await self.waits.active(channel_id)
+        if interrupted and active_wait is not None and active_wait.run_id == run_id:
+            await self.waits.schedule(active_wait.id)
         await self._flush_trace(trace_id, run_id)
         await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
         await self.mailbox.complete(channel_id, run_id)
@@ -955,12 +1057,187 @@ class AgentService:
             except Exception as error:
                 log.warning("Could not apply completed-turn retention for %s: %s", channel_id, error)
 
+    async def arm_followup(
+        self,
+        context: AgentRuntimeContext,
+        state: DiskovodAgentState,
+        *,
+        tool_call_id: str,
+        pause: str,
+        max_duration: float,
+    ) -> tuple[str, float, float]:
+        ranges = {"brief": (1.0, 3.0), "short": (3.0, 8.0)}
+        minimum, maximum = ranges[pause]
+        duration = min(random.uniform(minimum, maximum), max_duration)
+        profile = self.store.assistant_profile()
+        configuration = self.models.configuration
+        if configuration is None:
+            raise RuntimeError("Cannot schedule a follow-up without a model configuration")
+        payload = {
+            "configuration_version_id": await self.store.aactive_configuration_id(),
+            "model_configuration": configuration.to_dict(),
+            "assistant_profile": profile.to_dict(),
+            "personality": self.store.personality() or {},
+            "account_id": context.account_id,
+            "participant_ids": list(context.participant_ids),
+            "automation_mode": context.automation_mode,
+            "trigger_message_id": context.trigger_message_id,
+            "duration": duration,
+            "pause": pause,
+        }
+        wait = await self.waits.arm(
+            context,
+            run_id=str(state.get("logical_request_id") or context.trace_id),
+            tool_call_id=tool_call_id,
+            duration=duration,
+            payload=payload,
+        )
+        stored_duration = float(wait.payload.get("duration", duration))
+        self._buffer_trace(
+            context.trace_id,
+            "followup_wait_armed",
+            {
+                "wait_id": wait.id,
+                "pause": wait.payload.get("pause", pause),
+                "resume_at": wait.resume_at,
+                "duration": stored_duration,
+            },
+        )
+        return wait.id, wait.resume_at, stored_duration
+
+    async def resolve_followup(self, wait_id: str) -> None:
+        await self.waits.resolve(wait_id)
+
+    async def _resume_followup(self, wait: ConversationWait) -> None:
+        if self.checkpointer is None or not self.models.ready:
+            await self.waits.fail(wait.id, "runtime_not_ready")
+            return
+        configuration_id = wait.payload.get("configuration_version_id")
+        configuration = (
+            await self.store.aagent_configuration(int(configuration_id))
+            if configuration_id is not None
+            else None
+        )
+        if configuration is None and wait.payload.get("model_configuration"):
+            configuration = ModelConfiguration.from_dict(wait.payload["model_configuration"])
+        if configuration is None:
+            await self.waits.fail(wait.id, "pinned_model_configuration_unavailable")
+            await self.store.afinish_agent_run(
+                wait.run_id, "failed", "Pinned model configuration is unavailable"
+            )
+            return
+        profile = AssistantProfile(**dict(wait.payload["assistant_profile"]))
+        conversation = await self.store.aconversation(wait.channel_id)
+        context = AgentRuntimeContext(
+            account_id=str(wait.payload.get("account_id") or await self._account_id(wait.channel_id)),
+            channel_id=wait.channel_id,
+            participant_ids=tuple(str(item) for item in wait.payload.get("participant_ids", [])),
+            owner_id=str(wait.payload.get("account_id") or "discord-owner"),
+            ui_locale=self.store.interface_settings().locale,
+            prompt_locale=profile.prompt_locale,
+            assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
+            automation_mode=str(
+                wait.payload.get("automation_mode") or (conversation["mode"] if conversation else "automatic")
+            ),
+            force_reply=False,
+            provider_id=configuration.provider_id,
+            model_id=configuration.model_id,
+            transport_profile=configuration.transport_profile,
+            capabilities=self._capabilities(configuration),
+            trace_id=wait.trace_id,
+            thread_id=wait.thread_id,
+            owner_timezone=profile.owner_timezone,
+            trigger_message_id=str(wait.payload.get("trigger_message_id") or ""),
+            allow_conversational_followups=profile.allow_conversational_followups,
+            permissions=frozenset({"reactions", "owner_escalation"}),
+        )
+        personality = dict(wait.payload.get("personality") or {})
+        model = (
+            self.models.build_model()
+            if self.models.configuration is not None
+            and self.models.configuration.to_dict() == configuration.to_dict()
+            else self.models.build_configuration(
+                configuration,
+                self.models.credentials_for(configuration),
+            )
+        )
+        agent = build_agent(
+            model,
+            self.publisher,
+            AgentPrompt(
+                profile.prompt_locale,
+                context.assistant_name,
+                profile.base_instructions,
+                str(personality.get("profile") or ""),
+                profile.owner_details,
+            ),
+            self.http,
+            checkpointer=self.checkpointer,
+            store=self.memory,
+            input_injector=self._inject_pending,
+            attachments=self.attachments,
+            diagnostics=self._buffer_trace,
+            hosted_web_search=context.capabilities.hosted_web_search,
+            followup_scheduler=self,
+        )
+        config = {
+            "configurable": {"thread_id": wait.thread_id},
+            "run_id": uuid.UUID(wait.run_id),
+            "recursion_limit": 40,
+        }
+        await self.store.arecord_agent_trace(
+            wait.run_id,
+            "followup_wait_resume",
+            {"wait_id": wait.id, "reason": wait.resume_reason},
+        )
+        try:
+            result = await agent.ainvoke(
+                Command(resume={"reason": wait.resume_reason, "wait_id": wait.id}),
+                config=config,
+                context=context,
+            )
+        except Exception as error:
+            await self.waits.fail(wait.id, f"{type(error).__name__}: {error}")
+            await self.mailbox.fail(
+                wait.channel_id,
+                wait.run_id,
+                f"{type(error).__name__}: {error}",
+            )
+            await self._flush_trace(wait.trace_id, wait.run_id)
+            await self.store.afinish_agent_run(
+                wait.run_id,
+                "failed",
+                f"{type(error).__name__}: {error}",
+            )
+            raise
+        interrupted = bool(result.get("__interrupt__"))
+        next_wait = await self.waits.active(wait.channel_id)
+        if interrupted and next_wait is not None and next_wait.id != wait.id:
+            await self.waits.schedule(next_wait.id)
+        await self.mailbox.complete(wait.channel_id, wait.run_id)
+        await self._flush_trace(wait.trace_id, wait.run_id)
+        await self.store.afinish_agent_run(
+            wait.run_id,
+            "interrupted" if interrupted else "completed",
+        )
+        await self.store.arecord_agent_trace(
+            wait.run_id,
+            "followup_wait_result",
+            {
+                "wait_id": wait.id,
+                "interrupted": interrupted,
+                "outbound_delivery_count": result.get("outbound_delivery_count", 0),
+            },
+        )
+        if not interrupted and await self.mailbox.has_pending(wait.channel_id):
+            self._ensure_task(wait.channel_id)
+
     async def _inject_pending(
         self,
         state: DiskovodAgentState,
         context: AgentRuntimeContext,
     ) -> dict[str, Any] | None:
-        if not await self.mailbox.live_steering(context.channel_id):
+        if not state.get("continuation_resume") and not await self.mailbox.live_steering(context.channel_id):
             return None
         run_id = str(state.get("logical_request_id") or "")
         if not run_id:

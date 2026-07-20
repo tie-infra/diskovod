@@ -246,6 +246,16 @@ class AdminQueryService:
                 if selected and selected.get("configuration_version_id") is not None
                 else None
             )
+            active_wait = await (
+                await connection.execute(
+                    """
+                    SELECT id, state, resume_at, created_at, run_id
+                    FROM conversation_waits WHERE channel_id=?
+                      AND state IN ('arming','scheduled','resuming') LIMIT 1
+                    """,
+                    (channel_id,),
+                )
+            ).fetchone()
         has_older_messages = len(messages) > 50
         bounded_messages = messages[:50]
         reaction_map = {str(row["trigger_message_id"]): str(row["emoji"]) for row in reactions}
@@ -276,6 +286,7 @@ class AdminQueryService:
                 selected and generations and selected["generation"] != generations[0]["generation"]
             ),
             "live_steering": bool(active_thread.get("live_steering", 1)) if active_thread else True,
+            "active_wait": dict(active_wait) if active_wait else None,
         }
 
     async def checkpoint(

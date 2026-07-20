@@ -136,6 +136,7 @@ class AssistantProfile:
     owner_timezone: str = "UTC"
     owner_details: str = ""
     base_instructions: str = DEFAULT_BASE_INSTRUCTIONS
+    allow_conversational_followups: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)

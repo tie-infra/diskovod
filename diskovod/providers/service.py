@@ -257,8 +257,9 @@ class ModelService:
             "assistant_name": profile.assistant_name,
             "base_instructions": profile.base_instructions,
             "owner_details": profile.owner_details,
+            "allow_conversational_followups": profile.allow_conversational_followups,
             "personality_hash": personality.get("source_hash"),
-            "tool_schema": "langgraph-v1",
+            "tool_schema": "langgraph-public-output-v2",
         }
         digest = hashlib.sha256(
             json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()

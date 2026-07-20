@@ -58,6 +58,7 @@ async def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path)
             (7,),
             (8,),
             (9,),
+            (10,),
         ]
         assert (await (await connection.execute("PRAGMA journal_mode")).fetchone())[0] == "wal"
 

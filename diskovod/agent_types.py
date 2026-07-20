@@ -41,6 +41,7 @@ class AgentRuntimeContext:
     thread_id: str = ""
     owner_timezone: str = "UTC"
     trigger_message_id: str = ""
+    allow_conversational_followups: bool = False
     permissions: frozenset[str] = frozenset()
 
 
@@ -55,5 +56,8 @@ class DiskovodAgentState(AgentState):
     counter_run_id: NotRequired[str]
     reaction_target_message_id: NotRequired[str]
     model_step_route: NotRequired[str]
+    followup_wait_count: NotRequired[int]
+    followup_wait_seconds: NotRequired[float]
+    continuation_resume: NotRequired[bool]
     live_injection_batches: NotRequired[Annotated[int, add]]
     summary_metadata: NotRequired[dict[str, Any]]

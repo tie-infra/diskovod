@@ -20,7 +20,7 @@ from langgraph.types import interrupt
 from langgraph.store.base import BaseStore
 from langgraph.runtime import Runtime
 
-from .agent_tools import localized_agent_tools
+from .agent_tools import FollowupScheduler, localized_agent_tools
 from .agent_types import AgentRuntimeContext, DiskovodAgentState
 from .attachments import AttachmentRepository
 from .http_client import PublicHTTP
@@ -31,6 +31,7 @@ from .localization import (
     runtime_context_text,
     summarization_prompt,
     tool_policy,
+    tool_text,
 )
 from .outbound import OutboundActions
 
@@ -43,7 +44,7 @@ class AgentPrompt:
     personality: str = ""
     owner_details: str = ""
 
-    def stable_prefix(self) -> str:
+    def stable_prefix(self, *, allow_conversational_followups: bool = False) -> str:
         prompts = prompts_for(self.locale)
         parts = [
             assistant_identity(self.locale, self.assistant_name),
@@ -56,6 +57,8 @@ class AgentPrompt:
             parts.append(prompts.cached_personality.format(profile=self.personality.strip()))
         if self.owner_details.strip():
             parts.append(prompts.owner_details.format(details=self.owner_details.strip()))
+        if allow_conversational_followups:
+            parts.append(tool_text(self.locale)["followup_policy"])
         return "\n\n".join(parts)
 
 
@@ -108,6 +111,7 @@ def build_agent(
     attachments: AttachmentRepository | None = None,
     diagnostics: Callable[[str, str, dict[str, Any]], None] | None = None,
     hosted_web_search: bool = False,
+    followup_scheduler: FollowupScheduler | None = None,
 ):
     """Build Diskovod's explicit provider-neutral conversation graph."""
     client_tools = localized_agent_tools(
@@ -115,6 +119,7 @@ def build_agent(
         gateway,
         http,
         attachments,
+        followup_scheduler=followup_scheduler,
         include_web_search=not hosted_web_search,
     )
     model_tools: list[Any] = list(client_tools)
@@ -213,6 +218,9 @@ def build_agent(
                     "counter_run_id": request_id,
                     "model_step_route": "malformed_escalation",
                 }
+        waits = [call for call in calls if call["name"] == "wait_before_followup"]
+        if waits and (len(waits) != 1 or len(calls) != 1):
+            raise RuntimeError("wait_before_followup must be the only tool call in a model step")
         if (
             runtime.context.force_reply
             and not _public_text(latest)
@@ -388,7 +396,11 @@ def _runtime_system_message(prompt: AgentPrompt, context: AgentRuntimeContext) -
     ]
     if context.force_reply:
         suffix.append(prompts.forced_reply)
-    return SystemMessage(content=prompt.stable_prefix() + "\n\n" + "\n".join(suffix))
+    return SystemMessage(
+        content=prompt.stable_prefix(allow_conversational_followups=context.allow_conversational_followups)
+        + "\n\n"
+        + "\n".join(suffix)
+    )
 
 
 def _attachment_messages(

@@ -885,11 +885,14 @@ class AgentService:
             raise RuntimeError("Model configuration cannot change while an agent run is active")
         if await self.store.aactive_interrupts():
             raise RuntimeError("Resolve active owner escalations before changing the model")
+        await self.cancel_all_followups("model_configuration_changed")
         threads = await self.store.achat_threads()
         rolled = 0
         for thread in threads:
             if await self._roll_thread(thread, reason="model_configuration_changed"):
                 rolled += 1
+        for thread in threads:
+            await self._resume_pending(str(thread["channel_id"]))
         return rolled
 
     async def ensure_configuration_transition_allowed(self) -> None:

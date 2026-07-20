@@ -605,3 +605,60 @@ async def test_disabling_automation_cancels_all_active_followups(tmp_path: Path)
         {"state": "cancelled", "failure": "automation_disabled"},
     ]
     await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_model_configuration_rollover_cancels_an_active_followup(tmp_path: Path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=0)
+    )
+    await store.aset_assistant_profile(replace(AssistantProfile(), allow_conversational_followups=True))
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    transport = RecordingTransport()
+    model = ScriptedChatModel(
+        responses=[
+            wait_call("I may follow up."),
+            AIMessage("Portable summary."),
+        ]
+    )
+    models = FakeModels(model)
+    service = AgentService(store, models, transport, "x" * 32, UnusedPublicHTTP())
+    await service.start()
+    await service.submit_message(
+        message_id="first",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="Think about this",
+        attachments=[],
+        observed_at=time.time(),
+    )
+    await wait_for_idle(service)
+    wait = await service.waits.active("channel")
+    assert wait is not None
+    previous = models.configuration
+    models.configuration = replace(previous, provider_id="other", model_id="other-model")
+
+    assert await service.apply_configuration_transition(previous) == 1
+    await wait_for_idle(service)
+
+    async with store.database.transaction() as connection:
+        saved_wait = await (
+            await connection.execute(
+                "SELECT state, failure FROM conversation_waits WHERE id=?", (wait.id,)
+            )
+        ).fetchone()
+        original_run = await (
+            await connection.execute("SELECT status FROM agent_runs WHERE id=?", (wait.run_id,))
+        ).fetchone()
+    assert dict(saved_wait) == {
+        "state": "cancelled",
+        "failure": "model_configuration_changed",
+    }
+    assert original_run["status"] == "cancelled"
+    assert [messages for _, messages in transport.messages] == [("I may follow up.",)]
+    await service.close()
+    await store.aclose()

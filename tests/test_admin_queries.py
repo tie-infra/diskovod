@@ -4,8 +4,23 @@ from pathlib import Path
 import json
 
 from diskovod.admin_queries import AdminQueryService
+from diskovod.mailbox import ConversationMailbox
 from diskovod.redaction import REDACTED, redact_sensitive
 from diskovod.store import Store
+
+
+async def test_overview_and_diagnostics_support_the_current_runtime_schema(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    mailbox = ConversationMailbox(store.database)
+    await mailbox.ingest("pending", "channel", "message", {}, observed_at=20.0)
+
+    queries = AdminQueryService(store)
+    overview = await queries.overview()
+    diagnostics = await queries.diagnostic_counts()
+
+    assert overview["chats"] == 0
+    assert diagnostics["pending_events"] == 1
+    await store.aclose()
 
 
 async def test_chat_projection_is_bounded_and_supports_loading_older_messages(tmp_path: Path):

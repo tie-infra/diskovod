@@ -45,6 +45,11 @@ async def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path)
             "outbound_actions",
             "conversation_waits",
         } <= tables
+        assert {
+            "discord_events",
+            "chat_event_queue",
+            "side_effect_deliveries",
+        }.isdisjoint(tables)
         assert await (await connection.execute("SELECT version FROM schema_migrations")).fetchall() == [
             (1,),
             (2,),

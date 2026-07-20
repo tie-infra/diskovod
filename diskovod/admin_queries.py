@@ -59,16 +59,12 @@ class AdminQueryService:
                     "FROM admin_jobs ORDER BY requested_at DESC LIMIT 5"
                 )
             ).fetchall()
-            last_event = await (
-                await connection.execute("SELECT MAX(observed_at) FROM discord_events")
-            ).fetchone()
         return {
             **counts,
             "conversation_modes": {str(row["mode"]): int(row["count"]) for row in mode_rows},
             "recent_runs": [self._run_summary(row) for row in runs],
             "recent_chats": [dict(row) for row in chats],
             "recent_jobs": [dict(row) for row in jobs],
-            "last_discord_event_at": float(last_event[0]) if last_event[0] is not None else None,
         }
 
     async def chats(
@@ -776,7 +772,7 @@ class AdminQueryService:
     async def diagnostic_counts(self) -> dict[str, Any]:
         queries = {
             "conversations": "SELECT COUNT(*) FROM conversations",
-            "pending_events": "SELECT COUNT(*) FROM chat_event_queue WHERE disposition='pending'",
+            "pending_events": "SELECT COUNT(*) FROM conversation_mailbox WHERE state='pending'",
             "failed_runs": "SELECT COUNT(*) FROM agent_runs WHERE status='failed'",
             "active_jobs": (
                 "SELECT COUNT(*) FROM admin_jobs "

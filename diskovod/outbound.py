@@ -136,7 +136,11 @@ class OutboundPublisher:
                     record.error_detail,
                 )
             except Exception as error:
-                record = self._ambiguous(ordinal, "transport_exception", type(error).__name__)
+                record = self._ambiguous(
+                    ordinal,
+                    "transport_exception",
+                    f"{type(error).__name__}: {error}"[:1000],
+                )
             await self._finish(action_id, record)
             records.append(record)
         return records
@@ -329,7 +333,11 @@ class OutboundPublisher:
         try:
             record = await self.transport.react_to_message(context, message_id, emoji)
         except Exception as error:
-            record = self._ambiguous(0, "transport_exception", type(error).__name__)
+            record = self._ambiguous(
+                0,
+                "transport_exception",
+                f"{type(error).__name__}: {error}"[:1000],
+            )
         await self._finish(action_id, record)
         return record
 

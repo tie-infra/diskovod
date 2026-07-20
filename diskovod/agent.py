@@ -379,8 +379,15 @@ class OutboundDeliveryError(RuntimeError):
 
     def __init__(self, records: Sequence[Any]):
         self.records = tuple(records)
-        statuses = ", ".join(str(getattr(record, "status", "missing")) for record in records)
-        super().__init__(f"Outbound delivery did not succeed: {statuses or 'missing result'}")
+        outcomes = []
+        for record in records:
+            outcome = str(getattr(record, "status", "missing"))
+            if code := getattr(record, "error_code", None):
+                outcome += f" ({code})"
+            if detail := getattr(record, "error_detail", None):
+                outcome += f": {detail}"
+            outcomes.append(outcome)
+        super().__init__(f"Outbound delivery did not succeed: {', '.join(outcomes) or 'missing result'}")
 
 
 def _latest_ai_message(state: DiskovodAgentState) -> AIMessage:

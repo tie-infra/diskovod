@@ -389,23 +389,6 @@ class DiscordService:
             content=content,
             timestamp=timestamp,
         )
-        if self.runtime is not None:
-            await self.runtime.events.ingest(
-                f"discord:message:{message_id}",
-                context.channel_id,
-                "message",
-                {
-                    "message_id": message_id,
-                    "account_id": context.account_id,
-                    "author_id": author_id,
-                    "author_name": author_name,
-                    "participant_role": "assistant",
-                    "content": content,
-                    "attachments": [],
-                },
-                observed_at=timestamp,
-                enqueue=False,
-            )
 
     async def react_to_message(
         self,

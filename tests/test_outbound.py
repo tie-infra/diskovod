@@ -79,6 +79,7 @@ async def test_outbound_ambiguous_result_is_not_retried(tmp_path: Path):
     )
 
     assert first[0].status == "ambiguous"
+    assert first[0].error_detail == "TimeoutError: unknown delivery state"
     assert second == first
     assert transport.messages == []
     await store.aclose()

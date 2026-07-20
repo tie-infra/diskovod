@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 
 import diskovod.discord as discord_module
+from diskovod.agent_types import AgentRuntimeContext, CapabilityProfile
 from diskovod.discord import CaptchaBroker, DiscordService, PrivateDiscordClient
 from diskovod.models import discord_attachment_metadata
 from diskovod.store import Store
@@ -41,6 +42,54 @@ def test_captures_attachment_metadata_without_downloading():
             "description": "meeting notes",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_recording_a_sent_message_does_not_use_removed_runtime_event_ledger(tmp_path: Path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    service = DiscordService(store)
+    service.runtime = object()  # type: ignore[assignment]
+    context = AgentRuntimeContext(
+        account_id="owner",
+        channel_id="channel",
+        participant_ids=("peer",),
+        owner_id="owner",
+        ui_locale="en",
+        prompt_locale="en",
+        assistant_name="Diskovod",
+        automation_mode="automatic",
+        force_reply=False,
+        provider_id="test",
+        model_id="test",
+        transport_profile="test",
+        capabilities=CapabilityProfile(),
+        trace_id="trace",
+        thread_id="thread",
+    )
+
+    await service._record_sent_message(
+        context,
+        "Hello",
+        "message-id",
+        "owner",
+        "Owner",
+        123.0,
+    )
+
+    assert await store.ais_bot_message("message-id")
+    async with store.database.transaction() as connection:
+        message = await (
+            await connection.execute(
+                "SELECT direction, source, content FROM messages WHERE id='message-id'"
+            )
+        ).fetchone()
+    assert dict(message) == {
+        "direction": "out",
+        "source": "assistant",
+        "content": "Hello",
+    }
+    await store.aclose()
 
 
 @pytest.mark.asyncio

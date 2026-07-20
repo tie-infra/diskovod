@@ -172,7 +172,10 @@ async def test_failed_publication_fails_before_tools_execute():
     )
     agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
 
-    with pytest.raises(OutboundDeliveryError):
+    with pytest.raises(
+        OutboundDeliveryError,
+        match=r"Outbound delivery did not succeed: failed \(delivery_failed\)",
+    ):
         await agent.ainvoke(
             {"messages": [HumanMessage("hello")]},
             context=runtime_context(),

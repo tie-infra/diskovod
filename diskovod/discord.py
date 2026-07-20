@@ -504,18 +504,19 @@ class DiscordService:
         token = self.store.discord_token()
         if not token:
             return
-        if self.runtime is None:
+        runtime = self.runtime
+        if runtime is None:
             raise RuntimeError("The Discord agent runtime has not been attached")
         self.error = None
         self._retry_delay = self.retry_initial_seconds
-        self.task = asyncio.create_task(self._run(token), name="discord-client")
+        self.task = asyncio.create_task(self._run(token, runtime), name="discord-client")
 
-    async def _run(self, token: str) -> None:
+    async def _run(self, token: str, runtime: AgentService) -> None:
         try:
             while True:
                 client = PrivateDiscordClient(
                     self.store,
-                    self.runtime,
+                    runtime,
                     self.captcha.handle,
                     self._connected,
                 )

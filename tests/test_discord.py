@@ -45,11 +45,41 @@ def test_captures_attachment_metadata_without_downloading():
 
 
 @pytest.mark.asyncio
-async def test_recording_a_sent_message_does_not_use_removed_runtime_event_ledger(tmp_path: Path):
+async def test_sending_and_recording_a_message_uses_current_runtime_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     await store.aupsert_conversation("channel", "peer", "Peer")
     service = DiscordService(store)
     service.runtime = object()  # type: ignore[assignment]
+    sent = SimpleNamespace(
+        id="message-id",
+        author=SimpleNamespace(id="owner", __str__=lambda self: "Owner"),
+        created_at=datetime.fromtimestamp(123.0, timezone.utc),
+    )
+
+    class Typing:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class SendChannel:
+        def typing(self):
+            return Typing()
+
+        async def send(self, content: str, **options):
+            assert content == "Hello"
+            assert options["silent"] is False
+            return sent
+
+    async def no_sleep(_seconds: float):
+        return None
+
+    monkeypatch.setattr(discord_module.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(service, "_channel", lambda _channel_id: SendChannel())
     context = AgentRuntimeContext(
         account_id="owner",
         channel_id="channel",
@@ -68,15 +98,10 @@ async def test_recording_a_sent_message_does_not_use_removed_runtime_event_ledge
         thread_id="thread",
     )
 
-    await service._record_sent_message(
-        context,
-        "Hello",
-        "message-id",
-        "owner",
-        "Owner",
-        123.0,
-    )
+    deliveries = await service.send_messages(context, ("Hello",))
 
+    assert deliveries[0].accepted
+    assert deliveries[0].discord_message_id == "message-id"
     assert await store.ais_bot_message("message-id")
     async with store.database.transaction() as connection:
         message = await (
@@ -138,6 +163,36 @@ class EditRuntime:
         self.submitted.append(values)
 
 
+class CallbackAttachments:
+    def __init__(self):
+        self.captured: list[dict] = []
+
+    async def capture(self, attachments, *, channel_id: str, message_id: str):
+        self.captured.append(
+            {
+                "attachments": tuple(attachments),
+                "channel_id": channel_id,
+                "message_id": message_id,
+            }
+        )
+        return []
+
+
+class CallbackRuntime(EditRuntime):
+    def __init__(self):
+        super().__init__()
+        self.attachments = CallbackAttachments()
+        self.deleted: list[dict] = []
+        self.owner_reply_channels: list[str] = []
+
+    async def resume_escalation_for_owner_reply(self, channel_id: str, _content: str, **_values):
+        self.owner_reply_channels.append(channel_id)
+        return False
+
+    async def submit_delete(self, **values):
+        self.deleted.append(values)
+
+
 class ForceRuntime:
     def __init__(self):
         self.requests: list[dict] = []
@@ -148,6 +203,54 @@ class ForceRuntime:
 
 class FakeEditDMChannel:
     id = 42
+
+
+@pytest.mark.asyncio
+async def test_discord_message_callbacks_use_current_runtime_ingress(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    user = SimpleNamespace(id=999)
+    peer = SimpleNamespace(id=123, bot=False)
+    channel = FakeEditDMChannel()
+    runtime = CallbackRuntime()
+    client = SimpleNamespace(user=user, store=store, runtime=runtime)
+    created_at = datetime.now(timezone.utc)
+    message = SimpleNamespace(
+        id=456,
+        channel=channel,
+        author=peer,
+        content="Hello",
+        attachments=(),
+        created_at=created_at,
+    )
+
+    await PrivateDiscordClient.on_message(client, message)
+
+    assert runtime.attachments.captured == [
+        {"attachments": (), "channel_id": "42", "message_id": "456"}
+    ]
+    assert runtime.submitted[0]["participant_role"] == "peer"
+    assert runtime.submitted[0]["message_id"] == "456"
+    assert (await store.ahistory("42", 1))[0]["content"] == "Hello"
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_discord_delete_callback_uses_current_runtime_ingress(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    await store.aupsert_conversation("42", "peer", "Peer")
+    runtime = CallbackRuntime()
+    client = SimpleNamespace(user=SimpleNamespace(id=999), store=store, runtime=runtime)
+
+    await PrivateDiscordClient.on_raw_message_delete(
+        client,
+        SimpleNamespace(channel_id=42, message_id=456),
+    )
+
+    assert runtime.deleted == [
+        {"message_id": "456", "channel_id": "42", "account_id": "999"}
+    ]
+    await store.aclose()
 
 
 class RetryClient:

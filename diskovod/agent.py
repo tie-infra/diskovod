@@ -255,10 +255,10 @@ def build_agent(
             source_kind="assistant_text",
             source_id=str(latest.id),
         )
-        if len(records) != 1 or not records[0].accepted:
+        if not records or not all(record.accepted for record in records):
             raise OutboundDeliveryError(records)
         return {
-            "outbound_delivery_count": 1,
+            "outbound_delivery_count": len(records),
             "model_step_route": "tools" if latest.tool_calls else "end",
         }
 
@@ -275,7 +275,7 @@ def build_agent(
             source_kind="localized_fallback",
             source_id=f"{call['id']}:malformed",
         )
-        if len(records) != 1 or not records[0].accepted:
+        if not records or not all(record.accepted for record in records):
             raise OutboundDeliveryError(records)
         payload: dict[str, object] = {
             "channel_id": runtime.context.channel_id,
@@ -307,7 +307,7 @@ def build_agent(
                     name="escalate_to_owner",
                 )
             ],
-            "outbound_delivery_count": 1,
+            "outbound_delivery_count": len(records),
         }
 
     async def trace_tool_call(request: ToolCallRequest, handler):

@@ -96,3 +96,93 @@ async def test_reaction_target_is_part_of_idempotent_action(tmp_path: Path):
     assert first == second
     assert transport.reactions == [("message-1", "🎉")]
     await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_long_logical_reply_uses_deterministic_transport_segments(tmp_path: Path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    transport = Transport()
+    publisher = OutboundPublisher(store.database, transport)
+    message = " ".join(f"word-{index:04}" for index in range(500))
+
+    first = await publisher.publish_messages(
+        context(), (message,), source_kind="assistant_text", source_id="ai-long"
+    )
+    second = await publisher.publish_messages(
+        context(), (message,), source_kind="assistant_text", source_id="ai-long"
+    )
+
+    assert len(first) > 1
+    assert second == first
+    assert all(len(segment) <= 1900 for segment in transport.messages)
+    assert " ".join(transport.messages) == message
+    async with store.database.transaction() as connection:
+        payloads = [
+            row[0]
+            for row in await (
+                await connection.execute(
+                    "SELECT payload FROM outbound_actions ORDER BY ordinal"
+                )
+            ).fetchall()
+        ]
+    assert all('"transport_segment"' in payload for payload in payloads)
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_abandoned_dispatch_requires_explicit_operator_retry(tmp_path: Path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    transport = Transport()
+    publisher = OutboundPublisher(store.database, transport)
+    await publisher.publish_messages(
+        context(), ("hello",), source_kind="assistant_text", source_id="ai-1"
+    )
+    async with store.database.transaction() as connection:
+        row = await (await connection.execute("SELECT id FROM outbound_actions")).fetchone()
+        action_id = str(row["id"])
+        await connection.execute(
+            "UPDATE outbound_actions SET state='dispatching', result=NULL, remote_id=NULL, "
+            "lease_owner='dead-process', lease_expires_at=0, completed_at=NULL"
+        )
+
+    replacement = OutboundPublisher(store.database, transport)
+    reconciled = await replacement.reconcile_abandoned()
+    replay = await replacement.publish_messages(
+        context(), ("hello",), source_kind="assistant_text", source_id="ai-1"
+    )
+
+    assert reconciled == [{"id": action_id, "run_id": "run", "state": "ambiguous"}]
+    assert replay[0].status == "ambiguous"
+    assert transport.messages == ["hello"]
+
+    retried = await replacement.retry(action_id)
+
+    assert retried is not None and retried.accepted
+    assert transport.messages == ["hello", "hello"]
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_operator_can_resolve_ambiguous_delivery_without_transport(tmp_path: Path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    transport = Transport(raises=True)
+    publisher = OutboundPublisher(store.database, transport)
+    await publisher.publish_messages(
+        context(), ("hello",), source_kind="assistant_text", source_id="ai-1"
+    )
+    async with store.database.transaction() as connection:
+        row = await (await connection.execute("SELECT id FROM outbound_actions")).fetchone()
+        action_id = str(row["id"])
+
+    resolved = await publisher.resolve(
+        action_id,
+        "confirmed_succeeded",
+        remote_id="discord-message-42",
+    )
+
+    assert resolved is not None and resolved.accepted
+    assert resolved.discord_message_id == "discord-message-42"
+    saved = await publisher.action(action_id)
+    assert saved["state"] == "succeeded"
+    assert transport.messages == []
+    await store.aclose()

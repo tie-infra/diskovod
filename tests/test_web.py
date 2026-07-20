@@ -74,6 +74,7 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/activity/runs" in route_paths
     assert "/activity/runs/{run_id}" in route_paths
     assert "/activity/runs/{run_id}/diagnostic.json" in route_paths
+    assert "/activity/runs/{run_id}/deliveries/{action_id}/{operation}" in route_paths
     assert "/activity/jobs" in route_paths
     assert "/activity/jobs/{job_id}" in route_paths
     assert "/knowledge/memories" in route_paths

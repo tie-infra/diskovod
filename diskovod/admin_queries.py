@@ -972,7 +972,7 @@ class AdminQueryService:
         item.pop("payload", None)
         item.pop("result", None)
         item["action"] = str(item.get("kind") or "")
-        item["tool_call_id"] = str(item["id"])
+        item["action_id"] = str(item["id"])
         item["summary"] = cls._value_preview(result or request)
         if include_payload:
             item["request"] = request

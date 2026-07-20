@@ -107,6 +107,12 @@ class AgentService:
         self._closing = False
         await self.store.start()
         await self.memory.start()
+        for action in await self.publisher.reconcile_abandoned():
+            await self.store.arecord_agent_trace(
+                action["run_id"],
+                "outbound_action_reconciled",
+                {"action_id": action["id"], "state": action["state"]},
+            )
         self._checkpoint_context = open_checkpointer(self.store.path, self.checkpoint_secret)
         self.checkpointer = await self._checkpoint_context.__aenter__()
         await self._backfill_checkpoint_index()
@@ -191,6 +197,39 @@ class AgentService:
             ):
                 cancelled += 1
         return cancelled
+
+    async def resolve_outbound_action(
+        self,
+        run_id: str,
+        action_id: str,
+        operation: str,
+        *,
+        remote_id: str = "",
+    ) -> DeliveryRecord | None:
+        action = await self.publisher.action(action_id)
+        if action is None or str(action["run_id"]) != run_id:
+            return None
+        if operation == "retry":
+            result = await self.publisher.retry(action_id)
+        elif operation in {"confirmed_succeeded", "confirmed_failed"}:
+            result = await self.publisher.resolve(
+                action_id,
+                operation,
+                remote_id=remote_id,
+            )
+        else:
+            raise ValueError("Unknown outbound action operation")
+        if result is not None:
+            await self.store.arecord_agent_trace(
+                run_id,
+                "outbound_action_operator_resolution",
+                {
+                    "action_id": action_id,
+                    "operation": operation,
+                    "result": result.to_dict(),
+                },
+            )
+        return result
 
     async def human_activity(self, channel_id: str) -> float:
         snoozed_until, should_cancel = await self._record_human_activity(channel_id)

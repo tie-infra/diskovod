@@ -382,6 +382,32 @@ class WebApp:
                 headers={"Content-Disposition": 'attachment; filename="diskovod-run-diagnostic.json"'},
             )
 
+        @self.app.post("/activity/runs/{run_id}/deliveries/{action_id}/{operation}")
+        async def resolve_run_delivery(
+            run_id: str,
+            action_id: str,
+            operation: str,
+            remote_id: str = Form(""),
+            _: str = Depends(auth),
+        ):
+            if operation not in {"retry", "confirmed_succeeded", "confirmed_failed"}:
+                raise HTTPException(404, self._t("outbound_action_not_found"))
+            result = await self.runtime.resolve_outbound_action(
+                run_id,
+                action_id,
+                operation,
+                remote_id=remote_id,
+            )
+            if result is None:
+                return self._redirect(
+                    f"/activity/runs/{run_id}?panel=raw",
+                    error=self._t("outbound_action_not_actionable"),
+                )
+            return self._redirect(
+                f"/activity/runs/{run_id}?panel=raw",
+                message=self._t("outbound_action_updated"),
+            )
+
         @self.app.get("/activity/jobs")
         async def jobs(
             request: Request,
@@ -746,10 +772,10 @@ class WebApp:
         @self.app.get("/api/runs/{run_id}/delivery")
         async def run_delivery_api(
             run_id: str,
-            tool_call_id: str,
+            action_id: str,
             _: str = Depends(auth),
         ):
-            result = await self.queries.run_delivery(run_id, tool_call_id)
+            result = await self.queries.run_delivery(run_id, action_id)
             if result is None:
                 raise HTTPException(404, self._t("run_not_found"))
             return JSONResponse(result)

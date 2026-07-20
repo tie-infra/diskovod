@@ -432,8 +432,10 @@ async def test_pausing_a_chat_cancels_its_durable_followup(tmp_path: Path, monke
     assert wait is not None
 
     await service.permanently_pause("channel")
+    await service._resume_pending("channel")
 
     assert await service.waits.active("channel") is None
+    assert service.tasks == {}
     async with store.database.transaction() as connection:
         saved = await (
             await connection.execute(
@@ -590,7 +592,10 @@ async def test_disabling_automation_cancels_all_active_followups(tmp_path: Path)
         assert await service.waits.schedule(wait.id)
 
     assert await service.cancel_all_followups("automation_disabled") == 2
+    for index in range(2):
+        await service._resume_pending(f"channel-{index}")
     assert await service.waits.resumable() == []
+    assert service.tasks == {}
     async with store.database.transaction() as connection:
         rows = await (
             await connection.execute("SELECT state, failure FROM conversation_waits ORDER BY id")

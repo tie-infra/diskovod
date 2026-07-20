@@ -1255,6 +1255,8 @@ class AgentService:
     async def _resume_pending(self, channel_id: str) -> None:
         if self._closing:
             return
+        if not self.store.automation_settings().enabled or not await self.store.acan_automate(channel_id):
+            return
         if not await self.store.ahas_active_interrupt(channel_id) and await self.mailbox.has_pending(
             channel_id
         ):

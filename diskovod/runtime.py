@@ -19,44 +19,55 @@ from langgraph.types import Command
 from .agent import AgentPrompt, build_agent
 from .agent_types import AgentRuntimeContext, CapabilityProfile, DiskovodAgentState
 from .attachments import AttachmentRepository
-from .agent_actions import DeliveryRecord
-from .durable_actions import DiscordActionTransport, DurableActionGateway, SideEffectLedger
-from .events import DiscordEventQueue, QueuedDiscordEvent
+from .mailbox import ConversationEvent, ConversationMailbox
+from .outbound import DeliveryRecord, DiscordActionTransport, OutboundPublisher
 from .http_client import PublicHTTP
 from .localization import assistant_name_for, runtime_context_text, summarization_prompt
 from .persistence import SQLiteLangGraphStore, open_checkpointer
 from .providers import ModelService
-from .steering import LiveConversationMiddleware
 from .store import Store
 
 log = logging.getLogger(__name__)
 ROLLOVER_MESSAGE_LIMIT = 400
 
 
-class EmulatedActionGateway:
+class EmulatedOutboundActions:
     """Capture replay actions without contacting Discord or changing durable action state."""
 
     def __init__(self):
         self.actions: list[dict[str, Any]] = []
 
-    async def send_messages(self, context, messages, *, tool_call_id):
+    async def publish_messages(self, context, messages, *, source_kind, source_id):
+        del context
         records = [
-            DeliveryRecord("accepted", index, f"emulated:{tool_call_id}:{index}")
+            DeliveryRecord("accepted", index, f"emulated:{source_id}:{index}")
             for index, _ in enumerate(messages)
         ]
         self.actions.append(
-            {"action": "send_messages", "messages": list(messages), "tool_call_id": tool_call_id}
+            {
+                "action": "discord_messages",
+                "messages": list(messages),
+                "source_kind": source_kind,
+                "source_id": source_id,
+            }
         )
         return records
 
-    async def react_to_message(self, context, emoji, *, tool_call_id):
+    async def react(self, context, emoji, message_id, *, source_id):
         del context
-        self.actions.append({"action": "react_to_message", "emoji": emoji, "tool_call_id": tool_call_id})
-        return DeliveryRecord("accepted", 0, f"emulated:{tool_call_id}:reaction")
+        self.actions.append(
+            {
+                "action": "discord_reaction",
+                "emoji": emoji,
+                "message_id": message_id,
+                "source_id": source_id,
+            }
+        )
+        return DeliveryRecord("accepted", 0, f"emulated:{source_id}:reaction")
 
-    async def record_escalation(self, context, payload, *, tool_call_id):
+    async def record_escalation(self, context, *, source_id, payload):
         del context
-        self.actions.append({"action": "escalate_to_owner", "payload": payload, "tool_call_id": tool_call_id})
+        self.actions.append({"action": "escalate_to_owner", "payload": payload, "source_id": source_id})
 
 
 class AgentService:
@@ -75,11 +86,10 @@ class AgentService:
         self.transport = transport
         self.checkpoint_secret = checkpoint_secret
         self.http = http
-        self.events = DiscordEventQueue(store.database)
+        self.mailbox = ConversationMailbox(store.database)
         self.attachments = AttachmentRepository(store.database, http)
         self.memory = SQLiteLangGraphStore(store.path, store.database)
-        self.ledger = SideEffectLedger(store.database)
-        self.gateway = DurableActionGateway(self.ledger, transport)
+        self.publisher = OutboundPublisher(store.database, transport)
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self._trace_buffers: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         self._checkpoint_context: AbstractAsyncContextManager[AsyncSqliteSaver] | None = None
@@ -95,7 +105,7 @@ class AgentService:
         self._checkpoint_context = open_checkpointer(self.store.path, self.checkpoint_secret)
         self.checkpointer = await self._checkpoint_context.__aenter__()
         await self._backfill_checkpoint_index()
-        for channel_id in await self.store.apending_channels():
+        for channel_id in await self.mailbox.pending_channels():
             self._ensure_task(channel_id)
 
     async def close(self) -> None:
@@ -212,7 +222,7 @@ class AgentService:
             "content": content,
             "attachments": attachments,
         }
-        inserted = await self.events.ingest(
+        inserted = await self.mailbox.ingest(
             event_id,
             channel_id,
             "edit" if edited else "message",
@@ -221,7 +231,7 @@ class AgentService:
             enqueue=automate,
         )
         if inserted and automate:
-            await self.events.thread_id(account_id, channel_id)
+            await self.mailbox.thread_id(account_id, channel_id)
         return inserted, automate
 
     async def submit_delete(
@@ -252,7 +262,7 @@ class AgentService:
     ) -> tuple[bool, bool]:
         automate = self.store.automation_settings().enabled and await self.store.acan_automate(channel_id)
         timestamp = observed_at or time.time()
-        inserted = await self.events.ingest(
+        inserted = await self.mailbox.ingest(
             f"discord:delete:{message_id}:{int(timestamp * 1_000_000)}",
             channel_id,
             "delete",
@@ -272,7 +282,7 @@ class AgentService:
 
     async def _ingest_force_reply(self, *, channel_id: str, account_id: str, trigger_message_id: str) -> None:
         event_id = f"diskovod:force:{uuid.uuid4()}"
-        await self.events.ingest(
+        await self.mailbox.ingest(
             event_id,
             channel_id,
             "force_reply",
@@ -283,10 +293,10 @@ class AgentService:
             },
             enqueue=True,
         )
-        await self.events.thread_id(account_id, channel_id)
+        await self.mailbox.thread_id(account_id, channel_id)
 
     async def set_live_steering(self, channel_id: str, enabled: bool) -> None:
-        await self.events.set_live_steering(await self._account_id(channel_id), channel_id, enabled)
+        await self.mailbox.set_live_steering(await self._account_id(channel_id), channel_id, enabled)
 
     async def checkpoint_views(self, *, limit_per_thread: int = 20) -> list[dict[str, Any]]:
         if self.checkpointer is None:
@@ -426,10 +436,10 @@ class AgentService:
             thread_id=f"replay:{thread_id}:{checkpoint_id}",
             owner_timezone=profile.owner_timezone,
             trigger_message_id="historical-replay",
-            permissions=frozenset({"send_messages", "reactions", "owner_escalation"}),
+            permissions=frozenset({"reactions", "owner_escalation"}),
         )
         personality = self.store.personality() or {}
-        gateway = EmulatedActionGateway()
+        gateway = EmulatedOutboundActions()
         replay_model = (
             self.models.build_configuration(
                 configuration,
@@ -561,7 +571,7 @@ class AgentService:
             summary = ""
         if not summary:
             summary = runtime_context_text(locale)["rollover_summary"].format(count=len(messages))
-        new_thread_id = await self.events.roll_generation(
+        new_thread_id = await self.mailbox.roll_generation(
             str(thread["account_id"]),
             str(thread["channel_id"]),
             reason=reason,
@@ -626,9 +636,7 @@ class AgentService:
         if escalation is None or escalation["state"] not in {"pending", "claimed"}:
             return False
         payload = escalation["payload"]
-        tool_call_id = str(payload.get("tool_call_id") or "")
-        suffix = f":{tool_call_id}"
-        trace_id = escalation_id[: -len(suffix)] if tool_call_id and escalation_id.endswith(suffix) else ""
+        trace_id = str(payload.get("trace_id") or "")
         run = await self.store.aagent_run_for_trace(trace_id)
         if run is None:
             raise RuntimeError("The interrupted agent run cannot be found")
@@ -658,12 +666,12 @@ class AgentService:
             thread_id=thread_id,
             owner_timezone=profile.owner_timezone,
             trigger_message_id=str(payload.get("trigger_message_id") or ""),
-            permissions=frozenset({"send_messages", "reactions", "owner_escalation"}),
+            permissions=frozenset({"reactions", "owner_escalation"}),
         )
         personality = self.store.personality() or {}
         agent = build_agent(
             self.models.build_model(),
-            self.gateway,
+            self.publisher,
             AgentPrompt(
                 profile.prompt_locale,
                 context.assistant_name,
@@ -674,7 +682,7 @@ class AgentService:
             self.http,
             checkpointer=self.checkpointer,
             store=self.memory,
-            extra_middleware=(LiveConversationMiddleware(self.events, profile.prompt_locale),),
+            input_injector=self._inject_pending,
             attachments=self.attachments,
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
@@ -742,7 +750,7 @@ class AgentService:
             str(run["id"]),
             "interrupted" if result.get("__interrupt__") else "completed",
         )
-        if not result.get("__interrupt__") and await self.store.ahas_pending_events(channel_id):
+        if not result.get("__interrupt__") and await self.mailbox.has_pending(channel_id):
             self._ensure_task(channel_id)
         return True
 
@@ -793,7 +801,7 @@ class AgentService:
     async def _resume_pending(self, channel_id: str) -> None:
         if self._closing:
             return
-        if not await self.store.ahas_active_interrupt(channel_id) and await self.store.ahas_pending_events(
+        if not await self.store.ahas_active_interrupt(channel_id) and await self.mailbox.has_pending(
             channel_id
         ):
             self._ensure_task(channel_id)
@@ -807,10 +815,10 @@ class AgentService:
         if not force:
             await asyncio.sleep(automation.debounce_seconds)
         account_id = await self._account_id(channel_id)
-        thread_id = await self.events.thread_id(account_id, channel_id)
+        thread_id = await self.mailbox.thread_id(account_id, channel_id)
         run_id = str(uuid.uuid4())
         trace_id = str(uuid.uuid4())
-        claimed = await self.events.claim_ready(channel_id, run_id)
+        claimed = await self.mailbox.claim_ready(channel_id, run_id)
         if not claimed:
             return
         force = force or any(event.kind == "force_reply" for event in claimed)
@@ -848,7 +856,7 @@ class AgentService:
             thread_id=thread_id,
             owner_timezone=profile.owner_timezone,
             trigger_message_id=trigger_message_id,
-            permissions=frozenset({"send_messages", "reactions", "owner_escalation"}),
+            permissions=frozenset({"reactions", "owner_escalation"}),
         )
         personality = self.store.personality() or {}
         prompt = AgentPrompt(
@@ -860,12 +868,12 @@ class AgentService:
         )
         agent = build_agent(
             self.models.build_model(),
-            self.gateway,
+            self.publisher,
             prompt,
             self.http,
             checkpointer=self.checkpointer,
             store=self.memory,
-            extra_middleware=(LiveConversationMiddleware(self.events, profile.prompt_locale),),
+            input_injector=self._inject_pending,
             attachments=self.attachments,
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
@@ -875,6 +883,7 @@ class AgentService:
             "messages": initial_messages,
             "logical_request_id": run_id,
             "claimed_event_ids": [event.id for event in claimed],
+            "reaction_target_message_id": trigger_message_id,
         }
         config = {
             "configurable": {"thread_id": thread_id},
@@ -903,13 +912,13 @@ class AgentService:
         try:
             result = await agent.ainvoke(state, config=config, context=context)
         except asyncio.CancelledError:
-            await self.events.release(channel_id, run_id)
+            await self.mailbox.release(channel_id, run_id)
             await self._flush_trace(trace_id, run_id)
             await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
             await self.store.afinish_agent_run(run_id, "cancelled")
             raise
         except Exception as error:
-            await self.events.release(channel_id, run_id)
+            await self.mailbox.fail(channel_id, run_id, f"{type(error).__name__}: {error}")
             await self._flush_trace(trace_id, run_id)
             await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
             await self.store.afinish_agent_run(
@@ -926,7 +935,7 @@ class AgentService:
         interrupted = bool(result.get("__interrupt__"))
         await self._flush_trace(trace_id, run_id)
         await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
-        await self.events.complete(channel_id, run_id)
+        await self.mailbox.complete(channel_id, run_id)
         await self.store.afinish_agent_run(
             run_id,
             "interrupted" if interrupted else "completed",
@@ -937,7 +946,7 @@ class AgentService:
             {
                 "interrupted": interrupted,
                 "message_count": len(result.get("messages", [])),
-                "successful_written_sends": result.get("successful_written_sends", 0),
+                "outbound_delivery_count": result.get("outbound_delivery_count", 0),
             },
         )
         if not interrupted:
@@ -946,7 +955,55 @@ class AgentService:
             except Exception as error:
                 log.warning("Could not apply completed-turn retention for %s: %s", channel_id, error)
 
-    def _message(self, event: QueuedDiscordEvent) -> BaseMessage | None:
+    async def _inject_pending(
+        self,
+        state: DiskovodAgentState,
+        context: AgentRuntimeContext,
+    ) -> dict[str, Any] | None:
+        if not await self.mailbox.live_steering(context.channel_id):
+            return None
+        run_id = str(state.get("logical_request_id") or "")
+        if not run_id:
+            return None
+        batch = int(state.get("live_injection_batches", 0)) + 1
+        known = set(state.get("claimed_event_ids", []))
+        recovered = [
+            event for event in await self.mailbox.claimed(context.channel_id, run_id) if event.id not in known
+        ]
+        newly_claimed = await self.mailbox.claim_ready(
+            context.channel_id,
+            run_id,
+            injection_batch=batch,
+        )
+        events = recovered + newly_claimed
+        messages = [message for event in events if (message := self._message(event)) is not None]
+        if not events:
+            return None
+        target = next(
+            (
+                str(event.payload.get("message_id") or "")
+                for event in reversed(events)
+                if event.kind in {"message", "edit"}
+            ),
+            str(state.get("reaction_target_message_id") or context.trigger_message_id),
+        )
+        self._buffer_trace(
+            context.trace_id,
+            "mailbox_injection",
+            {
+                "event_ids": [event.id for event in events],
+                "batch": batch,
+                "reaction_target_message_id": target,
+            },
+        )
+        return {
+            "messages": messages,
+            "claimed_event_ids": [event.id for event in events],
+            "reaction_target_message_id": target,
+            "live_injection_batches": 1,
+        }
+
+    def _message(self, event: ConversationEvent) -> BaseMessage | None:
         if event.kind == "force_reply":
             return None
         if event.kind == "delete":

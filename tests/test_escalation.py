@@ -8,9 +8,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from diskovod.agent import build_agent
-from diskovod.agent_actions import DeliveryRecord
-from diskovod.durable_actions import DurableActionGateway, SideEffectLedger
 from diskovod.localization import escalation_fallback
+from diskovod.outbound import DeliveryRecord, OutboundPublisher
 from diskovod.store import Store
 
 from test_agent import (
@@ -38,16 +37,19 @@ async def test_invalid_escalation_uses_fixed_fallback_without_retry():
 
     assert model.index == 1
     assert gateway.calls[0][1] == (escalation_fallback("en"),)
-    assert result["successful_written_sends"] == 1
+    assert result["__interrupt__"]
 
 
 class EscalationTransport:
     def __init__(self):
-        self.messages = 0
+        self.messages: list[str] = []
 
     async def send_messages(self, context, messages):
-        self.messages += 1
-        return [DeliveryRecord("accepted", 0, discord_message_id="acknowledgement")]
+        self.messages.extend(messages)
+        return [
+            DeliveryRecord("accepted", index, discord_message_id=f"message-{len(self.messages)}-{index}")
+            for index, _ in enumerate(messages)
+        ]
 
     async def react_to_message(self, context, message_id, emoji):
         raise AssertionError("not used")
@@ -56,18 +58,20 @@ class EscalationTransport:
 @pytest.mark.asyncio
 async def test_valid_escalation_interrupts_and_resumes_without_resending(tmp_path: Path):
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
-    ledger = SideEffectLedger(store.database)
     transport = EscalationTransport()
-    gateway = DurableActionGateway(ledger, transport)
+    gateway = OutboundPublisher(store.database, transport)
     model = ScriptedChatModel(
         responses=[
-            tool_call(
-                "escalate_to_owner",
-                {
-                    "reason": "peer_requested_owner",
-                    "acknowledgement": "I’ve marked this for the owner.",
-                },
-                "escalate-valid",
+            AIMessage(
+                content="I’ve marked this for the owner.",
+                tool_calls=[
+                    {
+                        "name": "escalate_to_owner",
+                        "args": {},
+                        "id": "escalate-valid",
+                        "type": "tool_call",
+                    }
+                ],
             ),
             AIMessage(content="done after owner resolution"),
         ]
@@ -82,7 +86,7 @@ async def test_valid_escalation_interrupts_and_resumes_without_resending(tmp_pat
         context=context,
     )
     assert suspended["__interrupt__"]
-    assert transport.messages == 1
+    assert transport.messages == ["I’ve marked this for the owner."]
 
     resumed = await agent.ainvoke(
         Command(resume={"action": "resolved"}),
@@ -91,7 +95,10 @@ async def test_valid_escalation_interrupts_and_resumes_without_resending(tmp_pat
     )
 
     assert resumed["messages"][-1].content == "done after owner resolution"
-    assert transport.messages == 1
+    assert transport.messages == [
+        "I’ve marked this for the owner.",
+        "done after owner resolution",
+    ]
     async with store.database.transaction() as connection:
         row = await (await connection.execute("SELECT state FROM escalation_interrupts")).fetchone()
     assert row["state"] == "pending"

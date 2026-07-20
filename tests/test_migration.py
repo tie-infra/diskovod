@@ -55,7 +55,13 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
     assert report.events == 2
     assert report.checkpoints == 1
     async with store.database.transaction() as connection:
-        event_count = (await (await connection.execute("SELECT COUNT(*) FROM discord_events")).fetchone())[0]
+        event_count = (
+            await (
+                await connection.execute(
+                    "SELECT COUNT(*) FROM conversation_mailbox WHERE id LIKE 'legacy:message:%'"
+                )
+            ).fetchone()
+        )[0]
         checkpoint_count = (await (await connection.execute("SELECT COUNT(*) FROM checkpoints")).fetchone())[
             0
         ]
@@ -68,7 +74,7 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
     assert "model_request_logs" not in tables
     assert "chatgpt_usage" not in tables
     assert "conversation_escalations" not in tables
-    thread_id = await runtime.events.thread_id("discord-owner", "channel")
+    thread_id = await runtime.mailbox.thread_id("discord-owner", "channel")
     checkpoint = await runtime.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
     assert [message.content for message in checkpoint.checkpoint["channel_values"]["messages"]] == [
         "Do you remember this?",
@@ -126,10 +132,6 @@ async def test_cutover_converts_active_legacy_escalation_to_real_interrupt(tmp_p
     interrupt = (await store.aactive_interrupts())[0]
     assert interrupt["state"] == "claimed"
     assert interrupt["payload"]["trigger_message_id"] == "trigger"
-    async with store.database.transaction() as connection:
-        run = await (
-            await connection.execute("SELECT status FROM agent_runs WHERE id='migration-escalation-run:1'")
-        ).fetchone()
-    assert run["status"] == "interrupted"
+    assert interrupt["payload"]["migrated"] is True
     await runtime.close()
     await store.aclose()

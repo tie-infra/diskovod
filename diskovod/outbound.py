@@ -42,6 +42,34 @@ class DiscordActionTransport(Protocol):
     ) -> DeliveryRecord: ...
 
 
+class OutboundActions(Protocol):
+    async def publish_messages(
+        self,
+        context: AgentRuntimeContext,
+        messages: tuple[str, ...],
+        *,
+        source_kind: str,
+        source_id: str,
+    ) -> list[DeliveryRecord]: ...
+
+    async def react(
+        self,
+        context: AgentRuntimeContext,
+        emoji: str,
+        message_id: str,
+        *,
+        source_id: str,
+    ) -> DeliveryRecord: ...
+
+    async def record_escalation(
+        self,
+        context: AgentRuntimeContext,
+        *,
+        source_id: str,
+        payload: dict[str, object],
+    ) -> None: ...
+
+
 class OutboundPublisher:
     """Materialize and dispatch externally visible Discord actions idempotently."""
 
@@ -84,8 +112,10 @@ class OutboundPublisher:
                 continue
             try:
                 delivered = await self.transport.send_messages(context, (message,))
-                record = delivered[0] if delivered else DeliveryRecord(
-                    "failed", 0, error_code="missing_transport_result"
+                record = (
+                    delivered[0]
+                    if delivered
+                    else DeliveryRecord("failed", 0, error_code="missing_transport_result")
                 )
                 record = DeliveryRecord(
                     record.status,
@@ -225,8 +255,8 @@ class OutboundPublisher:
             return changed == 1, None
 
     async def _finish(self, action_id: str, record: DeliveryRecord) -> None:
-        state = "succeeded" if record.accepted else (
-            "ambiguous" if record.status == "ambiguous" else "failed"
+        state = (
+            "succeeded" if record.accepted else ("ambiguous" if record.status == "ambiguous" else "failed")
         )
         async with self.database.transaction() as connection:
             changed = (

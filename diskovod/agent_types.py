@@ -49,7 +49,11 @@ class DiskovodAgentState(AgentState):
 
     logical_request_id: NotRequired[str]
     claimed_event_ids: NotRequired[Annotated[list[str], add]]
-    successful_written_sends: NotRequired[Annotated[int, add]]
-    terminate_after_send: NotRequired[bool]
+    outbound_delivery_count: NotRequired[Annotated[int, add]]
+    model_call_count: NotRequired[int]
+    tool_call_count: NotRequired[int]
+    counter_run_id: NotRequired[str]
+    reaction_target_message_id: NotRequired[str]
+    model_step_route: NotRequired[str]
     live_injection_batches: NotRequired[Annotated[int, add]]
     summary_metadata: NotRequired[dict[str, Any]]

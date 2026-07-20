@@ -7,11 +7,11 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from diskovod.agent import AgentPrompt, build_agent
-from diskovod.agent_actions import DeliveryRecord
+from diskovod.agent import AgentPrompt, OutboundDeliveryError, build_agent
 from diskovod.agent_tools import localized_agent_tools
 from diskovod.agent_types import AgentRuntimeContext, CapabilityProfile
 from diskovod.localization import SUPPORTED_LOCALES, tool_text
+from diskovod.outbound import DeliveryRecord
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -38,8 +38,8 @@ class RecordingGateway:
         self.fail = fail
         self.calls: list[tuple[str, tuple[str, ...], str]] = []
 
-    async def send_messages(self, context, messages, *, tool_call_id):
-        self.calls.append((context.channel_id, messages, tool_call_id))
+    async def publish_messages(self, context, messages, *, source_kind, source_id):
+        self.calls.append((context.channel_id, messages, source_id))
         return [
             DeliveryRecord(
                 status="failed" if self.fail else "accepted",
@@ -50,10 +50,11 @@ class RecordingGateway:
             for index, _ in enumerate(messages)
         ]
 
-    async def react_to_message(self, context, emoji, *, tool_call_id):
+    async def react(self, context, emoji, message_id, *, source_id):
+        self.calls.append((context.channel_id, (f"reaction:{message_id}:{emoji}",), source_id))
         return DeliveryRecord("accepted", 0, discord_message_id=f"reaction:{emoji}")
 
-    async def record_escalation(self, context, payload, *, tool_call_id):
+    async def record_escalation(self, context, *, source_id, payload):
         return None
 
 
@@ -79,6 +80,8 @@ def runtime_context(locale: str = "en") -> AgentRuntimeContext:
         transport_profile="test",
         capabilities=CapabilityProfile(),
         trace_id="trace",
+        thread_id="thread",
+        trigger_message_id="trigger",
     )
 
 
@@ -94,7 +97,7 @@ def tool_call(name: str, arguments: dict[str, Any], call_id: str) -> AIMessage:
 
 
 @pytest.mark.asyncio
-async def test_ordinary_final_text_stops_without_sending_to_discord():
+async def test_ordinary_final_text_is_sent_to_discord():
     gateway = RecordingGateway()
     model = ScriptedChatModel(responses=[AIMessage(content="internal final text")])
     agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
@@ -105,25 +108,26 @@ async def test_ordinary_final_text_stops_without_sending_to_discord():
     )
 
     assert result["messages"][-1].content == "internal final text"
-    assert gateway.calls == []
+    assert [call[1] for call in gateway.calls] == [("internal final text",)]
 
 
 @pytest.mark.asyncio
-async def test_send_messages_returns_control_and_supports_explicit_final_send():
+async def test_public_text_is_delivered_before_tool_work_and_the_final_reply():
     gateway = RecordingGateway()
     model = ScriptedChatModel(
         responses=[
-            tool_call(
-                "send_messages",
-                {"messages": ["I’ll check."], "continue_after_sending": True},
-                "progress",
+            AIMessage(
+                content="I’ll check.",
+                tool_calls=[
+                    {
+                        "name": "calculate",
+                        "args": {"expression": "6 * 7"},
+                        "id": "calculation",
+                        "type": "tool_call",
+                    }
+                ],
             ),
-            tool_call("calculate", {"expression": "6 * 7"}, "calculation"),
-            tool_call(
-                "send_messages",
-                {"messages": ["It’s 42."], "continue_after_sending": False},
-                "final",
-            ),
+            AIMessage(content="It’s 42."),
         ]
     )
     agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
@@ -134,37 +138,38 @@ async def test_send_messages_returns_control_and_supports_explicit_final_send():
     )
 
     assert [call[1] for call in gateway.calls] == [("I’ll check.",), ("It’s 42.",)]
-    assert model.index == 3
-    assert result["successful_written_sends"] == 2
+    assert model.index == 2
+    assert result["outbound_delivery_count"] == 2
     tool_messages = [message for message in result["messages"] if isinstance(message, ToolMessage)]
     assert any(message.name == "calculate" and "42" in message.content for message in tool_messages)
-    assert '"termination_honored":true' in tool_messages[-1].content
 
 
 @pytest.mark.asyncio
-async def test_failed_final_send_does_not_terminate_the_agent():
+async def test_failed_publication_fails_before_tools_execute():
     gateway = RecordingGateway(fail=True)
     model = ScriptedChatModel(
         responses=[
-            tool_call(
-                "send_messages",
-                {"messages": ["Result"], "continue_after_sending": False},
-                "failed-send",
-            ),
-            AIMessage(content="stop after observing the failure"),
+            AIMessage(
+                content="Result",
+                tool_calls=[
+                    {
+                        "name": "calculate",
+                        "args": {"expression": "6 * 7"},
+                        "id": "must-not-run",
+                        "type": "tool_call",
+                    }
+                ],
+            )
         ]
     )
     agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
 
-    result = await agent.ainvoke(
-        {"messages": [HumanMessage("hello")]},
-        context=runtime_context(),
-    )
-
-    assert model.index == 2
-    assert result["successful_written_sends"] == 0
-    tool_result = next(message for message in result["messages"] if isinstance(message, ToolMessage))
-    assert '"termination_honored":false' in tool_result.content
+    with pytest.raises(OutboundDeliveryError):
+        await agent.ainvoke(
+            {"messages": [HumanMessage("hello")]},
+            context=runtime_context(),
+        )
+    assert model.index == 1
 
 
 @pytest.mark.asyncio
@@ -187,7 +192,7 @@ async def test_verified_hosted_search_is_bound_as_a_server_tool():
 
     assert result["messages"][-1].content == "server search completed"
     request_trace = next(payload for _, kind, payload in traces if kind == "model_request")
-    assert "send_messages" in request_trace["tools"]
+    assert "send_messages" not in request_trace["tools"]
     assert "web_search" in request_trace["tools"]
 
 
@@ -196,8 +201,31 @@ def test_tool_schemas_and_validation_messages_are_localized():
     for locale in SUPPORTED_LOCALES:
         tools = {tool.name: tool for tool in localized_agent_tools(locale, gateway, UnusedPublicHTTP())}
         text = tool_text(locale)
-        assert tools["send_messages"].description == text["send_messages"]
-        schema = tools["send_messages"].tool_call_schema.model_json_schema()
-        assert schema["properties"]["messages"]["description"] == text["messages"]
-        assert schema["properties"]["continue_after_sending"]["description"] == text["continue_after_sending"]
-        assert tools["send_messages"].handle_validation_error(None) == text["invalid_arguments"]
+        assert "send_messages" not in tools
+        assert tools["react_to_message"].description == text["react"]
+        reaction_schema = tools["react_to_message"].tool_call_schema.model_json_schema()
+        assert set(reaction_schema["properties"]) == {"emoji"}
+        escalation_schema = tools["escalate_to_owner"].tool_call_schema.model_json_schema()
+        assert escalation_schema.get("properties", {}) == {}
+        assert tools["react_to_message"].handle_validation_error(None) == text["invalid_arguments"]
+
+
+@pytest.mark.asyncio
+async def test_only_standard_public_text_blocks_are_delivered():
+    gateway = RecordingGateway()
+    model = ScriptedChatModel(
+        responses=[
+            AIMessage(
+                content=[
+                    {"type": "reasoning", "reasoning": "private chain"},
+                    {"type": "text", "text": "Visible answer"},
+                    {"type": "vendor_private", "value": "not public"},
+                ]
+            )
+        ]
+    )
+    agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
+
+    await agent.ainvoke({"messages": [HumanMessage("hello")]}, context=runtime_context())
+
+    assert [call[1] for call in gateway.calls] == [("Visible answer",)]

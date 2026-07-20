@@ -6,29 +6,21 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from diskovod.agent import build_agent
-from diskovod.events import DiscordEventQueue
-from diskovod.steering import LiveConversationMiddleware
+from diskovod.mailbox import ConversationMailbox
 from diskovod.store import Store
 
-from test_agent import (
-    RecordingGateway,
-    ScriptedChatModel,
-    UnusedPublicHTTP,
-    prompt,
-    runtime_context,
-    tool_call,
-)
+from test_agent import RecordingGateway, ScriptedChatModel, UnusedPublicHTTP, prompt, runtime_context
 
 
 class InjectingModel(ScriptedChatModel):
-    queue: object
+    mailbox: object
     injected: bool = False
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
         if not self.injected:
             self.injected = True
-            await self.queue.ingest(
+            await self.mailbox.ingest(
                 "steer-1",
                 "channel",
                 "message",
@@ -43,131 +35,94 @@ class InjectingModel(ScriptedChatModel):
         return result
 
 
-class InjectingGateway(RecordingGateway):
-    def __init__(self, queue):
-        super().__init__()
-        self.queue = queue
+def mailbox_injector(mailbox: ConversationMailbox):
+    async def inject(state, context):
+        run_id = str(state.get("logical_request_id") or "")
+        known = set(state.get("claimed_event_ids", []))
+        recovered = [
+            event for event in await mailbox.claimed(context.channel_id, run_id) if event.id not in known
+        ]
+        events = recovered + await mailbox.claim_ready(context.channel_id, run_id)
+        if not events:
+            return None
+        return {
+            "messages": [
+                HumanMessage(str(event.payload.get("content") or ""), id=event.payload.get("message_id"))
+                for event in events
+            ],
+            "claimed_event_ids": [event.id for event in events],
+        }
 
-    async def send_messages(self, context, messages, *, tool_call_id):
-        result = await super().send_messages(context, messages, tool_call_id=tool_call_id)
-        await self.queue.ingest(
-            "steer-after-send",
-            "channel",
-            "message",
-            {
-                "message_id": "discord-after-send",
-                "author_id": "peer",
-                "author_name": "Peer",
-                "participant_role": "peer",
-                "content": "One more thing",
-            },
-        )
-        return result
+    return inject
 
 
 @pytest.mark.asyncio
-async def test_new_input_cancels_unstarted_tool_and_returns_to_model(tmp_path: Path):
+async def test_new_input_is_injected_at_the_safe_point_after_tool_execution(tmp_path: Path):
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
-    queue = DiscordEventQueue(store.database)
-    await queue.thread_id("account", "channel")
+    mailbox = ConversationMailbox(store.database)
+    await mailbox.thread_id("account", "channel")
     model = InjectingModel(
         responses=[
-            tool_call("calculate", {"expression": "6 * 7"}, "stale-calculation"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "calculate",
+                        "args": {"expression": "6 * 7"},
+                        "id": "calculation",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
             AIMessage(content="reconsidered after steering"),
         ],
-        queue=queue,
+        mailbox=mailbox,
     )
     agent = build_agent(
         model,
         RecordingGateway(),
         prompt(),
         UnusedPublicHTTP(),
-        extra_middleware=[LiveConversationMiddleware(queue, "en")],
+        input_injector=mailbox_injector(mailbox),
     )
 
     result = await agent.ainvoke(
-        {
-            "messages": [HumanMessage("Use 6 * 7")],
-            "logical_request_id": "request-1",
-        },
+        {"messages": [HumanMessage("Use 6 * 7")], "logical_request_id": "request-1"},
         context=runtime_context(),
     )
 
-    cancellation = next(
+    calculation = next(
         message
         for message in result["messages"]
-        if isinstance(message, ToolMessage) and message.tool_call_id == "stale-calculation"
+        if isinstance(message, ToolMessage) and message.tool_call_id == "calculation"
     )
-    assert cancellation.status == "error"
-    assert "new conversation input" in cancellation.content
+    assert "42" in calculation.content
     assert any(
         isinstance(message, HumanMessage) and message.content == "Actually, use 8 instead."
         for message in result["messages"]
     )
     assert model.index == 2
     assert result["claimed_event_ids"] == ["steer-1"]
-    assert (await queue.claimed("channel", "request-1"))[0].id == "steer-1"
     await store.aclose()
 
 
 @pytest.mark.asyncio
 async def test_recovery_reapplies_claimed_but_uncheckpointed_events(tmp_path: Path):
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
-    queue = DiscordEventQueue(store.database)
-    await queue.thread_id("account", "channel")
-    await queue.ingest("event", "channel", "message", {"content": "recovered"})
-    assert (await queue.claim_ready("channel", "request-1"))[0].id == "event"
-    middleware = LiveConversationMiddleware(queue, "en")
+    mailbox = ConversationMailbox(store.database)
+    await mailbox.thread_id("account", "channel")
+    await mailbox.ingest(
+        "event",
+        "channel",
+        "message",
+        {"message_id": "message", "content": "recovered"},
+    )
+    assert (await mailbox.claim_ready("channel", "request-1"))[0].id == "event"
 
-    class Runtime:
-        context = runtime_context()
-
-    update = await middleware.abefore_model(
-        {"messages": [], "logical_request_id": "request-1"},
-        Runtime(),
+    update = await mailbox_injector(mailbox)(
+        {"messages": [], "logical_request_id": "request-1"}, runtime_context()
     )
 
     assert update["claimed_event_ids"] == ["event"]
     assert update["messages"][0].content == "recovered"
-    await store.aclose()
-
-
-@pytest.mark.asyncio
-async def test_live_input_wins_race_with_explicit_send_termination(tmp_path: Path):
-    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
-    queue = DiscordEventQueue(store.database)
-    await queue.thread_id("account", "channel")
-    gateway = InjectingGateway(queue)
-    model = ScriptedChatModel(
-        responses=[
-            tool_call(
-                "send_messages",
-                {"messages": ["Initial final answer"], "continue_after_sending": False},
-                "final-send",
-            ),
-            AIMessage(content="observed the racing input"),
-        ]
-    )
-    agent = build_agent(
-        model,
-        gateway,
-        prompt(),
-        UnusedPublicHTTP(),
-        extra_middleware=[LiveConversationMiddleware(queue, "en")],
-    )
-
-    result = await agent.ainvoke(
-        {
-            "messages": [HumanMessage("Start")],
-            "logical_request_id": "request-race",
-        },
-        context=runtime_context(),
-    )
-
-    assert model.index == 2
-    assert any(
-        isinstance(message, HumanMessage) and message.id == "discord-after-send"
-        for message in result["messages"]
-    )
-    assert result["terminate_after_send"] is False
     await store.aclose()

@@ -197,7 +197,6 @@ def test_reply_instructions_use_the_selected_prompt_locale():
         assert prompts.dm_style in instructions
         assert prompts.terminal_roleplay in instructions
         assert assistant_identity(locale) in instructions
-        assert "send_messages" in instructions
         assert "react_to_message" in instructions
         assert tool_policy(locale) in instructions
         assert "<react>" not in instructions
@@ -283,15 +282,8 @@ def test_tool_schemas_and_validation_errors_use_the_selected_locale():
         "search_chat_memory": {"query": "memory_query"},
         "remember_chat_memory": {"key": "memory_key", "value": "memory_value"},
         "forget_chat_memory": {"key": "memory_key"},
-        "send_messages": {
-            "messages": "messages",
-            "continue_after_sending": "continue_after_sending",
-        },
         "react_to_message": {"emoji": "emoji"},
-        "escalate_to_owner": {
-            "reason": "escalation_reason",
-            "acknowledgement": "acknowledgement",
-        },
+        "escalate_to_owner": {},
     }
     description_keys = {
         "get_current_datetime": "current_datetime",
@@ -302,7 +294,6 @@ def test_tool_schemas_and_validation_errors_use_the_selected_locale():
         "search_chat_memory": "memory_search",
         "remember_chat_memory": "remember_memory",
         "forget_chat_memory": "forget_memory",
-        "send_messages": "send_messages",
         "react_to_message": "react",
         "escalate_to_owner": "escalate",
     }

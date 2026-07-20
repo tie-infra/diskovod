@@ -1025,7 +1025,7 @@ class AdminQueryService:
                 summary = ""
             elif kind == "run_output":
                 summary_key = "trace_summary_run_output"
-                summary_values = {"messages": payload.get("successful_written_sends", 0)}
+                summary_values = {"messages": payload.get("outbound_delivery_count", 0)}
                 summary = ""
             elif kind in {"model_error", "tool_error", "run_error", "interrupt_resume_error"}:
                 summary = str(payload.get("detail") or payload.get("type") or "")[:240]

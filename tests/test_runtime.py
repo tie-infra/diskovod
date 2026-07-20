@@ -7,12 +7,12 @@ from dataclasses import replace
 import pytest
 from langchain_core.messages import AIMessage
 
-from diskovod.agent_actions import DeliveryRecord
+from diskovod.outbound import DeliveryRecord
 from diskovod.providers import ModelConfiguration, ProviderCapabilities
 from diskovod.runtime import AgentService
 from diskovod.store import Store
 
-from test_agent import ScriptedChatModel, UnusedPublicHTTP, tool_call
+from test_agent import ScriptedChatModel, UnusedPublicHTTP
 
 
 class FakeModels:
@@ -52,22 +52,14 @@ async def wait_for_idle(service: AgentService) -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp_path):
+async def test_agent_service_persists_a_chat_thread_and_delivers_assistant_text(tmp_path):
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     await store.aset_automation_settings(
         replace(store.automation_settings(), enabled=True, debounce_seconds=0)
     )
     await store.aupsert_conversation("channel", "peer", "Peer")
     transport = RecordingTransport()
-    model = ScriptedChatModel(
-        responses=[
-            tool_call(
-                "send_messages",
-                {"messages": ["Hello from the graph"], "continue_after_sending": False},
-                "send-1",
-            )
-        ]
-    )
+    model = ScriptedChatModel(responses=[AIMessage(content="Hello from the graph")])
     service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
     await service.start()
 
@@ -87,7 +79,7 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp
     assert transport.messages == [("channel", ("Hello from the graph",))]
     async with store.database.transaction() as connection:
         run = await (await connection.execute("SELECT id, status, thread_id FROM agent_runs")).fetchone()
-        queue = await (await connection.execute("SELECT disposition FROM chat_event_queue")).fetchone()
+        mailbox = await (await connection.execute("SELECT state FROM conversation_mailbox")).fetchone()
         checkpoint_count = (await (await connection.execute("SELECT COUNT(*) FROM checkpoints")).fetchone())[
             0
         ]
@@ -98,7 +90,7 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_a_tool_send(tmp
         ).fetchone()
     assert run["status"] == "completed"
     assert run["thread_id"] == "discord:owner:channel:g1"
-    assert queue["disposition"] == "completed"
+    assert mailbox["state"] == "completed"
     assert checkpoint_count > 0
     assert checkpoint_index["run_id"] == run["id"]
     assert checkpoint_index["message_count"] > 0
@@ -131,13 +123,8 @@ async def test_historical_replay_uses_emulated_discord_actions(tmp_path):
     )
     await wait_for_idle(service)
     checkpoint = (await service.checkpoint_views())[0]["checkpoints"][0]
-    model.responses.append(
-        tool_call(
-            "send_messages",
-            {"messages": ["This must be emulated"], "continue_after_sending": False},
-            "replay-send",
-        )
-    )
+    transport.messages.clear()
+    model.responses.append(AIMessage(content="This must be emulated"))
 
     replay_id = await service.replay_checkpoint("discord:owner:channel:g1", checkpoint["checkpoint_id"])
 
@@ -206,7 +193,7 @@ async def test_agent_service_allows_a_zero_message_turn(tmp_path):
     transport = RecordingTransport()
     service = AgentService(
         store,
-        FakeModels(ScriptedChatModel(responses=[AIMessage(content="No visible action needed")])),
+        FakeModels(ScriptedChatModel(responses=[AIMessage(content="")])),
         transport,
         "x" * 32,
         UnusedPublicHTTP(),
@@ -243,13 +230,16 @@ async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tm
     transport = RecordingTransport()
     model = ScriptedChatModel(
         responses=[
-            tool_call(
-                "escalate_to_owner",
-                {
-                    "reason": "peer_requested_owner",
-                    "acknowledgement": "I marked this for the owner.",
-                },
-                "escalate-1",
+            AIMessage(
+                content="I marked this for the owner.",
+                tool_calls=[
+                    {
+                        "name": "escalate_to_owner",
+                        "args": {},
+                        "id": "escalate-1",
+                        "type": "tool_call",
+                    }
+                ],
             ),
             AIMessage(content="The owner resolved the handoff."),
         ]
@@ -284,12 +274,15 @@ async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tm
         is True
     )
 
-    assert transport.messages == [("channel", ("I marked this for the owner.",))]
+    assert transport.messages == [
+        ("channel", ("I marked this for the owner.",)),
+        ("channel", ("The owner resolved the handoff.",)),
+    ]
     assert await store.aactive_interrupts() == []
     async with store.database.transaction() as connection:
         run = await (await connection.execute("SELECT status FROM agent_runs")).fetchone()
     assert run["status"] == "completed"
-    thread_id = await service.events.thread_id("owner", "channel")
+    thread_id = await service.mailbox.thread_id("owner", "channel")
     checkpoint = await service.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
     owner = next(
         message

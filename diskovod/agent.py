@@ -127,7 +127,7 @@ class LocalTracingMiddleware(AgentMiddleware[DiskovodAgentState, AgentRuntimeCon
                 "model_class": type(request.model).__name__,
                 "system_message": _trace_value(request.system_message),
                 "messages": [_trace_value(message) for message in request.messages],
-                "tools": [tool.name for tool in request.tools],
+                "tools": [_trace_tool_name(tool) for tool in request.tools],
                 "model_settings": _trace_value(request.model_settings),
                 "observability": "normalized_langchain_exchange; raw_provider_transport_unavailable",
             },
@@ -319,3 +319,12 @@ def _trace_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_trace_value(item) for item in value]
     return str(value)
+
+
+def _trace_tool_name(tool: Any) -> str:
+    """Return a stable diagnostic name for client and provider-hosted tools."""
+    if isinstance(tool, dict):
+        name = tool.get("name") or tool.get("type")
+    else:
+        name = getattr(tool, "name", None)
+    return str(name) if name else type(tool).__name__

@@ -170,12 +170,14 @@ async def test_failed_final_send_does_not_terminate_the_agent():
 @pytest.mark.asyncio
 async def test_verified_hosted_search_is_bound_as_a_server_tool():
     model = ScriptedChatModel(responses=[AIMessage(content="server search completed")])
+    traces: list[tuple[str, str, dict[str, Any]]] = []
     agent = build_agent(
         model,
         RecordingGateway(),
         prompt(),
         UnusedPublicHTTP(),
         hosted_web_search=True,
+        diagnostics=lambda trace_id, kind, payload: traces.append((trace_id, kind, payload)),
     )
 
     result = await agent.ainvoke(
@@ -184,6 +186,9 @@ async def test_verified_hosted_search_is_bound_as_a_server_tool():
     )
 
     assert result["messages"][-1].content == "server search completed"
+    request_trace = next(payload for _, kind, payload in traces if kind == "model_request")
+    assert "send_messages" in request_trace["tools"]
+    assert "web_search" in request_trace["tools"]
 
 
 def test_tool_schemas_and_validation_messages_are_localized():

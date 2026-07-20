@@ -31,6 +31,7 @@ from .waits import ConversationWait, ConversationWaits
 
 log = logging.getLogger(__name__)
 ROLLOVER_MESSAGE_LIMIT = 400
+PUBLIC_OUTPUT_GRAPH_CUTOVER_KEY = "migration.public_output_graph_v2"
 
 
 class EmulatedOutboundActions:
@@ -109,6 +110,7 @@ class AgentService:
         self._checkpoint_context = open_checkpointer(self.store.path, self.checkpoint_secret)
         self.checkpointer = await self._checkpoint_context.__aenter__()
         await self._backfill_checkpoint_index()
+        await self._cutover_legacy_graph_generations()
         await self._reconcile_arming_waits()
         self._wait_notifier = asyncio.create_task(self._notify_due_waits(), name="conversation-wait-notifier")
         for channel_id in await self.mailbox.pending_channels():
@@ -372,6 +374,32 @@ class AgentService:
         except Exception:
             log.exception("Could not backfill the administrative checkpoint index")
 
+    async def _cutover_legacy_graph_generations(self) -> None:
+        progress = self.store._get(PUBLIC_OUTPUT_GRAPH_CUTOVER_KEY, {})
+        if progress.get("completed"):
+            return
+        processed = set(str(item) for item in progress.get("processed_threads", []))
+        for thread in await self.store.achat_threads():
+            thread_id = str(thread["thread_id"])
+            if thread_id in processed:
+                continue
+            snapshot = await self.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+            if snapshot is not None:
+                await self._roll_thread(dict(thread), reason="public_output_graph_cutover")
+            processed.add(thread_id)
+            await self.store._aset(
+                PUBLIC_OUTPUT_GRAPH_CUTOVER_KEY,
+                {"completed": False, "processed_threads": sorted(processed)},
+            )
+        await self.store._aset(
+            PUBLIC_OUTPUT_GRAPH_CUTOVER_KEY,
+            {
+                "completed": True,
+                "processed_threads": sorted(processed),
+                "completed_at": time.time(),
+            },
+        )
+
     async def _index_run_checkpoints(
         self,
         thread_id: str,
@@ -466,6 +494,7 @@ class AgentService:
             transport_profile=configuration.transport_profile,
             capabilities=self._capabilities(configuration),
             trace_id=trace_id,
+            run_id=replay_id,
             thread_id=f"replay:{thread_id}:{checkpoint_id}",
             owner_timezone=profile.owner_timezone,
             trigger_message_id="historical-replay",
@@ -498,6 +527,7 @@ class AgentService:
             attachments=self.attachments,
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
+            native_tools=context.capabilities.native_tools,
         )
         await self.store.astart_agent_run(
             run_id=replay_id,
@@ -672,6 +702,10 @@ class AgentService:
         payload = escalation["payload"]
         if payload.get("migrated"):
             channel_id = str(escalation["channel_id"])
+            await self.store.aset_interrupt_state(
+                escalation_id,
+                "dismissed" if action == "dismissed" else "resolved",
+            )
             if action == "owner_reply" and owner_message.strip():
                 account_id = await self._account_id(channel_id)
                 inserted, automate = await self._ingest_message(
@@ -691,10 +725,6 @@ class AgentService:
                 )
                 if inserted and automate:
                     self._ensure_task(channel_id)
-            await self.store.aset_interrupt_state(
-                escalation_id,
-                "dismissed" if action == "dismissed" else "resolved",
-            )
             return True
         trace_id = str(payload.get("trace_id") or "")
         run = await self.store.aagent_run_for_trace(trace_id)
@@ -723,10 +753,13 @@ class AgentService:
             transport_profile=configuration.transport_profile,
             capabilities=self._capabilities(configuration),
             trace_id=trace_id,
+            run_id=str(run["id"]),
             thread_id=thread_id,
             owner_timezone=profile.owner_timezone,
             trigger_message_id=str(payload.get("trigger_message_id") or ""),
-            allow_conversational_followups=profile.allow_conversational_followups,
+            allow_conversational_followups=(
+                profile.allow_conversational_followups and configuration.capabilities.native_tools
+            ),
             permissions=frozenset({"reactions", "owner_escalation"}),
         )
         personality = self.store.personality() or {}
@@ -748,6 +781,7 @@ class AgentService:
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
             followup_scheduler=(self if context.allow_conversational_followups else None),
+            native_tools=context.capabilities.native_tools,
         )
         resume_payload = {
             "action": action,
@@ -793,6 +827,11 @@ class AgentService:
                 context=context,
             )
         except Exception as error:
+            await self.mailbox.fail(
+                channel_id,
+                str(run["id"]),
+                f"{type(error).__name__}: {error}",
+            )
             await self._flush_trace(trace_id, str(run["id"]))
             await self.store.arecord_agent_trace(
                 str(run["id"]),
@@ -806,6 +845,7 @@ class AgentService:
             )
             raise
         await self._flush_trace(trace_id, str(run["id"]))
+        await self.mailbox.complete(channel_id, str(run["id"]))
         state = "dismissed" if action == "dismissed" else "resolved"
         await self.store.aset_interrupt_state(escalation_id, state)
         await self.store.afinish_agent_run(
@@ -927,6 +967,14 @@ class AgentService:
             ),
             str(claimed[-1].payload.get("message_id") or ""),
         )
+        reaction_target_message_id = next(
+            (
+                str(event.payload.get("message_id") or "")
+                for event in reversed(claimed)
+                if event.kind in {"message", "edit"} and event.payload.get("message_id")
+            ),
+            trigger_message_id,
+        )
         configuration = self.models.configuration
         assert configuration is not None
         conversation = await self.store.aconversation(channel_id)
@@ -950,10 +998,13 @@ class AgentService:
             transport_profile=configuration.transport_profile,
             capabilities=self._capabilities(configuration),
             trace_id=trace_id,
+            run_id=run_id,
             thread_id=thread_id,
             owner_timezone=profile.owner_timezone,
             trigger_message_id=trigger_message_id,
-            allow_conversational_followups=profile.allow_conversational_followups,
+            allow_conversational_followups=(
+                profile.allow_conversational_followups and configuration.capabilities.native_tools
+            ),
             permissions=frozenset({"reactions", "owner_escalation"}),
         )
         personality = self.store.personality() or {}
@@ -976,13 +1027,14 @@ class AgentService:
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
             followup_scheduler=(self if context.allow_conversational_followups else None),
+            native_tools=context.capabilities.native_tools,
         )
         initial_messages = [message for event in claimed if (message := self._message(event)) is not None]
         state = {
             "messages": initial_messages,
             "logical_request_id": run_id,
             "claimed_event_ids": [event.id for event in claimed],
-            "reaction_target_message_id": trigger_message_id,
+            "reaction_target_message_id": reaction_target_message_id,
         }
         config = {
             "configurable": {"thread_id": thread_id},
@@ -1145,10 +1197,13 @@ class AgentService:
             transport_profile=configuration.transport_profile,
             capabilities=self._capabilities(configuration),
             trace_id=wait.trace_id,
+            run_id=wait.run_id,
             thread_id=wait.thread_id,
             owner_timezone=profile.owner_timezone,
             trigger_message_id=str(wait.payload.get("trigger_message_id") or ""),
-            allow_conversational_followups=profile.allow_conversational_followups,
+            allow_conversational_followups=(
+                profile.allow_conversational_followups and configuration.capabilities.native_tools
+            ),
             permissions=frozenset({"reactions", "owner_escalation"}),
         )
         personality = dict(wait.payload.get("personality") or {})
@@ -1179,6 +1234,7 @@ class AgentService:
             diagnostics=self._buffer_trace,
             hosted_web_search=context.capabilities.hosted_web_search,
             followup_scheduler=self,
+            native_tools=context.capabilities.native_tools,
         )
         config = {
             "configurable": {"thread_id": wait.thread_id},

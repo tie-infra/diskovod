@@ -2104,7 +2104,12 @@ class WebApp:
             state = str(delivery.get("state") or "")
             delivery["action_label"] = self._t(f"delivery_action_{action}")
             delivery["state_label"] = self._t(
-                {"failed": "status_failed", "claimed": "claimed"}.get(state, f"delivery_state_{state}")
+                {
+                    "failed": "status_failed",
+                    "pending": "status_queued",
+                    "dispatching": "status_running",
+                    "succeeded": "delivery_state_completed",
+                }.get(state, f"delivery_state_{state}")
             )
 
     def _localize_run_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:

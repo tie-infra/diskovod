@@ -563,7 +563,8 @@ class AdminQueryService:
             ).fetchall()
             deliveries = await (
                 await connection.execute(
-                    "SELECT * FROM side_effect_deliveries WHERE run_id=? ORDER BY claimed_at", (run_id,)
+                    "SELECT * FROM outbound_actions WHERE run_id=? ORDER BY created_at, ordinal",
+                    (run_id,),
                 )
             ).fetchall()
             checkpoints = await (
@@ -607,12 +608,12 @@ class AdminQueryService:
             ).fetchone()
         return self._trace(row, self._payload(row["payload"]), include_payload=True) if row else None
 
-    async def run_delivery(self, run_id: str, tool_call_id: str) -> dict[str, Any] | None:
+    async def run_delivery(self, run_id: str, action_id: str) -> dict[str, Any] | None:
         async with self.store.database.transaction() as connection:
             row = await (
                 await connection.execute(
-                    "SELECT * FROM side_effect_deliveries WHERE run_id=? AND tool_call_id=?",
-                    (run_id, tool_call_id),
+                    "SELECT * FROM outbound_actions WHERE run_id=? AND id=?",
+                    (run_id, action_id),
                 )
             ).fetchone()
         return self._delivery(row, include_payload=True) if row else None
@@ -630,7 +631,7 @@ class AdminQueryService:
             ).fetchall()
             delivery_rows = await (
                 await connection.execute(
-                    "SELECT * FROM side_effect_deliveries WHERE run_id=? ORDER BY claimed_at",
+                    "SELECT * FROM outbound_actions WHERE run_id=? ORDER BY created_at, ordinal",
                     (run_id,),
                 )
             ).fetchall()
@@ -970,10 +971,12 @@ class AdminQueryService:
     @classmethod
     def _delivery(cls, row, *, include_payload: bool = False) -> dict[str, Any]:
         item = dict(row)
-        request = redact_sensitive(cls._payload(item.get("request")))
+        request = redact_sensitive(cls._payload(item.get("payload")))
         result = redact_sensitive(cls._payload(item.get("result")))
-        item.pop("request", None)
+        item.pop("payload", None)
         item.pop("result", None)
+        item["action"] = str(item.get("kind") or "")
+        item["tool_call_id"] = str(item["id"])
         item["summary"] = cls._value_preview(result or request)
         if include_payload:
             item["request"] = request

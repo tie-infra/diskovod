@@ -489,9 +489,9 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
       ADD COLUMN payload TEXT NOT NULL DEFAULT '{}';
     """,
     """
-    DROP TABLE chat_event_queue;
-    DROP TABLE discord_events;
-    DROP TABLE side_effect_deliveries;
+    DROP TABLE IF EXISTS chat_event_queue;
+    DROP TABLE IF EXISTS discord_events;
+    DROP TABLE IF EXISTS side_effect_deliveries;
     """,
 )
 

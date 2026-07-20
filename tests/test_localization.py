@@ -352,6 +352,8 @@ def test_dynamic_admin_presentation_values_are_localized():
         "trigger_edit",
         "trigger_delete",
         "delivery_action_send_messages",
+        "delivery_action_discord_message",
+        "delivery_action_discord_reaction",
         "delivery_action_react_to_message",
         "delivery_action_escalate_to_owner",
         "delivery_state_accepted",

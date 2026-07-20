@@ -38,6 +38,7 @@ class AgentRuntimeContext:
     transport_profile: str
     capabilities: CapabilityProfile
     trace_id: str
+    run_id: str = ""
     thread_id: str = ""
     owner_timezone: str = "UTC"
     trigger_message_id: str = ""

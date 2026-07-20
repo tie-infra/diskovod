@@ -8,6 +8,7 @@ from importlib.metadata import version
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from diskovod.models import CustomProvider
+from diskovod.localization import tool_text
 from diskovod.oauth import ChatGPTAccount
 from diskovod.store import Store
 
@@ -155,6 +156,8 @@ class ModelService:
                 provider_id="custom_openai",
                 model_id=model_id,
                 transport_profile=provider.protocol,
+                native_tools=capabilities.native_tools,
+                hosted_web_search=capabilities.hosted_web_search,
             )
         return profile, ModelConfiguration(
             provider_id="custom_openai",
@@ -234,6 +237,8 @@ class ModelService:
             provider_id=configuration.provider_id,
             model_id=configuration.model_id,
             transport_profile=configuration.transport_profile,
+            native_tools=configuration.capabilities.native_tools,
+            hosted_web_search=configuration.capabilities.hosted_web_search,
         )
         if options == configuration.options:
             return None
@@ -248,18 +253,25 @@ class ModelService:
             integration_version=configuration.integration_version,
         )
 
-    def _prompt_cache_key(self, **model_identity: str) -> str:
+    def _prompt_cache_key(self, **model_identity: object) -> str:
         profile = self.store.assistant_profile()
         personality = self.store.personality() or {}
+        native_tools = bool(model_identity.pop("native_tools", True))
+        hosted_web_search = bool(model_identity.pop("hosted_web_search", False))
         identity = {
             **model_identity,
+            "native_tools": native_tools,
+            "hosted_web_search": hosted_web_search,
             "locale": profile.prompt_locale,
             "assistant_name": profile.assistant_name,
             "base_instructions": profile.base_instructions,
             "owner_details": profile.owner_details,
             "allow_conversational_followups": profile.allow_conversational_followups,
             "personality_hash": personality.get("source_hash"),
-            "tool_schema": "langgraph-public-output-v2",
+            "tool_schema_version": "langgraph-public-output-v2",
+            "localized_tool_schema": (
+                tool_text(profile.prompt_locale) if native_tools else None
+            ),
         }
         digest = hashlib.sha256(
             json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()

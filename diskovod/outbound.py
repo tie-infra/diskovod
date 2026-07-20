@@ -223,7 +223,7 @@ class OutboundPublisher:
                     ordinal,
                     context.thread_id,
                     context.channel_id,
-                    context.trace_id,
+                    context.run_id or context.trace_id,
                     source_kind,
                     source_id,
                     kind,

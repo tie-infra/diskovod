@@ -112,20 +112,25 @@ def build_agent(
     diagnostics: Callable[[str, str, dict[str, Any]], None] | None = None,
     hosted_web_search: bool = False,
     followup_scheduler: FollowupScheduler | None = None,
+    native_tools: bool = True,
 ):
     """Build Diskovod's explicit provider-neutral conversation graph."""
-    client_tools = localized_agent_tools(
-        prompt.locale,
-        gateway,
-        http,
-        attachments,
-        followup_scheduler=followup_scheduler,
-        include_web_search=not hosted_web_search,
+    client_tools = (
+        localized_agent_tools(
+            prompt.locale,
+            gateway,
+            http,
+            attachments,
+            followup_scheduler=followup_scheduler,
+            include_web_search=not hosted_web_search,
+        )
+        if native_tools
+        else []
     )
     model_tools: list[Any] = list(client_tools)
     if hosted_web_search:
         model_tools.append({"type": "web_search"})
-    bound_model = model.bind_tools(model_tools)
+    bound_model = model.bind_tools(model_tools) if model_tools else model
     summarizer = SummarizationMiddleware(
         model,
         trigger=("messages", 80),
@@ -279,6 +284,7 @@ def build_agent(
             "trigger_message_id": runtime.context.trigger_message_id,
             "trace_id": runtime.context.trace_id,
             "tool_call_id": call["id"],
+            "acknowledgement": fallback,
             "malformed_tool_call": True,
             "arguments": _trace_value(call.get("args")),
             "participant_ids": list(runtime.context.participant_ids),

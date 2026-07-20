@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import time
@@ -113,6 +114,7 @@ class AgentService:
                 "outbound_action_reconciled",
                 {"action_id": action["id"], "state": action["state"]},
             )
+        await self._reconcile_abandoned_agent_runs()
         self._checkpoint_context = open_checkpointer(self.store.path, self.checkpoint_secret)
         self.checkpointer = await self._checkpoint_context.__aenter__()
         await self._backfill_checkpoint_index()
@@ -442,29 +444,247 @@ class AgentService:
 
     async def _cutover_legacy_graph_generations(self) -> None:
         progress = self.store._get(PUBLIC_OUTPUT_GRAPH_CUTOVER_KEY, {})
-        if progress.get("completed"):
-            return
         processed = set(str(item) for item in progress.get("processed_threads", []))
-        for thread in await self.store.achat_threads():
-            thread_id = str(thread["thread_id"])
-            if thread_id in processed:
-                continue
-            snapshot = await self.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
-            if snapshot is not None:
-                await self._roll_thread(dict(thread), reason="public_output_graph_cutover")
-            processed.add(thread_id)
+        if not progress.get("completed"):
+            for thread in await self.store.achat_threads():
+                thread_id = str(thread["thread_id"])
+                if thread_id in processed:
+                    continue
+                snapshot = await self.checkpointer.aget_tuple(
+                    {"configurable": {"thread_id": thread_id}}
+                )
+                if snapshot is not None:
+                    await self._roll_thread(dict(thread), reason="public_output_graph_cutover")
+                processed.add(thread_id)
+                await self.store._aset(
+                    PUBLIC_OUTPUT_GRAPH_CUTOVER_KEY,
+                    {"completed": False, "processed_threads": sorted(processed)},
+                )
             await self.store._aset(
                 PUBLIC_OUTPUT_GRAPH_CUTOVER_KEY,
-                {"completed": False, "processed_threads": sorted(processed)},
+                {
+                    "completed": True,
+                    "processed_threads": sorted(processed),
+                    "completed_at": time.time(),
+                },
             )
-        await self.store._aset(
-            PUBLIC_OUTPUT_GRAPH_CUTOVER_KEY,
-            {
-                "completed": True,
-                "processed_threads": sorted(processed),
-                "completed_at": time.time(),
-            },
-        )
+        await self._reconcile_public_output_cutover(processed)
+
+    async def _reconcile_public_output_cutover(self, legacy_threads: set[str]) -> None:
+        if not legacy_threads:
+            return
+        placeholders = ",".join("?" for _ in legacy_threads)
+        thread_parameters = tuple(sorted(legacy_threads))
+        audits: list[tuple[str, str, dict[str, object]]] = []
+        now = time.time()
+        async with self.store.database.transaction() as connection:
+            claimed = await (
+                await connection.execute(
+                    f"""
+                    SELECT m.*, r.thread_id AS run_thread_id
+                    FROM conversation_mailbox AS m
+                    JOIN agent_runs AS r ON r.id=m.run_id
+                    WHERE m.state='claimed' AND r.thread_id IN ({placeholders})
+                    ORDER BY m.run_id, m.sequence
+                    """,
+                    thread_parameters,
+                )
+            ).fetchall()
+            by_run: dict[str, list[Any]] = {}
+            for event in claimed:
+                by_run.setdefault(str(event["run_id"]), []).append(event)
+            for run_id, events in by_run.items():
+                actions = await (
+                    await connection.execute(
+                        "SELECT state, result FROM outbound_actions WHERE run_id=?",
+                        (run_id,),
+                    )
+                ).fetchall()
+                states = [str(action["state"]) for action in actions]
+                event_state, run_state, outcome = self._claimed_run_outcome(actions)
+                failure = (
+                    "public_output_cutover_delivery_requires_review"
+                    if event_state == "failed"
+                    else None
+                )
+                event_ids = [str(event["id"]) for event in events]
+                markers = ",".join("?" for _ in event_ids)
+                if event_state == "pending":
+                    await connection.execute(
+                        f"""
+                        UPDATE conversation_mailbox
+                        SET state='pending', run_id=NULL, injection_batch=NULL,
+                            claimed_at=NULL, completed_at=NULL, failure=NULL
+                        WHERE id IN ({markers}) AND state='claimed'
+                        """,
+                        tuple(event_ids),
+                    )
+                else:
+                    await connection.execute(
+                        f"""
+                        UPDATE conversation_mailbox
+                        SET state=?, completed_at=?, failure=?
+                        WHERE id IN ({markers}) AND state='claimed'
+                        """,
+                        (event_state, now, failure, *event_ids),
+                    )
+                await connection.execute(
+                    "UPDATE agent_runs SET status=?, completed_at=?, error=? WHERE id=?",
+                    (run_state, now, failure, run_id),
+                )
+                audits.append(
+                    (
+                        run_id,
+                        "public_output_cutover_claim_reconciled",
+                        {
+                            "event_ids": event_ids,
+                            "outcome": outcome,
+                            "delivery_states": states,
+                        },
+                    )
+                )
+
+            escalations = await (
+                await connection.execute(
+                    f"""
+                    SELECT * FROM escalation_interrupts
+                    WHERE state IN ('pending','claimed') AND thread_id IN ({placeholders})
+                    """,
+                    thread_parameters,
+                )
+            ).fetchall()
+            for escalation in escalations:
+                payload = json.loads(escalation["payload"])
+                if payload.get("resume_strategy") == "mailbox":
+                    continue
+                payload["resume_strategy"] = "mailbox"
+                payload["cutover_from_thread"] = str(escalation["thread_id"])
+                await connection.execute(
+                    "UPDATE escalation_interrupts SET payload=?, updated_at=? WHERE id=?",
+                    (
+                        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                        now,
+                        escalation["id"],
+                    ),
+                )
+                trace_id = str(payload.get("trace_id") or "")
+                run = await (
+                    await connection.execute("SELECT id FROM agent_runs WHERE trace_id=?", (trace_id,))
+                ).fetchone()
+                if run is not None:
+                    await connection.execute(
+                        "UPDATE agent_runs SET status='cancelled', completed_at=?, error=? WHERE id=?",
+                        (now, "Escalation checkpoint replaced by mailbox cutover", run["id"]),
+                    )
+                    audits.append(
+                        (
+                            str(run["id"]),
+                            "public_output_cutover_escalation_reconciled",
+                            {"escalation_id": str(escalation["id"]), "resolution": "mailbox"},
+                        )
+                    )
+        for run_id, kind, payload in audits:
+            await self.store.arecord_agent_trace(run_id, kind, payload)
+
+    async def _reconcile_abandoned_agent_runs(self) -> None:
+        """Resolve input claims owned by a process that stopped during an ordinary run."""
+        audits: list[tuple[str, dict[str, object]]] = []
+        now = time.time()
+        async with self.store.database.transaction() as connection:
+            rows = await (
+                await connection.execute(
+                    """
+                    SELECT m.* FROM conversation_mailbox AS m
+                    JOIN agent_runs AS r ON r.id=m.run_id
+                    WHERE m.state='claimed' AND r.status='running'
+                    ORDER BY m.run_id, m.sequence
+                    """
+                )
+            ).fetchall()
+            by_run: dict[str, list[Any]] = {}
+            for event in rows:
+                by_run.setdefault(str(event["run_id"]), []).append(event)
+            for run_id, events in by_run.items():
+                actions = await (
+                    await connection.execute(
+                        "SELECT state, result FROM outbound_actions WHERE run_id=?",
+                        (run_id,),
+                    )
+                ).fetchall()
+                states = [str(action["state"]) for action in actions]
+                event_state, run_state, outcome = self._claimed_run_outcome(actions)
+                failure = "abandoned_run_delivery_requires_review" if event_state == "failed" else None
+                event_ids = [str(event["id"]) for event in events]
+                markers = ",".join("?" for _ in event_ids)
+                if event_state == "pending":
+                    await connection.execute(
+                        f"""
+                        UPDATE conversation_mailbox
+                        SET state='pending', run_id=NULL, injection_batch=NULL,
+                            claimed_at=NULL, completed_at=NULL, failure=NULL
+                        WHERE id IN ({markers}) AND state='claimed'
+                        """,
+                        tuple(event_ids),
+                    )
+                else:
+                    await connection.execute(
+                        f"""
+                        UPDATE conversation_mailbox
+                        SET state=?, completed_at=?, failure=?
+                        WHERE id IN ({markers}) AND state='claimed'
+                        """,
+                        (event_state, now, failure, *event_ids),
+                    )
+                await connection.execute(
+                    "UPDATE agent_runs SET status=?, completed_at=?, error=? WHERE id=?",
+                    (run_state, now, failure, run_id),
+                )
+                audits.append(
+                    (
+                        run_id,
+                        {
+                            "event_ids": event_ids,
+                            "outcome": outcome,
+                            "delivery_states": states,
+                        },
+                    )
+                )
+        for run_id, payload in audits:
+            await self.store.arecord_agent_trace(run_id, "abandoned_run_reconciled", payload)
+
+    @classmethod
+    def _claimed_run_outcome(cls, actions) -> tuple[str, str, str]:
+        states = [str(action["state"]) for action in actions]
+        any_accepted = any(cls._delivery_result_has_accepted(action["result"]) for action in actions)
+        if states and all(state == "succeeded" for state in states):
+            return "completed", "completed", "completed_from_delivery_evidence"
+        if not states or (set(states) == {"failed"} and not any_accepted):
+            return "pending", "cancelled", "released_without_visible_effect"
+        return "failed", "failed", "failed_for_delivery_review"
+
+    @staticmethod
+    def _delivery_result_has_accepted(value: object) -> bool:
+        if not value:
+            return False
+        try:
+            decoded = json.loads(str(value))
+        except (TypeError, ValueError):
+            return False
+        if isinstance(decoded, dict):
+            return decoded.get("status") == "accepted" or any(
+                AgentService._delivery_result_has_accepted(json.dumps(item))
+                for item in decoded.values()
+                if isinstance(item, (dict, list))
+            )
+        if isinstance(decoded, list):
+            return any(
+                item.get("status") == "accepted"
+                if isinstance(item, dict)
+                else AgentService._delivery_result_has_accepted(json.dumps(item))
+                for item in decoded
+                if isinstance(item, (dict, list))
+            )
+        return False
 
     async def _index_run_checkpoints(
         self,
@@ -760,13 +980,11 @@ class AgentService:
     ) -> bool:
         if action not in {"resolved", "dismissed", "owner_reply"}:
             raise ValueError("Unknown escalation resolution")
-        if self.checkpointer is None or not self.models.ready:
-            raise RuntimeError("The agent runtime is not ready")
         escalation = await self.store.aescalation_interrupt(escalation_id)
         if escalation is None or escalation["state"] not in {"pending", "claimed"}:
             return False
         payload = escalation["payload"]
-        if payload.get("migrated"):
+        if payload.get("migrated") or payload.get("resume_strategy") == "mailbox":
             channel_id = str(escalation["channel_id"])
             await self.store.aset_interrupt_state(
                 escalation_id,
@@ -792,6 +1010,8 @@ class AgentService:
                 if inserted and automate:
                     self._ensure_task(channel_id)
             return True
+        if self.checkpointer is None or not self.models.ready:
+            raise RuntimeError("The agent runtime is not ready")
         trace_id = str(payload.get("trace_id") or "")
         run = await self.store.aagent_run_for_trace(trace_id)
         if run is None:

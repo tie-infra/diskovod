@@ -274,11 +274,22 @@ def build_agent(
             raise OutboundDeliveryError(records)
         payload: dict[str, object] = {
             "channel_id": runtime.context.channel_id,
+            "thread_id": runtime.context.thread_id,
+            "run_id": str(state.get("logical_request_id") or ""),
             "trigger_message_id": runtime.context.trigger_message_id,
             "trace_id": runtime.context.trace_id,
             "tool_call_id": call["id"],
             "malformed_tool_call": True,
             "arguments": _trace_value(call.get("args")),
+            "participant_ids": list(runtime.context.participant_ids),
+            "recent_conversation": [
+                {
+                    "type": message.type,
+                    "id": str(message.id or ""),
+                    "text": message.text[:2000],
+                }
+                for message in state.get("messages", [])[-12:]
+            ],
         }
         await gateway.record_escalation(runtime.context, source_id=call["id"], payload=payload)
         resolution = interrupt(payload)

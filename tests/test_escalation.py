@@ -40,6 +40,27 @@ async def test_invalid_escalation_uses_fixed_fallback_without_retry():
     assert result["__interrupt__"]
 
 
+@pytest.mark.asyncio
+async def test_valid_escalation_without_text_uses_fallback_and_captures_context():
+    gateway = RecordingGateway()
+    model = ScriptedChatModel(responses=[tool_call("escalate_to_owner", {}, "escalate-without-text")])
+    agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
+
+    result = await agent.ainvoke(
+        {
+            "messages": [HumanMessage("Please get the owner", id="trigger")],
+            "logical_request_id": "run",
+        },
+        context=runtime_context(),
+    )
+
+    assert result["__interrupt__"]
+    assert gateway.calls[0][1] == (escalation_fallback("en"),)
+    assert gateway.escalations[0]["acknowledgement"] == escalation_fallback("en")
+    assert gateway.escalations[0]["run_id"] == "run"
+    assert gateway.escalations[0]["recent_conversation"][0]["text"] == "Please get the owner"
+
+
 class EscalationTransport:
     def __init__(self):
         self.messages: list[str] = []

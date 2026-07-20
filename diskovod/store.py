@@ -66,24 +66,6 @@ DATABASE_TABLES = {
         "order_by": "updated_at",
         "read_only": True,
     },
-    "discord_events": {
-        "label": "Discord event audit",
-        "primary_key": "id",
-        "order_by": "observed_at",
-        "read_only": True,
-    },
-    "chat_event_queue": {
-        "label": "Agent event queue",
-        "primary_key": "event_id",
-        "order_by": "claimed_at",
-        "read_only": True,
-    },
-    "side_effect_deliveries": {
-        "label": "Side-effect deliveries",
-        "primary_key": "tool_call_id",
-        "order_by": "claimed_at",
-        "read_only": True,
-    },
     "conversation_mailbox": {
         "label": "Conversation mailbox",
         "primary_key": "id",
@@ -1090,25 +1072,6 @@ class Store:
                 await connection.execute("SELECT * FROM agent_runs WHERE trace_id=?", (trace_id,))
             ).fetchone()
         return dict(row) if row else None
-
-    async def apending_channels(self) -> list[str]:
-        async with self.database.transaction() as connection:
-            rows = await (
-                await connection.execute(
-                    "SELECT DISTINCT channel_id FROM chat_event_queue WHERE disposition='pending'"
-                )
-            ).fetchall()
-        return [str(row["channel_id"]) for row in rows]
-
-    async def ahas_pending_events(self, channel_id: str) -> bool:
-        async with self.database.transaction() as connection:
-            row = await (
-                await connection.execute(
-                    "SELECT 1 FROM chat_event_queue WHERE channel_id=? AND disposition='pending' LIMIT 1",
-                    (channel_id,),
-                )
-            ).fetchone()
-        return row is not None
 
     async def ahas_active_interrupt(self, channel_id: str) -> bool:
         async with self.database.transaction() as connection:

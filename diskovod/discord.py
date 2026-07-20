@@ -10,9 +10,9 @@ from dataclasses import asdict, dataclass
 
 import discord
 
-from .agent_actions import DeliveryRecord
 from .agent_types import AgentRuntimeContext
 from .localization import runtime_context_text
+from .outbound import DeliveryRecord
 from .runtime import AgentService
 from .store import Store
 

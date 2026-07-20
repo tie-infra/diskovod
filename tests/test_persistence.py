@@ -31,9 +31,6 @@ async def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path)
         assert {
             "schema_migrations",
             "chat_threads",
-            "discord_events",
-            "chat_event_queue",
-            "side_effect_deliveries",
             "agent_runs",
             "langgraph_store_items",
             "attachment_objects",
@@ -59,6 +56,7 @@ async def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path)
             (8,),
             (9,),
             (10,),
+            (11,),
         ]
         assert (await (await connection.execute("PRAGMA journal_mode")).fetchone())[0] == "wal"
 

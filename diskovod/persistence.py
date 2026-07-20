@@ -30,7 +30,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 10
+TARGET_SCHEMA_VERSION = 11
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -487,6 +487,11 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     """
     ALTER TABLE conversation_waits
       ADD COLUMN payload TEXT NOT NULL DEFAULT '{}';
+    """,
+    """
+    DROP TABLE chat_event_queue;
+    DROP TABLE discord_events;
+    DROP TABLE side_effect_deliveries;
     """,
 )
 

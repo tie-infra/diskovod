@@ -317,7 +317,7 @@ def test_runtime_prompt_fragments_are_catalogued_for_every_locale():
 
     sources = "\n".join(
         (Path(__file__).parents[1] / "diskovod" / name).read_text(encoding="utf-8")
-        for name in ("agent.py", "discord.py", "runtime.py", "steering.py")
+        for name in ("agent.py", "agent_tools.py", "discord.py", "runtime.py", "waits.py")
     )
     for obsolete_literal in (
         "standalone owner message",

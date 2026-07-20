@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -34,9 +35,11 @@ class ScriptedChatModel(BaseChatModel):
 
 
 class RecordingGateway:
-    def __init__(self, *, fail: bool = False):
+    def __init__(self, *, fail: bool = False, reaction_fail: bool = False):
         self.fail = fail
+        self.reaction_fail = reaction_fail
         self.calls: list[tuple[str, tuple[str, ...], str]] = []
+        self.escalations: list[dict[str, object]] = []
 
     async def publish_messages(self, context, messages, *, source_kind, source_id):
         self.calls.append((context.channel_id, messages, source_id))
@@ -52,10 +55,15 @@ class RecordingGateway:
 
     async def react(self, context, emoji, message_id, *, source_id):
         self.calls.append((context.channel_id, (f"reaction:{message_id}:{emoji}",), source_id))
-        return DeliveryRecord("accepted", 0, discord_message_id=f"reaction:{emoji}")
+        return DeliveryRecord(
+            "failed" if self.reaction_fail else "accepted",
+            0,
+            discord_message_id=None if self.reaction_fail else f"reaction:{emoji}",
+            error_code="discord_reaction_failed" if self.reaction_fail else None,
+        )
 
     async def record_escalation(self, context, *, source_id, payload):
-        return None
+        self.escalations.append(payload)
 
 
 class UnusedPublicHTTP:
@@ -229,3 +237,82 @@ async def test_only_standard_public_text_blocks_are_delivered():
     await agent.ainvoke({"messages": [HumanMessage("hello")]}, context=runtime_context())
 
     assert [call[1] for call in gateway.calls] == [("Visible answer",)]
+
+
+@pytest.mark.asyncio
+async def test_successful_reaction_only_step_ends_without_an_extra_model_call():
+    gateway = RecordingGateway()
+    model = ScriptedChatModel(responses=[tool_call("react_to_message", {"emoji": "🎉"}, "reaction")])
+    agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage("we did it", id="trigger")]},
+        context=runtime_context(),
+    )
+
+    assert model.index == 1
+    assert [call[1] for call in gateway.calls] == [("reaction:trigger:🎉",)]
+
+
+@pytest.mark.asyncio
+async def test_text_is_published_before_its_reaction_and_both_are_terminal():
+    gateway = RecordingGateway()
+    model = ScriptedChatModel(
+        responses=[
+            AIMessage(
+                content="Nice, that was a tricky one.",
+                tool_calls=[
+                    {
+                        "name": "react_to_message",
+                        "args": {"emoji": "🔥"},
+                        "id": "reaction",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        ]
+    )
+    agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
+
+    await agent.ainvoke({"messages": [HumanMessage("fixed", id="trigger")]}, context=runtime_context())
+
+    assert [call[1] for call in gateway.calls] == [
+        ("Nice, that was a tricky one.",),
+        ("reaction:trigger:🔥",),
+    ]
+    assert model.index == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_reaction_returns_control_to_the_model():
+    gateway = RecordingGateway(reaction_fail=True)
+    model = ScriptedChatModel(
+        responses=[
+            tool_call("react_to_message", {"emoji": "👍"}, "reaction"),
+            AIMessage("I couldn't add the reaction, but yes."),
+        ]
+    )
+    agent = build_agent(model, gateway, prompt(), UnusedPublicHTTP())
+
+    await agent.ainvoke({"messages": [HumanMessage("okay?", id="trigger")]}, context=runtime_context())
+
+    assert model.index == 2
+    assert gateway.calls[-1][1] == ("I couldn't add the reaction, but yes.",)
+
+
+@pytest.mark.asyncio
+async def test_forced_reply_rejects_reaction_only_before_side_effects():
+    gateway = RecordingGateway()
+    agent = build_agent(
+        ScriptedChatModel(responses=[tool_call("react_to_message", {"emoji": "👍"}, "reaction")]),
+        gateway,
+        prompt(),
+        UnusedPublicHTTP(),
+    )
+
+    with pytest.raises(RuntimeError, match="forced reply"):
+        await agent.ainvoke(
+            {"messages": [HumanMessage("reply", id="trigger")]},
+            context=replace(runtime_context(), force_reply=True),
+        )
+    assert gateway.calls == []

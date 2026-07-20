@@ -208,10 +208,21 @@ def localized_agent_tools(
                 return {"ok": False, "deliveries": [delivery_result(item) for item in deliveries]}
         payload: dict[str, object] = {
             "channel_id": runtime.context.channel_id,
+            "thread_id": runtime.context.thread_id,
+            "run_id": str(runtime.state.get("logical_request_id") or ""),
             "trigger_message_id": runtime.context.trigger_message_id,
             "trace_id": runtime.context.trace_id,
             "acknowledgement": acknowledgement,
             "tool_call_id": call_id,
+            "participant_ids": list(runtime.context.participant_ids),
+            "recent_conversation": [
+                {
+                    "type": message.type,
+                    "id": str(message.id or ""),
+                    "text": message.text[:2000],
+                }
+                for message in runtime.state.get("messages", [])[-12:]
+            ],
         }
         await outbound.record_escalation(runtime.context, source_id=call_id, payload=payload)
         resolution = interrupt(payload)

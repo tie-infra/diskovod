@@ -1037,7 +1037,7 @@ class AdminQueryService:
             or "interrupt" in kind
             or kind.startswith("followup_wait_")
             or kind.startswith("public_output_cutover_")
-            or kind in {"mailbox_injection", "abandoned_run_reconciled"}
+            or kind in {"mailbox_injection", "abandoned_run_reconciled", "public_text_extracted"}
             else "run"
         )
         failed = kind.endswith("error") or kind in {"run_error", "tool_error", "model_error"}

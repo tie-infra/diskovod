@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from typing import Any
+from urllib.parse import urlparse
 import json
 import uuid
 
@@ -249,6 +250,16 @@ def build_agent(
         content = _public_text(latest)
         if not content:
             return {"model_step_route": "tools" if latest.tool_calls else "end"}
+        if diagnostics is not None:
+            diagnostics(
+                runtime.context.trace_id,
+                "public_text_extracted",
+                {
+                    "assistant_message_id": str(latest.id),
+                    "text": content,
+                    "character_count": len(content),
+                },
+            )
         records = await gateway.publish_messages(
             runtime.context,
             (content,),
@@ -388,7 +399,24 @@ def _public_text(message: AIMessage) -> str:
             continue
         value = block.get("text")
         if isinstance(value, str) and value.strip():
-            parts.append(value.strip())
+            rendered = value.strip()
+            citations: list[str] = []
+            for annotation in block.get("annotations") or []:
+                if not isinstance(annotation, dict) or annotation.get("type") not in {
+                    "citation",
+                    "url_citation",
+                }:
+                    continue
+                url = str(annotation.get("url") or "").strip()
+                parsed = urlparse(url)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc or url in rendered:
+                    continue
+                title = str(annotation.get("title") or parsed.netloc).strip()
+                title = title.replace("[", "").replace("]", "") or parsed.netloc
+                citation = f"[{title}]({url})"
+                if citation not in citations:
+                    citations.append(citation)
+            parts.append(rendered + ("\n" + " · ".join(citations) if citations else ""))
     return "\n".join(parts).strip()
 
 

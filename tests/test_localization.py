@@ -343,6 +343,7 @@ def test_dynamic_admin_presentation_values_are_localized():
         "trace_kind_interrupt_resume",
         "trace_kind_interrupt_resume_error",
         "trace_kind_emulated_actions",
+        "trace_kind_public_text_extracted",
         "trace_kind_followup_wait_armed",
         "trace_kind_followup_wait_scheduled",
         "trace_kind_followup_wait_woken",

@@ -240,6 +240,58 @@ async def test_only_standard_public_text_blocks_are_delivered():
 
 
 @pytest.mark.asyncio
+async def test_public_text_preserves_safe_citation_annotations_without_duplicates():
+    gateway = RecordingGateway()
+    model = ScriptedChatModel(
+        responses=[
+            AIMessage(
+                content=[
+                    {
+                        "type": "text",
+                        "text": "The release is documented here.",
+                        "annotations": [
+                            {
+                                "type": "citation",
+                                "url": "https://example.com/release",
+                                "title": "Release notes",
+                            },
+                            {"type": "url_citation", "url": "javascript:alert(1)"},
+                        ],
+                    },
+                    {
+                        "type": "output_text",
+                        "text": "Existing link: https://example.com/release",
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "url": "https://example.com/release",
+                                "title": "Duplicate",
+                            }
+                        ],
+                    },
+                ]
+            )
+        ]
+    )
+    traces: list[tuple[str, str, dict[str, Any]]] = []
+    agent = build_agent(
+        model,
+        gateway,
+        prompt(),
+        UnusedPublicHTTP(),
+        diagnostics=lambda trace_id, kind, payload: traces.append((trace_id, kind, payload)),
+    )
+
+    await agent.ainvoke({"messages": [HumanMessage("hello")]}, context=runtime_context())
+
+    delivered = gateway.calls[0][1][0]
+    assert "[Release notes](https://example.com/release)" in delivered
+    assert "javascript:" not in delivered
+    extracted = next(payload for _, kind, payload in traces if kind == "public_text_extracted")
+    assert extracted["text"] == delivered
+
+
+@pytest.mark.asyncio
 async def test_successful_reaction_only_step_ends_without_an_extra_model_call():
     gateway = RecordingGateway()
     model = ScriptedChatModel(responses=[tool_call("react_to_message", {"emoji": "🎉"}, "reaction")])

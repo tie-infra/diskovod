@@ -950,23 +950,25 @@ class WebApp:
                 return self._redirect(
                     "/settings/automation", error=self._t("detect_native_calls_before_enable")
                 )
-            await self.store.aset_automation_settings(
-                AutomationSettings(
-                    enabled=enabled is not None,
-                    silent_replies=silent_replies is not None,
-                    robot_prefix=robot_prefix is not None,
-                    default_conversation_enabled=default_conversation_enabled is not None,
-                    debounce_seconds=max(0, debounce_seconds),
-                    min_delay_seconds=max(0, min_delay_seconds),
-                    max_delay_seconds=max(0, max_delay_seconds),
-                    min_typing_cps=max(1, min_typing_cps),
-                    max_typing_cps=max(1, max_typing_cps),
-                    min_human_quiet_minutes=max(0, min_human_quiet_minutes),
-                    max_human_quiet_minutes=max(0, max_human_quiet_minutes),
-                    min_message_gap_seconds=max(0, min_message_gap_seconds),
-                    max_message_gap_seconds=max(0, max_message_gap_seconds),
-                )
+            previous_automation = self.store.automation_settings()
+            updated_automation = AutomationSettings(
+                enabled=enabled is not None,
+                silent_replies=silent_replies is not None,
+                robot_prefix=robot_prefix is not None,
+                default_conversation_enabled=default_conversation_enabled is not None,
+                debounce_seconds=max(0, debounce_seconds),
+                min_delay_seconds=max(0, min_delay_seconds),
+                max_delay_seconds=max(0, max_delay_seconds),
+                min_typing_cps=max(1, min_typing_cps),
+                max_typing_cps=max(1, max_typing_cps),
+                min_human_quiet_minutes=max(0, min_human_quiet_minutes),
+                max_human_quiet_minutes=max(0, max_human_quiet_minutes),
+                min_message_gap_seconds=max(0, min_message_gap_seconds),
+                max_message_gap_seconds=max(0, max_message_gap_seconds),
             )
+            await self.store.aset_automation_settings(updated_automation)
+            if previous_automation.enabled and not updated_automation.enabled:
+                await self.runtime.cancel_all_followups("automation_disabled")
             return self._redirect("/settings/automation", message=self._t("settings_saved"))
 
         @self.app.post("/settings/model")
@@ -1318,7 +1320,10 @@ class WebApp:
         async def automation_reset(confirm: str = Form(""), _: str = Depends(auth)):
             if confirm != "reset":
                 return self._redirect("/settings/automation", error=self._t("settings_reset_confirm"))
+            previous = self.store.automation_settings()
             await self.store.aset_automation_settings(AutomationSettings())
+            if previous.enabled:
+                await self.runtime.cancel_all_followups("automation_disabled")
             return self._redirect("/settings/automation", message=self._t("automation_settings_reset"))
 
         @self.app.post("/settings/interface/reset")

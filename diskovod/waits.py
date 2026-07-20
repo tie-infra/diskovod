@@ -118,7 +118,7 @@ class ConversationWaits:
                 await connection.execute(
                     """
                     UPDATE conversation_waits SET state='failed', failure=?, updated_at=?
-                    WHERE id=? AND state IN ('arming','scheduled','resuming')
+                    WHERE id=? AND state IN ('arming','scheduled','resuming','completed')
                     """,
                     (failure[:4000], time.time(), wait_id),
                 )
@@ -139,7 +139,20 @@ class ConversationWaits:
                 await connection.execute(
                     """
                     UPDATE conversation_waits SET state='cancelled', failure=?, updated_at=?
-                    WHERE id=? AND state IN ('arming','scheduled','resuming')
+                    WHERE id=? AND (
+                      state IN ('arming','scheduled','resuming') OR (
+                        state='completed'
+                        AND EXISTS(
+                          SELECT 1 FROM conversation_mailbox AS m
+                          WHERE m.id=conversation_waits.wake_event_id
+                            AND m.state IN ('pending','claimed')
+                        )
+                        AND EXISTS(
+                          SELECT 1 FROM agent_runs AS r
+                          WHERE r.id=conversation_waits.run_id AND r.status='interrupted'
+                        )
+                      )
+                    )
                     """,
                     (reason[:4000], now, wait_id),
                 )
@@ -229,11 +242,58 @@ class ConversationWaits:
             ).fetchone()
         return self._record(row) if row is not None else None
 
+    async def incomplete_resume(self, channel_id: str) -> ConversationWait | None:
+        """Return a resumed interrupt whose runtime finalization did not finish."""
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    """
+                    SELECT w.*, m.payload AS wake_payload
+                    FROM conversation_waits AS w
+                    JOIN conversation_mailbox AS m ON m.id=w.wake_event_id
+                    JOIN agent_runs AS r ON r.id=w.run_id
+                    WHERE w.channel_id=? AND w.state='completed'
+                      AND m.state IN ('pending','claimed') AND r.status='interrupted'
+                    ORDER BY w.updated_at DESC LIMIT 1
+                    """,
+                    (channel_id,),
+                )
+            ).fetchone()
+        return self._record(row) if row is not None else None
+
+    async def resumable(self) -> list[ConversationWait]:
+        """List active and incompletely finalized waits for lifecycle cancellation."""
+        async with self.database.transaction() as connection:
+            rows = await (
+                await connection.execute(
+                    """
+                    SELECT w.*, m.payload AS wake_payload
+                    FROM conversation_waits AS w
+                    JOIN conversation_mailbox AS m ON m.id=w.wake_event_id
+                    LEFT JOIN agent_runs AS r ON r.id=w.run_id
+                    WHERE w.state IN ('arming','scheduled','resuming')
+                       OR (w.state='completed' AND m.state IN ('pending','claimed')
+                           AND r.status='interrupted')
+                    ORDER BY w.updated_at
+                    """
+                )
+            ).fetchall()
+        return [self._record(row) for row in rows]
+
     async def due_channels(self) -> list[str]:
         async with self.database.transaction() as connection:
             rows = await (
                 await connection.execute(
-                    "SELECT channel_id FROM conversation_waits WHERE state='scheduled' AND resume_at<=?",
+                    """
+                    SELECT channel_id FROM conversation_waits
+                    WHERE (state='scheduled' AND resume_at<=?) OR state='resuming'
+                    UNION
+                    SELECT w.channel_id FROM conversation_waits AS w
+                    JOIN conversation_mailbox AS m ON m.id=w.wake_event_id
+                    JOIN agent_runs AS r ON r.id=w.run_id
+                    WHERE w.state='completed' AND m.state IN ('pending','claimed')
+                      AND r.status='interrupted'
+                    """,
                     (time.time(),),
                 )
             ).fetchall()

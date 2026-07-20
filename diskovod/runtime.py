@@ -143,27 +143,54 @@ class AgentService:
 
     async def permanently_pause(self, channel_id: str) -> None:
         await self.store.aset_permanent_pause(channel_id, True)
+        await self.cancel_followup(
+            channel_id,
+            reason="conversation_paused",
+            resume_pending=False,
+        )
         self.cancel(channel_id)
 
-    async def cancel_followup(self, channel_id: str) -> bool:
-        wait = await self.waits.active(channel_id)
+    async def cancel_followup(
+        self,
+        channel_id: str,
+        *,
+        reason: str = "cancelled_by_owner",
+        resume_pending: bool = True,
+    ) -> bool:
+        wait = await self.waits.active(channel_id) or await self.waits.incomplete_resume(channel_id)
         if wait is None:
             return False
         task = self.tasks.pop(channel_id, None)
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        if not await self.waits.cancel(wait.id, "cancelled_by_owner"):
+        if not await self.waits.cancel(wait.id, reason):
             return False
         await self.mailbox.release(channel_id, wait.run_id)
+        await self.store.arecord_agent_trace(
+            wait.run_id,
+            "followup_wait_cancelled",
+            {"wait_id": wait.id, "reason": reason},
+        )
         await self.store.afinish_agent_run(
             wait.run_id,
             "cancelled",
-            "Conversational follow-up cancelled by owner",
+            f"Conversational follow-up cancelled: {reason}",
         )
-        if await self.mailbox.has_pending(channel_id):
+        if resume_pending and await self.mailbox.has_pending(channel_id):
             self._ensure_task(channel_id)
         return True
+
+    async def cancel_all_followups(self, reason: str) -> int:
+        cancelled = 0
+        for wait in await self.waits.resumable():
+            if await self.cancel_followup(
+                wait.channel_id,
+                reason=reason,
+                resume_pending=False,
+            ):
+                cancelled += 1
+        return cancelled
 
     async def human_activity(self, channel_id: str) -> float:
         snoozed_until, should_cancel = await self._record_human_activity(channel_id)
@@ -888,10 +915,18 @@ class AgentService:
         task.add_done_callback(lambda done: self._finished(channel_id, done))
 
     async def _drive(self, channel_id: str, *, force: bool) -> None:
-        if await self.waits.active(channel_id) is not None:
-            wait = await self.waits.claim_ready(channel_id)
-            if wait is not None:
-                await self._resume_followup(wait)
+        active_wait = await self.waits.active(channel_id)
+        if active_wait is not None:
+            if active_wait.state == "scheduled":
+                wait = await self.waits.claim_ready(channel_id)
+                if wait is not None:
+                    await self._resume_followup(wait)
+            elif active_wait.state == "resuming":
+                await self._resume_followup(active_wait)
+            return
+        incomplete = await self.waits.incomplete_resume(channel_id)
+        if incomplete is not None:
+            await self._resume_followup(incomplete)
             return
         if await self.store.ahas_active_interrupt(channel_id):
             return
@@ -1241,17 +1276,37 @@ class AgentService:
             "run_id": uuid.UUID(wait.run_id),
             "recursion_limit": 40,
         }
+        snapshot = await self.checkpointer.aget_tuple(
+            {"configurable": {"thread_id": wait.thread_id}}
+        )
+        pending_writes = snapshot.pending_writes if snapshot is not None else None
+        has_wait_interrupt = any(
+            channel == "__interrupt__" and wait.id in str(value)
+            for _, channel, value in (pending_writes or [])
+        )
+        graph_input = (
+            Command(resume={"reason": wait.resume_reason, "wait_id": wait.id})
+            if has_wait_interrupt
+            else None
+        )
         await self.store.arecord_agent_trace(
             wait.run_id,
-            "followup_wait_resume",
-            {"wait_id": wait.id, "reason": wait.resume_reason},
+            "followup_wait_recovery" if not has_wait_interrupt else "followup_wait_resume",
+            {
+                "wait_id": wait.id,
+                "reason": wait.resume_reason,
+                "checkpoint_interrupt": has_wait_interrupt,
+                "wait_state": wait.state,
+            },
         )
         try:
             result = await agent.ainvoke(
-                Command(resume={"reason": wait.resume_reason, "wait_id": wait.id}),
+                graph_input,
                 config=config,
                 context=context,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as error:
             await self.waits.fail(wait.id, f"{type(error).__name__}: {error}")
             await self.mailbox.fail(
@@ -1270,6 +1325,7 @@ class AgentService:
         next_wait = await self.waits.active(wait.channel_id)
         if interrupted and next_wait is not None and next_wait.id != wait.id:
             await self.waits.schedule(next_wait.id)
+        await self.waits.resolve(wait.id)
         await self.mailbox.complete(wait.channel_id, wait.run_id)
         await self._flush_trace(wait.trace_id, wait.run_id)
         await self.store.afinish_agent_run(

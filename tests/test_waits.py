@@ -244,3 +244,107 @@ async def test_owner_can_cancel_a_durable_followup_without_another_model_call(tm
     assert run["status"] == "cancelled"
     await service.close()
     await store.aclose()
+
+
+@pytest.mark.parametrize("recovered_state", ["resuming", "completed"])
+async def test_service_recovers_a_followup_interrupted_during_resume(
+    tmp_path: Path,
+    monkeypatch,
+    recovered_state: str,
+):
+    monkeypatch.setattr("diskovod.runtime.random.uniform", lambda minimum, maximum: maximum)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=0)
+    )
+    await store.aset_assistant_profile(replace(AssistantProfile(), allow_conversational_followups=True))
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    transport = SignallingTransport()
+    model = ScriptedChatModel(
+        responses=[wait_call("I may follow up."), AIMessage("Recovered follow-up.")]
+    )
+    service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
+    await service.start()
+    await service.submit_message(
+        message_id="first",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="Think about this",
+        attachments=[],
+        observed_at=time.time(),
+    )
+    await wait_for_idle(service)
+    wait = await service.waits.active("channel")
+    assert wait is not None
+    await service.close()
+
+    assert await service.waits.wake_for_input("channel")
+    claimed = await service.waits.claim_ready("channel")
+    assert claimed is not None and claimed.state == "resuming"
+    if recovered_state == "completed":
+        assert await service.waits.resolve(wait.id)
+
+    recovered = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
+    await recovered.start()
+    await asyncio.wait_for(transport.followup_sent.wait(), timeout=3)
+    await wait_for_idle(recovered)
+
+    assert [messages for _, messages in transport.messages] == [
+        ("I may follow up.",),
+        ("Recovered follow-up.",),
+    ]
+    assert await recovered.waits.active("channel") is None
+    assert await recovered.waits.incomplete_resume("channel") is None
+    await recovered.close()
+    await store.aclose()
+
+
+async def test_pausing_a_chat_cancels_its_durable_followup(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("diskovod.runtime.random.uniform", lambda minimum, maximum: maximum)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=0)
+    )
+    await store.aset_assistant_profile(replace(AssistantProfile(), allow_conversational_followups=True))
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    model = ScriptedChatModel(responses=[wait_call("I may follow up.")])
+    service = AgentService(
+        store,
+        FakeModels(model),
+        RecordingTransport(),
+        "x" * 32,
+        UnusedPublicHTTP(),
+    )
+    await service.start()
+    await service.submit_message(
+        message_id="first",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="Think about this",
+        attachments=[],
+        observed_at=time.time(),
+    )
+    await wait_for_idle(service)
+    wait = await service.waits.active("channel")
+    assert wait is not None
+
+    await service.permanently_pause("channel")
+
+    assert await service.waits.active("channel") is None
+    async with store.database.transaction() as connection:
+        saved = await (
+            await connection.execute(
+                "SELECT state, failure FROM conversation_waits WHERE id=?",
+                (wait.id,),
+            )
+        ).fetchone()
+    assert dict(saved) == {"state": "cancelled", "failure": "conversation_paused"}
+    assert model.index == 1
+    await service.close()
+    await store.aclose()

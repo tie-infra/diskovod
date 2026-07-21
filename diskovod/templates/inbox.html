@@ -6,7 +6,7 @@
   <article class="card border-warning"><div class="card-body">
     <div class="d-flex justify-content-between"><h2 class="h5">{{ t("captcha_requests") }}</h2><span class="badge text-bg-warning">{{ challenge.expires_in_seconds }}s</span></div>
     <p>{{ t("captcha_help", service=challenge.service, seconds=challenge.expires_in_seconds) }}</p>
-    <form method="post" action="/discord/captcha/{{ challenge.id }}" class="d-flex gap-2"><label class="visually-hidden" for="captcha-{{ challenge.id }}">{{ t("captcha_solution") }}</label><input id="captcha-{{ challenge.id }}" class="form-control" name="solution" required placeholder="{{ t('captcha_solution') }}"><button class="btn btn-primary">{{ t("submit_captcha") }}</button></form>
+    <form method="post" action="/discord/captcha/{{ challenge.id }}" class="d-flex flex-wrap gap-2"><label class="visually-hidden" for="captcha-{{ challenge.id }}">{{ t("captcha_solution") }}</label><input id="captcha-{{ challenge.id }}" class="form-control flex-grow-1" name="solution" required placeholder="{{ t('captcha_solution') }}"><button class="btn btn-primary">{{ t("submit_captcha") }}</button></form>
   </div></article>
   {% endfor %}
   {% for problem in connection_errors %}

@@ -20,7 +20,7 @@
     </div>
     <form class="filter-bar" method="get">
       <input type="hidden" name="table" value="{{ database.name }}">
-      <input class="form-control" type="search" name="q" value="{{ database.query }}" placeholder="{{ t('search_columns') }}">
+      <input class="form-control" type="search" name="q" value="{{ database.query }}" placeholder="{{ t('search_columns') }}" aria-label="{{ t('search_columns') }}">
       <button class="btn btn-primary">{{ t("search") }}</button>
     </form>
     <div class="card table-responsive">

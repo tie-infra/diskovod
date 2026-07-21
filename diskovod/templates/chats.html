@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 <form class="filter-bar" method="get">
-  <input class="form-control" type="search" name="q" value="{{ chats.query }}" placeholder="{{ t('search') }}">
-  <select class="form-select" name="state">
+  <input class="form-control" type="search" name="q" value="{{ chats.query }}" placeholder="{{ t('search') }}" aria-label="{{ t('search') }}">
+  <select class="form-select" name="state" aria-label="{{ t('status') }}">
     <option value="">{{ t("all") }}</option>
     {% for state in ("autonomous", "shared", "on_invocation", "manual", "draft", "paused", "snoozed", "escalated", "failed") %}<option value="{{ state }}" {{ 'selected' if chats.state == state }}>{{ t("interaction_preset_" ~ state) if state in ("autonomous", "shared", "on_invocation", "manual", "draft") else t("availability_paused") if state == "paused" else t(state if state != "failed" else "failed_recently") }}</option>{% endfor %}
   </select>

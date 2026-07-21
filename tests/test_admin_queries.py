@@ -39,8 +39,13 @@ async def test_inherited_chats_use_the_configured_default_policy_in_admin_views(
     chats = await queries.chats(state="shared")
 
     assert overview["interaction_policies"] == {"shared": 1}
+    assert overview["recent_chats"][0]["effective_policy"] == "shared"
     assert chats["total"] == 1
     assert chats["items"][0]["preset"] == "shared"
+
+    await store.aset_permanent_pause("channel", True)
+    assert (await queries.overview())["recent_chats"][0]["effective_policy"] == "paused"
+    assert (await queries.search("Peer"))["chats"][0]["mode"] == "paused"
     await store.aclose()
 
 

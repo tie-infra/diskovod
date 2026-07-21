@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block breadcrumbs %}<nav aria-label="{{ t('pagination') }}"><a href="/inbox">{{ t("inbox") }}</a> / {{ detail.conversation.peer_name or detail.escalation.channel_id }}</nav>{% endblock %}
+{% block breadcrumbs %}<nav aria-label="{{ t('inbox') }}"><a href="/inbox">{{ t("inbox") }}</a> / {{ detail.conversation.peer_name or detail.escalation.channel_id }}</nav>{% endblock %}
 {% block subtitle %}<p class="text-body-secondary">{{ t("reason_" ~ detail.escalation.reason) }}</p>{% endblock %}
 {% block content %}
 <div class="chat-layout">

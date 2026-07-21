@@ -33,7 +33,7 @@
   <div class="list-group list-group-flush">
     {% for chat in overview.recent_chats %}
       <a class="list-group-item list-group-item-action" href="/chats/{{ chat.channel_id }}">
-        <div class="d-flex justify-content-between gap-3"><strong>{{ chat.peer_name or t("unknown_peer") }}</strong><span class="badge text-bg-secondary">{{ t("interaction_preset_" ~ chat.mode) }}</span></div>
+        <div class="d-flex justify-content-between gap-3"><strong class="text-truncate">{{ chat.peer_name or t("unknown_peer") }}</strong><span class="badge text-bg-secondary">{{ t("interaction_preset_" ~ chat.effective_policy) if chat.effective_policy in ("autonomous", "shared", "on_invocation", "manual", "draft") else t("availability_paused") if chat.effective_policy == "paused" else t("snoozed") }}</span></div>
         <small class="d-block text-body-secondary text-truncate">{{ chat.latest_content or t("no_messages") }}</small>
       </a>
     {% else %}<div class="empty-state">{{ t("no_messages") }}</div>{% endfor %}

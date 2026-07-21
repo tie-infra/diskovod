@@ -34,36 +34,36 @@
     <div class="admin-layout">
       <aside class="sidebar offcanvas-lg offcanvas-start" tabindex="-1" id="admin-sidebar" aria-label="{{ t('admin_navigation') }}">
         <div class="offcanvas-header">
-          <div class="brand">
+          <a class="brand" href="/" aria-label="{{ t('overview') }}">
             <span class="brand-mark" aria-hidden="true">◉</span>
             <span>Diskovod</span>
-          </div>
+          </a>
           <button class="btn-close d-lg-none" type="button" data-bs-dismiss="offcanvas" data-bs-target="#admin-sidebar" aria-label="{{ t('close') }}"></button>
         </div>
         <div class="offcanvas-body d-block"><nav class="nav nav-pills flex-column gap-1">
           <a class="nav-link {{ 'active' if active_section == 'overview' }}" href="/" {{ 'aria-current="page"'|safe if active_section == 'overview' }}>
-            <span aria-hidden="true">⌂</span> {{ t("overview") }}
+            <span class="nav-icon" aria-hidden="true">⌂</span> {{ t("overview") }}
           </a>
           <a class="nav-link {{ 'active' if active_section == 'inbox' }}" href="/inbox" {{ 'aria-current="page"'|safe if active_section == 'inbox' }}>
-            <span aria-hidden="true">◎</span> {{ t("inbox") }}
+            <span class="nav-icon" aria-hidden="true">◎</span> {{ t("inbox") }}
             <span class="badge text-bg-danger ms-auto" data-inbox-indicator {{ 'hidden' if not inbox_count }}>{{ inbox_count }}</span>
           </a>
           <a class="nav-link {{ 'active' if active_section == 'chats' }}" href="/chats" {{ 'aria-current="page"'|safe if active_section == 'chats' }}>
-            <span aria-hidden="true">◌</span> {{ t("chats") }}
+            <span class="nav-icon" aria-hidden="true">◌</span> {{ t("chats") }}
           </a>
           <a class="nav-link {{ 'active' if active_section == 'activity' }}" href="/activity/runs" {{ 'aria-current="page"'|safe if active_section == 'activity' }}>
-            <span aria-hidden="true">⌁</span> {{ t("activity") }}
+            <span class="nav-icon" aria-hidden="true">⌁</span> {{ t("activity") }}
           </a>
           <a class="nav-link {{ 'active' if active_section == 'knowledge' }}" href="/knowledge/memories" {{ 'aria-current="page"'|safe if active_section == 'knowledge' }}>
-            <span aria-hidden="true">◇</span> {{ t("knowledge") }}
+            <span class="nav-icon" aria-hidden="true">◇</span> {{ t("knowledge") }}
           </a>
           <div class="nav-heading">{{ t("settings") }}</div>
           <a class="nav-link {{ 'active' if active_section == 'settings' }}" href="/settings/connections" {{ 'aria-current="page"'|safe if active_section == 'settings' }}>
-            <span aria-hidden="true">⚙</span> {{ t("settings") }}
+            <span class="nav-icon" aria-hidden="true">⚙</span> {{ t("settings") }}
           </a>
           <div class="nav-heading">{{ t("system") }}</div>
           <a class="nav-link {{ 'active' if active_section == 'system' }}" href="/system/diagnostics" {{ 'aria-current="page"'|safe if active_section == 'system' }}>
-            <span aria-hidden="true">⋯</span> {{ t("system") }}
+            <span class="nav-icon" aria-hidden="true">⋯</span> {{ t("system") }}
           </a>
         </nav></div>
       </aside>
@@ -72,16 +72,16 @@
           <button class="btn btn-outline-secondary sidebar-toggle" type="button" data-bs-toggle="offcanvas" data-bs-target="#admin-sidebar" aria-controls="admin-sidebar">
             <span aria-hidden="true">☰</span><span class="visually-hidden">{{ t("admin_navigation") }}</span>
           </button>
-          <form class="topbar-search ms-auto" method="get" action="/search" role="search">
+          <form class="topbar-search" method="get" action="/search" role="search">
             <label class="visually-hidden" for="global-search">{{ t("search") }}</label>
             <input id="global-search" class="form-control form-control-sm" type="search" name="q" value="{{ query|default('') }}" placeholder="{{ t('search') }}" minlength="2">
           </form>
-          <div class="d-flex align-items-center gap-2">
-            <a class="btn btn-sm btn-outline-secondary" href="/activity/jobs" data-job-indicator role="status" aria-live="polite">
-              {{ t("jobs") }} <span class="badge text-bg-primary">{{ active_job_count }}</span>
+          <div class="topbar-status d-flex align-items-center gap-2" aria-label="{{ t('automation_enabled') if automation_settings.enabled else t('automation_disabled') }}" title="{{ t('automation_enabled') if automation_settings.enabled else t('automation_disabled') }}">
+            <a class="btn btn-sm btn-outline-secondary" href="/activity/jobs" data-job-indicator>
+              {{ t("jobs") }} <span class="badge text-bg-primary" aria-live="polite">{{ active_job_count }}</span>
             </a>
             <span class="status-dot {{ 'is-on' if automation_settings.enabled }}" aria-hidden="true"></span>
-            <span class="small text-body-secondary">
+            <span class="automation-status-copy small text-body-secondary">
               {{ t("automation_enabled") if automation_settings.enabled else t("automation_disabled") }}
             </span>
           </div>

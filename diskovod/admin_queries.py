@@ -53,13 +53,20 @@ class AdminQueryService:
                 await connection.execute(
                     """
                     SELECT c.*,
+                      CASE
+                        WHEN c.availability='paused' THEN 'paused'
+                        WHEN c.snoozed_until>? THEN 'snoozed'
+                        ELSE COALESCE(p.preset, ?)
+                      END AS effective_policy,
                       (SELECT content FROM messages m WHERE m.channel_id=c.channel_id
                        ORDER BY timestamp DESC LIMIT 1) AS latest_content,
                       (SELECT timestamp FROM messages m WHERE m.channel_id=c.channel_id
                        ORDER BY timestamp DESC LIMIT 1) AS latest_message_at
                     FROM conversations c
+                    LEFT JOIN chat_interaction_policies p ON p.channel_id=c.channel_id
                     ORDER BY COALESCE(latest_message_at, c.updated_at) DESC LIMIT 5
-                    """
+                    """,
+                    (time.time(), default_preset),
                 )
             ).fetchall()
             jobs = await (
@@ -480,12 +487,16 @@ class AdminQueryService:
         bounded = max(1, min(limit, 20))
         queries = {
             "chats": (
-                "SELECT c.channel_id, c.peer_name, COALESCE(p.preset, ?) AS mode, c.updated_at "
+                "SELECT c.channel_id, c.peer_name, CASE "
+                "WHEN c.availability='paused' THEN 'paused' "
+                "WHEN c.snoozed_until>? THEN 'snoozed' "
+                "ELSE COALESCE(p.preset, ?) END AS mode, c.updated_at "
                 "FROM conversations AS c LEFT JOIN chat_interaction_policies AS p "
                 "ON p.channel_id=c.channel_id "
                 "WHERE c.peer_name LIKE ? OR c.channel_id LIKE ? "
                 "ORDER BY c.updated_at DESC LIMIT ?",
                 (
+                    time.time(),
                     self.store.default_interaction_policy().preset,
                     pattern,
                     pattern,

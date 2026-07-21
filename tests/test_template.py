@@ -60,6 +60,9 @@ def test_multipage_admin_templates_parse_and_use_the_shared_shell():
     assert 'href="/knowledge/memories"' in rendered
     assert 'href="/settings/connections"' in rendered
     assert 'href="/system/diagnostics"' in rendered
+    assert 'class="brand" href="/"' in rendered
+    assert 'class="nav-icon"' in rendered
+    assert 'class="topbar-status' in rendered
     assert 'action="/search"' in rendered
     assert 'data-admin-theme="system"' in rendered
     assert 'id="main-content"' in rendered
@@ -169,6 +172,9 @@ def test_admin_assets_are_self_hosted_and_old_dashboard_css_is_removed():
     assert "Bootstrap v5.3.8" in bootstrap_bundle
     assert ".admin-layout" in stylesheet
     assert ".chat-layout" in stylesheet
+    assert ".chat-transcript" in stylesheet
+    assert "--bs-offcanvas-width" in stylesheet
+    assert "@media (min-width: 992px)" in stylesheet
     assert ".tab-navigation" not in stylesheet
     assert ".usage-breakdown" not in stylesheet
     assert ".connection-grid" not in stylesheet

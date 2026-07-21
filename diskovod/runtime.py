@@ -271,6 +271,19 @@ class AgentService:
         task = self.tasks.get(channel_id)
         return task is not None and not task.done()
 
+    async def _policy_for_input(self, channel_id: str) -> tuple[InteractionPolicy, int, bool]:
+        policy, policy_version, _ = await self.store.ainteraction_policy(channel_id)
+        active_wait = await self.waits.active(channel_id)
+        active_turn = self._active_run(channel_id) or active_wait is not None
+        if active_turn:
+            pinned = await self.journal.policy_for_active_turn(
+                channel_id,
+                run_id=active_wait.run_id if active_wait is not None else None,
+            )
+            if pinned is not None:
+                policy, policy_version = pinned
+        return policy, policy_version, active_turn
+
     async def _can_schedule(
         self,
         channel_id: str,
@@ -345,16 +358,7 @@ class AgentService:
         force: bool,
         agent_input: bool | None,
     ) -> tuple[bool, bool, bool]:
-        policy, policy_version, _ = await self.store.ainteraction_policy(channel_id)
-        active_wait = await self.waits.active(channel_id)
-        active_turn = self._active_run(channel_id) or active_wait is not None
-        if active_turn:
-            pinned = await self.journal.policy_for_active_turn(
-                channel_id,
-                run_id=active_wait.run_id if active_wait is not None else None,
-            )
-            if pinned is not None:
-                policy, policy_version = pinned
+        policy, policy_version, active_turn = await self._policy_for_input(channel_id)
         profile = self.store.assistant_profile()
         decision = evaluate_trigger(
             policy,
@@ -457,10 +461,8 @@ class AgentService:
         observed_at: float | None,
     ) -> tuple[bool, bool]:
         timestamp = observed_at or time.time()
-        policy, policy_version, _ = await self.store.ainteraction_policy(channel_id)
-        active_input = self._active_run(channel_id) and (
-            policy.active_turn_input.timing == "inject_at_safe_points"
-        )
+        policy, policy_version, active_turn = await self._policy_for_input(channel_id)
+        active_input = active_turn and policy.active_turn_input.timing == "inject_at_safe_points"
         inserted = await self.journal.admit(
             f"discord:delete:{message_id}:{int(timestamp * 1_000_000)}",
             channel_id,

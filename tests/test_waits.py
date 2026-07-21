@@ -284,6 +284,69 @@ async def test_service_resumes_a_durable_wait_when_new_input_arrives(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_deletion_wakes_a_durable_wait_with_its_pinned_input_policy(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("diskovod.runtime.random.uniform", lambda minimum, maximum: maximum)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=0)
+    )
+    await store.aset_assistant_profile(replace(AssistantProfile(), allow_conversational_followups=True))
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    transport = SignallingTransport()
+    model = ScriptedChatModel(
+        responses=[wait_call("I may add something."), AIMessage("Noted—the message was deleted.")]
+    )
+    service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
+    await service.start()
+    await service.submit_message(
+        message_id="first",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="Think about this",
+        attachments=[],
+        observed_at=time.time(),
+    )
+    await wait_for_idle(service)
+    assert (await service.waits.active("channel")).state == "scheduled"
+
+    pinned_policy, _, _ = await store.ainteraction_policy("channel")
+    await store.aset_interaction_policy(
+        "channel",
+        replace(
+            pinned_policy,
+            active_turn_input=replace(
+                pinned_policy.active_turn_input,
+                timing="queue_for_next_turn",
+            ),
+        ),
+    )
+    assert await service.submit_delete(
+        message_id="first",
+        channel_id="channel",
+        account_id="owner",
+        observed_at=time.time(),
+    )
+
+    await asyncio.wait_for(transport.followup_sent.wait(), timeout=3)
+    await wait_for_idle(service)
+    assert [messages for _, messages in transport.messages] == [
+        ("I may add something.",),
+        ("Noted—the message was deleted.",),
+    ]
+    async with store.database.transaction() as connection:
+        deletion = await (
+            await connection.execute("SELECT context_state FROM conversation_events WHERE kind='delete'")
+        ).fetchone()
+    assert deletion["context_state"] == "applied"
+    assert await service.waits.active("channel") is None
+    await service.close()
+    await store.aclose()
+
+
+@pytest.mark.asyncio
 async def test_owner_can_cancel_a_durable_followup_without_another_model_call(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("diskovod.runtime.random.uniform", lambda minimum, maximum: maximum)
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)

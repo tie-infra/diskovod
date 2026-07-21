@@ -7,6 +7,7 @@ from diskovod.interaction import (
     AvailabilitySchedule,
     InvocationAlias,
     TriggerRule,
+    _graphemes,
     evaluate_trigger,
     preset_policy,
     schedule_allows,
@@ -307,3 +308,7 @@ def test_private_and_approval_presets_have_distinct_delivery_contracts():
     assert draft.trigger_participants == frozenset({"peer"})
     assert draft.conversation_role == "owner_copilot"
     assert draft.delivery == "owner_approval"
+
+
+def test_grapheme_segmentation_handles_unicode_emoji_and_combining_sequences():
+    assert _graphemes("🇺🇦👩🏽‍💻e\u0301") == ("🇺🇦", "👩🏽‍💻", "e\u0301")

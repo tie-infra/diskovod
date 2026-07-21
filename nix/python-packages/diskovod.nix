@@ -14,6 +14,7 @@
   httpx2,
   pydantic,
   python-multipart,
+  regex,
   uvicorn,
   pytest,
   pytest-asyncio,
@@ -42,6 +43,7 @@ buildPythonPackage {
     httpx2
     pydantic
     python-multipart
+    regex
     uvicorn
   ];
 

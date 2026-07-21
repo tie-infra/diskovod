@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import Any, Iterable, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import regex
+
 
 Participant = Literal["owner", "peer"]
 Preset = Literal["autonomous", "shared", "on_invocation", "manual", "draft"]
@@ -580,15 +582,7 @@ def _fuzzy_candidates(
 
 
 def _graphemes(value: str) -> tuple[str, ...]:
-    clusters: list[str] = []
-    join_next = False
-    for character in value:
-        if clusters and (unicodedata.combining(character) or character in {"\ufe0f", "\u200d"} or join_next):
-            clusters[-1] += character
-        else:
-            clusters.append(character)
-        join_next = character == "\u200d"
-    return tuple(clusters)
+    return tuple(regex.findall(r"\X", value))
 
 
 def _bounded_damerau_levenshtein(

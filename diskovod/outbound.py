@@ -11,6 +11,9 @@ from .agent_types import AgentRuntimeContext, CapabilityProfile
 from .persistence import AsyncSQLite
 
 
+DRAFT_APPROVAL_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
 @dataclass(frozen=True, slots=True)
 class DeliveryRecord:
     status: str
@@ -223,6 +226,7 @@ class OutboundPublisher:
                         (state, result, error, now, draft_id),
                     )
                 ).rowcount
+            changed += await self._expire_drafts(connection, now)
         return changed
 
     async def action(self, action_id: str) -> dict[str, object] | None:
@@ -422,11 +426,13 @@ class OutboundPublisher:
         query += " ORDER BY created_at DESC, ordinal DESC LIMIT ?"
         parameters.append(max(1, min(limit, 500)))
         async with self.database.transaction() as connection:
+            await self._expire_drafts(connection, time.time())
             rows = await (await connection.execute(query, parameters)).fetchall()
         return [self._draft_row(row) for row in rows]
 
     async def draft(self, draft_id: str) -> dict[str, object] | None:
         async with self.database.transaction() as connection:
+            await self._expire_drafts(connection, time.time(), draft_id=draft_id)
             row = await (
                 await connection.execute("SELECT * FROM outbound_drafts WHERE id=?", (draft_id,))
             ).fetchone()
@@ -435,6 +441,7 @@ class OutboundPublisher:
     async def reject_draft(self, draft_id: str) -> bool:
         now = time.time()
         async with self.database.transaction() as connection:
+            await self._expire_drafts(connection, now, draft_id=draft_id)
             changed = (
                 await connection.execute(
                     """
@@ -450,6 +457,7 @@ class OutboundPublisher:
     async def approve_draft(self, draft_id: str, *, message: str | None = None) -> DeliveryRecord | None:
         now = time.time()
         async with self.database.transaction() as connection:
+            await self._expire_drafts(connection, now, draft_id=draft_id)
             row = await (
                 await connection.execute("SELECT * FROM outbound_drafts WHERE id=?", (draft_id,))
             ).fetchone()
@@ -591,8 +599,8 @@ class OutboundPublisher:
                 INSERT OR IGNORE INTO outbound_drafts(
                   id, batch_id, ordinal, thread_id, channel_id, run_id,
                   source_kind, source_id, kind, payload, identity_marker,
-                  policy, state, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  policy, state, created_at, updated_at, expires_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     draft_id,
@@ -610,9 +618,23 @@ class OutboundPublisher:
                     state,
                     now,
                     now,
+                    now + DRAFT_APPROVAL_TTL_SECONDS if context.delivery == "owner_approval" else None,
                 ),
             )
         return DeliveryRecord("accepted", ordinal, discord_message_id=f"draft:{draft_id}")
+
+    @staticmethod
+    async def _expire_drafts(connection, now: float, *, draft_id: str = "") -> int:
+        query = """
+            UPDATE outbound_drafts
+            SET state='expired', decided_at=?, updated_at=?
+            WHERE state IN ('pending','failed') AND expires_at IS NOT NULL AND expires_at<=?
+        """
+        parameters: list[object] = [now, now, now]
+        if draft_id:
+            query += " AND id=?"
+            parameters.append(draft_id)
+        return (await connection.execute(query, parameters)).rowcount
 
     @staticmethod
     def _draft_row(row) -> dict[str, object]:

@@ -30,7 +30,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 16
+TARGET_SCHEMA_VERSION = 17
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -883,6 +883,50 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX conversation_engagements_expiry
       ON conversation_engagements(expires_at, remaining_turns);
+    """,
+    """
+    CREATE TABLE outbound_drafts_v17 (
+      id TEXT PRIMARY KEY,
+      batch_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      thread_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('discord_message','discord_reaction')),
+      payload TEXT NOT NULL,
+      identity_marker TEXT NOT NULL CHECK(identity_marker IN ('configurable','forced')),
+      policy TEXT NOT NULL CHECK(policy IN ('owner_approval','dashboard_only')),
+      state TEXT NOT NULL CHECK(state IN (
+        'pending','recorded','dispatching','delivered','rejected','failed','expired'
+      )),
+      result TEXT,
+      error TEXT,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      decided_at REAL,
+      expires_at REAL,
+      UNIQUE(batch_id, ordinal)
+    );
+    INSERT INTO outbound_drafts_v17(
+      id, batch_id, ordinal, thread_id, channel_id, run_id, source_kind,
+      source_id, kind, payload, identity_marker, policy, state, result,
+      error, created_at, updated_at, decided_at, expires_at
+    )
+    SELECT
+      id, batch_id, ordinal, thread_id, channel_id, run_id, source_kind,
+      source_id, kind, payload, identity_marker, policy, state, result,
+      error, created_at, updated_at, decided_at,
+      CASE WHEN policy='owner_approval' THEN created_at + 604800 ELSE NULL END
+    FROM outbound_drafts;
+    DROP TABLE outbound_drafts;
+    ALTER TABLE outbound_drafts_v17 RENAME TO outbound_drafts;
+    CREATE INDEX outbound_drafts_channel ON outbound_drafts(channel_id, created_at DESC);
+    CREATE INDEX outbound_drafts_state ON outbound_drafts(state, created_at DESC);
+    CREATE INDEX outbound_drafts_run ON outbound_drafts(run_id, created_at, ordinal);
+    CREATE INDEX outbound_drafts_expiry ON outbound_drafts(expires_at)
+      WHERE state IN ('pending','failed');
     """,
 )
 

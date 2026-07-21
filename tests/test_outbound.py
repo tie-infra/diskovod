@@ -212,6 +212,32 @@ async def test_owner_approval_holds_an_editable_draft_until_explicit_delivery(tm
 
 
 @pytest.mark.asyncio
+async def test_owner_approval_draft_expires_durably_before_delivery(tmp_path: Path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    transport = Transport()
+    publisher = OutboundPublisher(store.database, transport)
+    await publisher.publish_messages(
+        context(delivery="owner_approval"),
+        ("stale draft",),
+        source_kind="assistant_text",
+        source_id="ai-expired",
+    )
+    pending = (await publisher.drafts(state="pending"))[0]
+    async with store.database.transaction() as connection:
+        await connection.execute(
+            "UPDATE outbound_drafts SET expires_at=0 WHERE id=?",
+            (pending["id"],),
+        )
+
+    assert await publisher.approve_draft(str(pending["id"])) is None
+    expired = await publisher.draft(str(pending["id"]))
+    assert expired is not None and expired["state"] == "expired"
+    assert expired["decided_at"] is not None
+    assert transport.messages == []
+    await store.aclose()
+
+
+@pytest.mark.asyncio
 async def test_dashboard_only_output_is_recorded_and_cannot_be_approved(tmp_path: Path):
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     transport = Transport()

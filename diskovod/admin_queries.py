@@ -17,6 +17,7 @@ class AdminQueryService:
         self.store = store
 
     async def overview(self) -> dict[str, Any]:
+        default_preset = self.store.automation_settings().default_interaction_preset
         async with self.store.database.transaction() as connection:
             counts = {}
             for key, query in {
@@ -37,8 +38,16 @@ class AdminQueryService:
                     "FROM agent_runs ORDER BY started_at DESC LIMIT 5"
                 )
             ).fetchall()
-            mode_rows = await (
-                await connection.execute("SELECT mode, COUNT(*) AS count FROM conversations GROUP BY mode")
+            policy_rows = await (
+                await connection.execute(
+                    """
+                    SELECT COALESCE(p.preset, ?) AS preset, COUNT(*) AS count
+                    FROM conversations AS c
+                    LEFT JOIN chat_interaction_policies AS p ON p.channel_id=c.channel_id
+                    GROUP BY COALESCE(p.preset, ?)
+                    """,
+                    (default_preset, default_preset),
+                )
             ).fetchall()
             chats = await (
                 await connection.execute(
@@ -61,7 +70,7 @@ class AdminQueryService:
             ).fetchall()
         return {
             **counts,
-            "conversation_modes": {str(row["mode"]): int(row["count"]) for row in mode_rows},
+            "interaction_policies": {str(row["preset"]): int(row["count"]) for row in policy_rows},
             "recent_runs": [self._run_summary(row) for row in runs],
             "recent_chats": [dict(row) for row in chats],
             "recent_jobs": [dict(row) for row in jobs],
@@ -75,6 +84,7 @@ class AdminQueryService:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
+        default_preset = self.store.automation_settings().default_interaction_preset
         clauses: list[str] = []
         parameters: list[Any] = []
         if query:
@@ -85,11 +95,11 @@ class AdminQueryService:
             )
             pattern = f"%{query[:200]}%"
             parameters.extend((pattern, pattern, pattern))
-        if state in {"automatic", "inline"}:
-            clauses.append("c.mode=? AND c.paused=0")
-            parameters.append(state)
+        if state in {"autonomous", "shared", "on_invocation", "manual"}:
+            clauses.append("COALESCE(p.preset, ?) = ? AND c.availability='active'")
+            parameters.extend((default_preset, state))
         elif state == "paused":
-            clauses.append("c.paused=1")
+            clauses.append("c.availability='paused'")
         elif state == "snoozed":
             clauses.append("c.snoozed_until>?")
             parameters.append(time.time())
@@ -111,14 +121,20 @@ class AdminQueryService:
             total = int(
                 (
                     await (
-                        await connection.execute(f"SELECT COUNT(*) FROM conversations c{where}", parameters)
+                        await connection.execute(
+                            "SELECT COUNT(*) FROM conversations c "
+                            "LEFT JOIN chat_interaction_policies p ON p.channel_id=c.channel_id"
+                            f"{where}",
+                            parameters,
+                        )
                     ).fetchone()
                 )[0]
             )
             rows = await (
                 await connection.execute(
                     f"""
-                    SELECT c.*, t.thread_id, t.generation, t.live_steering,
+                    SELECT c.*, t.thread_id, t.generation,
+                      COALESCE(p.preset, ?) AS preset,
                       (SELECT content FROM messages m WHERE m.channel_id=c.channel_id
                        ORDER BY timestamp DESC LIMIT 1) AS latest_content,
                       (SELECT timestamp FROM messages m WHERE m.channel_id=c.channel_id
@@ -134,22 +150,24 @@ class AdminQueryService:
                       (SELECT COUNT(*) FROM agent_runs failed_run
                        WHERE failed_run.channel_id=c.channel_id AND failed_run.status='failed')
                        AS failed_run_count
-                    FROM conversations c LEFT JOIN chat_threads t ON t.channel_id=c.channel_id
+                    FROM conversations c
+                    LEFT JOIN chat_threads t ON t.channel_id=c.channel_id
+                    LEFT JOIN chat_interaction_policies p ON p.channel_id=c.channel_id
                     {where} ORDER BY COALESCE(latest_message_at, c.updated_at) DESC
                     LIMIT ? OFFSET ?
                     """,
-                    (*parameters, page_limit, page_offset),
+                    (default_preset, *parameters, page_limit, page_offset),
                 )
             ).fetchall()
         items = [dict(row) for row in rows]
         now = time.time()
         for item in items:
-            item["effective_mode"] = (
+            item["effective_policy"] = (
                 "paused"
-                if item["paused"]
+                if item["availability"] == "paused"
                 else "snoozed"
                 if item.get("snoozed_until") and float(item["snoozed_until"]) > now
-                else item["mode"]
+                else item["preset"]
             )
         return {
             "items": items,
@@ -166,8 +184,12 @@ class AdminQueryService:
         conversation = await self.store.aconversation(channel_id)
         if conversation is None:
             return None
-        active_thread = await self.store.achat_thread_for_channel(channel_id)
-        conversation["effective_mode"] = "paused" if conversation["paused"] else conversation["mode"]
+        interaction_policy, policy_version, inherited_policy = await self.store.ainteraction_policy(
+            channel_id
+        )
+        conversation["effective_policy"] = (
+            "paused" if conversation["availability"] == "paused" else interaction_policy.preset
+        )
         generations = await self.store.achat_thread_generations(channel_id)
         selected = next(
             (item for item in generations if generation is None or item["generation"] == generation),
@@ -252,12 +274,33 @@ class AdminQueryService:
                     (channel_id,),
                 )
             ).fetchone()
+            interaction_events = await (
+                await connection.execute(
+                    """
+                    SELECT sequence, context_state, admission_decision,
+                      json_extract(payload, '$.message_id') AS message_id
+                    FROM conversation_events WHERE channel_id=?
+                    ORDER BY sequence
+                    """,
+                    (channel_id,),
+                )
+            ).fetchall()
         has_older_messages = len(messages) > 50
         bounded_messages = messages[:50]
         reaction_map = {str(row["trigger_message_id"]): str(row["emoji"]) for row in reactions}
         transcript = [self._message(row) for row in reversed(bounded_messages)]
+        event_map = {
+            str(row["message_id"]): {
+                "sequence": int(row["sequence"]),
+                "context_state": str(row["context_state"]),
+                "decision": self._payload(row["admission_decision"]),
+            }
+            for row in interaction_events
+            if row["message_id"]
+        }
         for message in transcript:
             message["assistant_reaction"] = reaction_map.get(str(message["id"]))
+            message["interaction_event"] = event_map.get(str(message["id"]))
         memories = []
         for row in memory_rows:
             item = dict(row)
@@ -265,6 +308,9 @@ class AdminQueryService:
             memories.append(item)
         return {
             "conversation": conversation,
+            "interaction_policy": interaction_policy.to_dict(),
+            "interaction_policy_version": policy_version,
+            "interaction_policy_inherited": inherited_policy,
             "generations": generations,
             "selected_generation": selected,
             "messages": transcript,
@@ -281,7 +327,6 @@ class AdminQueryService:
             "historical": bool(
                 selected and generations and selected["generation"] != generations[0]["generation"]
             ),
-            "live_steering": bool(active_thread.get("live_steering", 1)) if active_thread else True,
             "active_wait": dict(active_wait) if active_wait else None,
         }
 
@@ -780,7 +825,7 @@ class AdminQueryService:
     async def diagnostic_counts(self) -> dict[str, Any]:
         queries = {
             "conversations": "SELECT COUNT(*) FROM conversations",
-            "pending_events": "SELECT COUNT(*) FROM conversation_mailbox WHERE state='pending'",
+            "pending_events": "SELECT COUNT(*) FROM agent_work WHERE state='pending'",
             "failed_runs": "SELECT COUNT(*) FROM agent_runs WHERE status='failed'",
             "active_jobs": (
                 "SELECT COUNT(*) FROM admin_jobs "
@@ -1029,15 +1074,13 @@ class AdminQueryService:
             "model"
             if kind.startswith("model_")
             else "tool"
-            if kind.startswith("tool_")
-            or kind == "emulated_actions"
-            or kind.startswith("outbound_action_")
+            if kind.startswith("tool_") or kind == "emulated_actions" or kind.startswith("outbound_action_")
             else "state"
             if "checkpoint" in kind
             or "interrupt" in kind
             or kind.startswith("followup_wait_")
             or kind.startswith("public_output_cutover_")
-            or kind in {"mailbox_injection", "abandoned_run_reconciled", "public_text_extracted"}
+            or kind in {"context_injection", "abandoned_run_reconciled", "public_text_extracted"}
             else "run"
         )
         failed = kind.endswith("error") or kind in {"run_error", "tool_error", "model_error"}

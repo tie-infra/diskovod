@@ -148,9 +148,8 @@ class AutomationSettings:
     silent_replies: bool = False
     robot_prefix: bool = False
     default_conversation_enabled: bool = True
+    default_interaction_preset: str = "autonomous"
     debounce_seconds: float = 1.8
-    min_delay_seconds: float = 2.2
-    max_delay_seconds: float = 6.5
     min_typing_cps: float = 18.0
     max_typing_cps: float = 32.0
     min_human_quiet_minutes: float = 15.0

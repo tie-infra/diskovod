@@ -269,9 +269,7 @@ class ModelService:
             "allow_conversational_followups": profile.allow_conversational_followups,
             "personality_hash": personality.get("source_hash"),
             "tool_schema_version": "langgraph-public-output-v2",
-            "localized_tool_schema": (
-                tool_text(profile.prompt_locale) if native_tools else None
-            ),
+            "localized_tool_schema": (tool_text(profile.prompt_locale) if native_tools else None),
         }
         digest = hashlib.sha256(
             json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()

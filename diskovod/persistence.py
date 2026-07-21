@@ -30,7 +30,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 11
+TARGET_SCHEMA_VERSION = 12
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -492,6 +492,213 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     DROP TABLE IF EXISTS chat_event_queue;
     DROP TABLE IF EXISTS discord_events;
     DROP TABLE IF EXISTS side_effect_deliveries;
+    """,
+    """
+    CREATE TABLE conversations_v12 (
+      channel_id TEXT PRIMARY KEY,
+      peer_id TEXT NOT NULL,
+      peer_name TEXT NOT NULL,
+      availability TEXT NOT NULL CHECK(availability IN ('active','paused')),
+      paused_at REAL,
+      snoozed_until REAL,
+      updated_at REAL NOT NULL
+    );
+    INSERT INTO conversations_v12(
+      channel_id, peer_id, peer_name, availability, paused_at, snoozed_until, updated_at
+    )
+    SELECT channel_id, peer_id, peer_name,
+      CASE WHEN paused=1 THEN 'paused' ELSE 'active' END,
+      paused_at, snoozed_until, updated_at
+    FROM conversations;
+
+    CREATE TABLE chat_interaction_policies (
+      channel_id TEXT PRIMARY KEY REFERENCES conversations_v12(channel_id) ON DELETE CASCADE,
+      preset TEXT NOT NULL CHECK(preset IN ('autonomous','shared','on_invocation','manual')),
+      trigger_rules TEXT NOT NULL,
+      trigger_participants TEXT NOT NULL,
+      owner_handoff TEXT NOT NULL,
+      conversation_role TEXT NOT NULL CHECK(conversation_role IN (
+        'owner_delegate','shared_assistant','owner_copilot'
+      )),
+      identity_marker TEXT NOT NULL CHECK(identity_marker IN ('configurable','forced')),
+      delivery TEXT NOT NULL CHECK(delivery IN ('immediate','owner_approval','dashboard_only')),
+      active_turn_input TEXT NOT NULL,
+      invocation_snooze_behavior TEXT NOT NULL CHECK(invocation_snooze_behavior IN ('bypass','respect')),
+      invocation_turn_lifetime TEXT NOT NULL CHECK(invocation_turn_lifetime='strict'),
+      policy_version INTEGER NOT NULL,
+      updated_at REAL NOT NULL
+    );
+    INSERT INTO chat_interaction_policies(
+      channel_id, preset, trigger_rules, trigger_participants, owner_handoff,
+      conversation_role, identity_marker, delivery, active_turn_input,
+      invocation_snooze_behavior, invocation_turn_lifetime, policy_version, updated_at
+    )
+    SELECT c.channel_id,
+      CASE WHEN c.mode='inline' THEN 'shared' ELSE 'autonomous' END,
+      '[{"kind":"every_message","aliases":[],"attention_locales":[],"additional_attention_words":[],"allow_bare_alias":true,"literal":"","typo_tolerance":{"enabled":true,"maximum_distance":1,"minimum_alias_graphemes":6}}]',
+      CASE WHEN c.mode='inline' THEN '["owner","peer"]' ELSE '["peer"]' END,
+      CASE WHEN c.mode='inline'
+        THEN '{"availability_transition":"none","active_run_action":"keep_or_inject"}'
+        ELSE '{"availability_transition":"snooze","active_run_action":"cancel"}'
+      END,
+      CASE WHEN c.mode='inline' THEN 'shared_assistant' ELSE 'owner_delegate' END,
+      CASE WHEN c.mode='inline' THEN 'forced' ELSE 'configurable' END,
+      'immediate',
+      json_object(
+        'timing', CASE WHEN COALESCE(t.live_steering, 1)=1
+          THEN 'inject_at_safe_points' ELSE 'queue_for_next_turn' END,
+        'participants', CASE WHEN c.mode='inline'
+          THEN json('["owner","peer"]') ELSE json('["peer"]') END
+      ),
+      'bypass', 'strict', 1, c.updated_at
+    FROM conversations AS c
+    LEFT JOIN chat_threads AS t ON t.channel_id=c.channel_id;
+
+    CREATE TABLE conversation_events (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('message','edit','delete')),
+      payload TEXT NOT NULL,
+      observed_at REAL NOT NULL,
+      admission_decision TEXT NOT NULL DEFAULT '{}',
+      context_state TEXT NOT NULL CHECK(context_state IN ('unapplied','claimed','applied')),
+      run_id TEXT,
+      injection_batch INTEGER,
+      claimed_at REAL,
+      applied_at REAL,
+      failure TEXT,
+      UNIQUE(channel_id, sequence)
+    );
+    CREATE INDEX conversation_events_context
+      ON conversation_events(channel_id, context_state, sequence);
+    CREATE INDEX conversation_events_run
+      ON conversation_events(run_id, context_state, sequence);
+    INSERT INTO conversation_events(
+      id, channel_id, sequence, kind, payload, observed_at, admission_decision, context_state,
+      run_id, injection_batch, claimed_at, applied_at, failure
+    )
+    SELECT id, channel_id, sequence, kind, payload, observed_at,
+      '{"reason":"legacy_history"}',
+      CASE
+        WHEN state='claimed' THEN 'claimed'
+        WHEN state='completed' AND run_id IS NOT NULL THEN 'applied'
+        ELSE 'unapplied'
+      END,
+      CASE WHEN state='claimed' THEN run_id ELSE NULL END,
+      CASE WHEN state='claimed' THEN injection_batch ELSE NULL END,
+      CASE WHEN state='claimed' THEN claimed_at ELSE NULL END,
+      CASE WHEN state='completed' AND run_id IS NOT NULL THEN completed_at ELSE NULL END,
+      failure
+    FROM conversation_mailbox
+    WHERE kind IN ('message','edit','delete');
+
+    CREATE TABLE agent_work (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('turn','force','continuation')),
+      source_event_id TEXT REFERENCES conversation_events(id) ON DELETE SET NULL,
+      trigger_kind TEXT NOT NULL,
+      trigger_participant TEXT,
+      policy_version INTEGER NOT NULL,
+      policy_snapshot TEXT NOT NULL,
+      available_at REAL NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('pending','claimed','completed','cancelled','failed')),
+      run_id TEXT,
+      captured_through_sequence INTEGER,
+      decision TEXT NOT NULL DEFAULT '{}',
+      created_at REAL NOT NULL,
+      claimed_at REAL,
+      completed_at REAL,
+      failure TEXT
+    );
+    CREATE INDEX agent_work_ready ON agent_work(channel_id, state, available_at, created_at);
+    CREATE INDEX agent_work_run ON agent_work(run_id, state, created_at);
+    INSERT INTO agent_work(
+      id, channel_id, kind, source_event_id, trigger_kind, trigger_participant,
+      policy_version, policy_snapshot, available_at, state, run_id,
+      captured_through_sequence, decision, created_at, claimed_at, completed_at, failure
+    )
+    SELECT
+      CASE WHEN kind IN ('continuation_due','force_reply') THEN id ELSE 'work:' || id END,
+      channel_id,
+      CASE kind WHEN 'continuation_due' THEN 'continuation'
+                WHEN 'force_reply' THEN 'force' ELSE 'turn' END,
+      CASE WHEN kind IN ('message','edit','delete') THEN id ELSE NULL END,
+      kind,
+      json_extract(payload, '$.participant_role'),
+      1, '{}', available_at,
+      state, run_id,
+      CASE WHEN state='claimed' THEN sequence ELSE NULL END,
+      '{"reason":"migrated_mailbox_work"}', observed_at, claimed_at, completed_at, failure
+    FROM conversation_mailbox
+    WHERE kind IN ('continuation_due','force_reply') OR state IN ('pending','claimed','failed','cancelled');
+
+    ALTER TABLE conversation_waits RENAME TO conversation_waits_v11;
+    CREATE TABLE conversation_waits (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      trace_id TEXT NOT NULL,
+      tool_call_id TEXT NOT NULL,
+      wake_work_id TEXT NOT NULL REFERENCES agent_work(id) ON DELETE CASCADE,
+      state TEXT NOT NULL CHECK(state IN (
+        'arming','scheduled','resuming','completed','cancelled','failed'
+      )),
+      resume_at REAL NOT NULL,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      failure TEXT,
+      payload TEXT NOT NULL DEFAULT '{}'
+    );
+    INSERT INTO conversation_waits(
+      id, thread_id, channel_id, run_id, trace_id, tool_call_id, wake_work_id,
+      state, resume_at, created_at, updated_at, failure, payload
+    )
+    SELECT id, thread_id, channel_id, run_id, trace_id, tool_call_id, wake_event_id,
+      state, resume_at, created_at, updated_at, failure, payload
+    FROM conversation_waits_v11;
+    DROP TABLE conversation_waits_v11;
+    CREATE INDEX conversation_waits_due ON conversation_waits(state, resume_at);
+    CREATE UNIQUE INDEX conversation_waits_active_channel
+      ON conversation_waits(channel_id)
+      WHERE state IN ('arming','scheduled','resuming');
+
+    CREATE TABLE chat_threads_v12 (
+      channel_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      generation INTEGER NOT NULL DEFAULT 1,
+      thread_id TEXT NOT NULL UNIQUE,
+      applied_event_sequence INTEGER NOT NULL DEFAULT 0,
+      updated_at REAL NOT NULL
+    );
+    INSERT INTO chat_threads_v12(
+      channel_id, account_id, generation, thread_id, applied_event_sequence, updated_at
+    )
+    SELECT t.channel_id, t.account_id, t.generation, t.thread_id,
+      COALESCE((
+        SELECT MAX(e.sequence) FROM conversation_events AS e
+        WHERE e.channel_id=t.channel_id AND e.context_state='applied'
+          AND NOT EXISTS(
+            SELECT 1 FROM conversation_events AS earlier
+            WHERE earlier.channel_id=e.channel_id AND earlier.sequence<=e.sequence
+              AND earlier.context_state!='applied'
+          )
+      ), 0),
+      t.updated_at
+    FROM chat_threads AS t;
+
+    UPDATE escalation_interrupts
+    SET payload=json_set(payload, '$.resume_strategy', 'journal')
+    WHERE json_extract(payload, '$.resume_strategy')='mailbox';
+
+    DROP TABLE conversation_mailbox;
+    DROP TABLE chat_threads;
+    ALTER TABLE chat_threads_v12 RENAME TO chat_threads;
+    ALTER TABLE conversations RENAME TO conversations_v11;
+    ALTER TABLE conversations_v12 RENAME TO conversations;
+    DROP TABLE conversations_v11;
     """,
 )
 

@@ -10,6 +10,7 @@ import pytest
 import diskovod.discord as discord_module
 from diskovod.agent_types import AgentRuntimeContext, CapabilityProfile
 from diskovod.discord import CaptchaBroker, DiscordService, PrivateDiscordClient
+from diskovod.interaction import preset_policy
 from diskovod.models import discord_attachment_metadata
 from diskovod.store import Store
 
@@ -88,7 +89,7 @@ async def test_sending_and_recording_a_message_uses_current_runtime_boundaries(
         ui_locale="en",
         prompt_locale="en",
         assistant_name="Diskovod",
-        automation_mode="automatic",
+        conversation_role="owner_delegate",
         force_reply=False,
         provider_id="test",
         model_id="test",
@@ -105,9 +106,7 @@ async def test_sending_and_recording_a_message_uses_current_runtime_boundaries(
     assert await store.ais_bot_message("message-id")
     async with store.database.transaction() as connection:
         message = await (
-            await connection.execute(
-                "SELECT direction, source, content FROM messages WHERE id='message-id'"
-            )
+            await connection.execute("SELECT direction, source, content FROM messages WHERE id='message-id'")
         ).fetchone()
     assert dict(message) == {
         "direction": "out",
@@ -184,10 +183,11 @@ class CallbackRuntime(EditRuntime):
         self.attachments = CallbackAttachments()
         self.deleted: list[dict] = []
         self.owner_reply_channels: list[str] = []
+        self.resume_result = False
 
     async def resume_escalation_for_owner_reply(self, channel_id: str, _content: str, **_values):
         self.owner_reply_channels.append(channel_id)
-        return False
+        return self.resume_result
 
     async def submit_delete(self, **values):
         self.deleted.append(values)
@@ -226,12 +226,38 @@ async def test_discord_message_callbacks_use_current_runtime_ingress(tmp_path: P
 
     await PrivateDiscordClient.on_message(client, message)
 
-    assert runtime.attachments.captured == [
-        {"attachments": (), "channel_id": "42", "message_id": "456"}
-    ]
+    assert runtime.attachments.captured == [{"attachments": (), "channel_id": "42", "message_id": "456"}]
     assert runtime.submitted[0]["participant_role"] == "peer"
     assert runtime.submitted[0]["message_id"] == "456"
     assert (await store.ahistory("42", 1))[0]["content"] == "Hello"
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_owner_reply_resumed_by_runtime_is_not_admitted_a_second_time(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    user = SimpleNamespace(id=999)
+    peer = SimpleNamespace(id=123)
+    channel = FakeEditDMChannel()
+    channel.recipient = peer
+    runtime = CallbackRuntime()
+    runtime.resume_result = True
+    client = SimpleNamespace(user=user, store=store, runtime=runtime)
+    message = SimpleNamespace(
+        id=457,
+        nonce=None,
+        channel=channel,
+        author=user,
+        content="I am here.",
+        attachments=(),
+        created_at=datetime.now(timezone.utc),
+    )
+
+    await PrivateDiscordClient.on_message(client, message)
+
+    assert runtime.owner_reply_channels == ["42"]
+    assert runtime.submitted == []
     await store.aclose()
 
 
@@ -247,9 +273,7 @@ async def test_discord_delete_callback_uses_current_runtime_ingress(tmp_path: Pa
         SimpleNamespace(channel_id=42, message_id=456),
     )
 
-    assert runtime.deleted == [
-        {"message_id": "456", "channel_id": "42", "account_id": "999"}
-    ]
+    assert runtime.deleted == [{"message_id": "456", "channel_id": "42", "account_id": "999"}]
     await store.aclose()
 
 
@@ -458,7 +482,7 @@ async def test_personality_history_marks_consecutive_owner_message_bursts(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_raw_owner_edit_updates_style_history_and_marks_human_activity(
+async def test_raw_owner_edit_updates_style_history_and_submits_canonical_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
@@ -490,21 +514,19 @@ async def test_raw_owner_edit_updates_style_history_and_marks_human_activity(
     saved = (await store.ahistory("42", 1))[0]
     assert saved["content"] == "edited by owner"
     assert saved["source"] == "human"
-    assert runtime.human_channels == ["42"]
+    assert runtime.human_channels == []
     assert runtime.submitted[0]["participant_role"] == "owner"
     await store.aclose()
 
 
 @pytest.mark.asyncio
-async def test_raw_owner_edit_reschedules_inline_collaboration(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+async def test_raw_owner_edit_reschedules_shared_assistant(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
     user = SimpleNamespace(id=999)
     runtime = EditRuntime()
     store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     await store.aupsert_conversation("42", "peer", "Peer")
-    await store.aset_conversation_mode("42", "inline")
+    await store.aset_interaction_policy("42", preset_policy("shared"))
     await store.asave_message(
         id="outgoing",
         channel_id="42",

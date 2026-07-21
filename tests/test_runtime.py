@@ -5,8 +5,9 @@ import time
 from dataclasses import replace
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
+from diskovod.interaction import ActiveTurnInput, preset_policy
 from diskovod.outbound import DeliveryRecord
 from diskovod.providers import ModelConfiguration, ProviderCapabilities
 from diskovod.runtime import AgentService
@@ -29,6 +30,16 @@ class FakeModels:
 
     def build_model(self):
         return self.model
+
+
+class CapturingModel(ScriptedChatModel):
+    seen_inputs: list[list[str]] = []
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.seen_inputs.append(
+            [str(message.content) for message in messages if isinstance(message, HumanMessage)]
+        )
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
 class RecordingTransport:
@@ -79,7 +90,8 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_assistant_text(
     assert transport.messages == [("channel", ("Hello from the graph",))]
     async with store.database.transaction() as connection:
         run = await (await connection.execute("SELECT id, status, thread_id FROM agent_runs")).fetchone()
-        mailbox = await (await connection.execute("SELECT state FROM conversation_mailbox")).fetchone()
+        event = await (await connection.execute("SELECT context_state FROM conversation_events")).fetchone()
+        work = await (await connection.execute("SELECT state FROM agent_work")).fetchone()
         checkpoint_count = (await (await connection.execute("SELECT COUNT(*) FROM checkpoints")).fetchone())[
             0
         ]
@@ -90,11 +102,184 @@ async def test_agent_service_persists_a_chat_thread_and_delivers_assistant_text(
         ).fetchone()
     assert run["status"] == "completed"
     assert run["thread_id"] == "discord:owner:channel:g1"
-    assert mailbox["state"] == "completed"
+    assert event["context_state"] == "applied"
+    assert work["state"] == "completed"
     assert checkpoint_count > 0
     assert checkpoint_index["run_id"] == run["id"]
     assert checkpoint_index["message_count"] > 0
 
+    await service.close()
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_invocation_turn_captures_passive_context_without_passive_provider_calls(tmp_path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=0)
+    )
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    await store.aset_interaction_policy("channel", preset_policy("on_invocation", prompt_locale="en"))
+    model = CapturingModel(responses=[AIMessage(content="A compromise is 6:30.")])
+    transport = RecordingTransport()
+    service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
+    await service.start()
+
+    for values in (
+        ("one", "peer", "I can arrive around six."),
+        ("two", "owner", "Seven would work better for me."),
+    ):
+        await service.submit_message(
+            message_id=values[0],
+            channel_id="channel",
+            account_id="owner",
+            author_id=values[1],
+            author_name=values[1].title(),
+            participant_role=values[1],
+            content=values[2],
+            attachments=[],
+            observed_at=time.time(),
+        )
+    assert model.index == 0
+    assert service.tasks == {}
+
+    await service.submit_message(
+        message_id="three",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="Hey, Diskovod, find a compromise.",
+        attachments=[],
+        observed_at=time.time(),
+    )
+    await wait_for_idle(service)
+
+    assert model.index == 1
+    assert model.seen_inputs[-1][-3:] == [
+        "I can arrive around six.",
+        "Seven would work better for me.",
+        "Hey, Diskovod, find a compromise.",
+    ]
+    assert transport.messages == [("channel", ("A compromise is 6:30.",))]
+    async with store.database.transaction() as connection:
+        assert (await (await connection.execute("SELECT COUNT(*) FROM agent_work")).fetchone())[0] == 1
+        assert {
+            row[0]
+            for row in await (
+                await connection.execute("SELECT context_state FROM conversation_events ORDER BY sequence")
+            ).fetchall()
+        } == {"applied"}
+    await service.close()
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("timing", "expected_reason"),
+    (
+        ("inject_at_safe_points", "active_input"),
+        ("queue_for_next_turn", "active_input_queued"),
+    ),
+)
+async def test_active_turn_input_never_opens_a_second_turn(tmp_path, timing, expected_reason):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=0)
+    )
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    policy = replace(
+        preset_policy("on_invocation"),
+        active_turn_input=ActiveTurnInput(timing=timing),
+    )
+    await store.aset_interaction_policy("channel", policy)
+    service = AgentService(
+        store,
+        FakeModels(ScriptedChatModel(responses=[])),
+        RecordingTransport(),
+        "x" * 32,
+        UnusedPublicHTTP(),
+    )
+    release = asyncio.Event()
+    active = asyncio.create_task(release.wait())
+    service.tasks["channel"] = active
+
+    await service.submit_message(
+        message_id="during-turn",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="ordinary follow-up without an invocation",
+        attachments=[],
+        observed_at=time.time(),
+    )
+
+    async with store.database.transaction() as connection:
+        event = await (
+            await connection.execute("SELECT admission_decision, context_state FROM conversation_events")
+        ).fetchone()
+        work_count = (await (await connection.execute("SELECT COUNT(*) FROM agent_work")).fetchone())[0]
+    assert expected_reason in event["admission_decision"]
+    assert event["context_state"] == "unapplied"
+    assert work_count == 0
+    release.set()
+    await active
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_owner_handoff_cancels_a_pending_debounced_autonomous_turn(tmp_path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=60)
+    )
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    model = ScriptedChatModel(responses=[])
+    service = AgentService(
+        store,
+        FakeModels(model),
+        RecordingTransport(),
+        "x" * 32,
+        UnusedPublicHTTP(),
+    )
+    await service.start()
+    await service.submit_message(
+        message_id="peer-trigger",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="Please answer",
+        attachments=[],
+        observed_at=time.time(),
+    )
+    await asyncio.sleep(0)
+    # The already accepted turn keeps the autonomous handoff policy even if
+    # the chat is reconfigured before the debounce window closes.
+    await store.aset_interaction_policy("channel", preset_policy("shared"))
+    await service.submit_message(
+        message_id="owner-takeover",
+        channel_id="channel",
+        account_id="owner",
+        author_id="owner",
+        author_name="Owner",
+        participant_role="owner",
+        content="I will handle this.",
+        attachments=[],
+        observed_at=time.time(),
+    )
+    await asyncio.gather(*service.tasks.values(), return_exceptions=True)
+
+    conversation = await store.aconversation("channel")
+    async with store.database.transaction() as connection:
+        work = await (await connection.execute("SELECT state FROM agent_work")).fetchone()
+    assert conversation["snoozed_until"] > time.time()
+    assert work["state"] == "cancelled"
+    assert model.index == 0
     await service.close()
     await store.aclose()
 
@@ -122,12 +307,22 @@ async def test_public_output_cutover_reconciles_claims_from_legacy_graph_threads
         for sequence, run_id in enumerate(run_ids[:3], 1):
             await connection.execute(
                 """
-                INSERT INTO conversation_mailbox(
-                  id, channel_id, sequence, kind, available_at, observed_at,
-                  payload, state, run_id, claimed_at
-                ) VALUES(?, 'channel', ?, 'message', 0, 0, '{}', 'claimed', ?, 0)
+                INSERT INTO conversation_events(
+                  id, channel_id, sequence, kind, payload, observed_at,
+                  context_state, run_id, claimed_at
+                ) VALUES(?, 'channel', ?, 'message', '{}', 0, 'claimed', ?, 0)
                 """,
                 (f"event-{run_id}", sequence, run_id),
+            )
+            await connection.execute(
+                """
+                INSERT INTO agent_work(
+                  id, channel_id, kind, source_event_id, trigger_kind, policy_version,
+                  policy_snapshot, available_at, state, run_id, decision, created_at, claimed_at
+                ) VALUES(?, 'channel', 'turn', ?, 'message', 1, '{}', 0,
+                  'claimed', ?, '{}', 0, 0)
+                """,
+                (f"work-{run_id}", f"event-{run_id}", run_id),
             )
         for run_id, state, result in (
             (
@@ -167,25 +362,23 @@ async def test_public_output_cutover_reconciles_claims_from_legacy_graph_threads
     await service._reconcile_public_output_cutover({"legacy-thread"})
 
     async with store.database.transaction() as connection:
-        events = {
+        work = {
             row["id"]: dict(row)
-            for row in await (
-                await connection.execute("SELECT * FROM conversation_mailbox")
-            ).fetchall()
+            for row in await (await connection.execute("SELECT * FROM agent_work")).fetchall()
         }
         runs = {
             row["id"]: dict(row)
             for row in await (await connection.execute("SELECT * FROM agent_runs")).fetchall()
         }
-    assert events["event-release"]["state"] == "pending"
-    assert events["event-release"]["run_id"] is None
+    assert work["work-release"]["state"] == "pending"
+    assert work["work-release"]["run_id"] is None
     assert runs["release"]["status"] == "cancelled"
-    assert events["event-complete"]["state"] == "completed"
+    assert work["work-complete"]["state"] == "completed"
     assert runs["complete"]["status"] == "completed"
-    assert events["event-review"]["state"] == "failed"
+    assert work["work-review"]["state"] == "failed"
     assert runs["review"]["status"] == "failed"
     escalation = await store.aescalation_interrupt("legacy-escalation")
-    assert escalation["payload"]["resume_strategy"] == "mailbox"
+    assert escalation["payload"]["resume_strategy"] == "journal"
     assert runs["escalation"]["status"] == "cancelled"
 
     assert await service.resume_escalation(
@@ -201,10 +394,11 @@ async def test_public_output_cutover_reconciles_claims_from_legacy_graph_threads
     async with store.database.transaction() as connection:
         reply = await (
             await connection.execute(
-                "SELECT state, payload FROM conversation_mailbox WHERE id='discord:message:owner-reply'"
+                "SELECT context_state, payload FROM conversation_events "
+                "WHERE id='discord:message:owner-reply'"
             )
         ).fetchone()
-    assert reply["state"] == "pending"
+    assert reply["context_state"] == "unapplied"
     assert "Please continue from here" in reply["payload"]
     await store.aclose()
 
@@ -228,10 +422,19 @@ async def test_abandoned_ordinary_run_releases_only_claims_without_visible_effec
     async with store.database.transaction() as connection:
         await connection.execute(
             """
-            INSERT INTO conversation_mailbox(
-              id, channel_id, sequence, kind, available_at, observed_at,
-              payload, state, run_id, claimed_at
-            ) VALUES('event', 'channel', 1, 'message', 0, 0, '{}', 'claimed', 'abandoned', 0)
+            INSERT INTO conversation_events(
+              id, channel_id, sequence, kind, payload, observed_at,
+              context_state, run_id, claimed_at
+            ) VALUES('event', 'channel', 1, 'message', '{}', 0, 'claimed', 'abandoned', 0)
+            """
+        )
+        await connection.execute(
+            """
+            INSERT INTO agent_work(
+              id, channel_id, kind, source_event_id, trigger_kind, policy_version,
+              policy_snapshot, available_at, state, run_id, decision, created_at, claimed_at
+            ) VALUES('work', 'channel', 'turn', 'event', 'message', 1, '{}', 0,
+              'claimed', 'abandoned', '{}', 0, 0)
             """
         )
 
@@ -239,12 +442,12 @@ async def test_abandoned_ordinary_run_releases_only_claims_without_visible_effec
 
     async with store.database.transaction() as connection:
         event = await (
-            await connection.execute("SELECT state, run_id FROM conversation_mailbox WHERE id='event'")
+            await connection.execute("SELECT context_state, run_id FROM conversation_events WHERE id='event'")
         ).fetchone()
         run = await (
             await connection.execute("SELECT status FROM agent_runs WHERE id='abandoned'")
         ).fetchone()
-    assert dict(event) == {"state": "pending", "run_id": None}
+    assert dict(event) == {"context_state": "unapplied", "run_id": None}
     assert run["status"] == "cancelled"
     partial = [
         {
@@ -442,8 +645,14 @@ async def test_escalation_interrupt_resumes_without_resending_acknowledgement(tm
     assert await store.aactive_interrupts() == []
     async with store.database.transaction() as connection:
         run = await (await connection.execute("SELECT status FROM agent_runs")).fetchone()
+        owner_event = await (
+            await connection.execute(
+                "SELECT context_state FROM conversation_events WHERE id='discord:message:owner-message'"
+            )
+        ).fetchone()
     assert run["status"] == "completed"
-    thread_id = await service.mailbox.thread_id("owner", "channel")
+    assert owner_event["context_state"] == "applied"
+    thread_id = await service.journal.thread_id("owner", "channel")
     checkpoint = await service.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
     owner = next(
         message

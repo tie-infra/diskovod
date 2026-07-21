@@ -21,10 +21,16 @@ from .agent import AgentPrompt, build_agent
 from .agent_types import AgentRuntimeContext, CapabilityProfile, DiskovodAgentState
 from .attachments import AttachmentRepository
 from .http_client import PublicHTTP
-from .mailbox import ConversationEvent, ConversationMailbox
+from .conversation import ConversationEvent, ConversationJournal
+from .interaction import InteractionPolicy, TriggerDecision, evaluate_trigger
 from .models import AssistantProfile
 from .outbound import DeliveryRecord, DiscordActionTransport, OutboundPublisher
-from .localization import assistant_name_for, runtime_context_text, summarization_prompt
+from .localization import (
+    assistant_name_for,
+    invocation_attention_words,
+    runtime_context_text,
+    summarization_prompt,
+)
 from .persistence import SQLiteLangGraphStore, open_checkpointer
 from .providers import ModelConfiguration, ModelService
 from .store import Store
@@ -90,7 +96,7 @@ class AgentService:
         self.transport = transport
         self.checkpoint_secret = checkpoint_secret
         self.http = http
-        self.mailbox = ConversationMailbox(store.database)
+        self.journal = ConversationJournal(store.database)
         self.attachments = AttachmentRepository(store.database, http)
         self.memory = SQLiteLangGraphStore(store.path, store.database)
         self.publisher = OutboundPublisher(store.database, transport)
@@ -101,6 +107,7 @@ class AgentService:
         self.checkpointer: AsyncSqliteSaver | None = None
         self._wait_notifier: asyncio.Task[None] | None = None
         self._closing = False
+        self._discard_cancelled_work: set[str] = set()
 
     async def start(self) -> None:
         if self.checkpointer is not None:
@@ -121,7 +128,7 @@ class AgentService:
         await self._cutover_legacy_graph_generations()
         await self._reconcile_arming_waits()
         self._wait_notifier = asyncio.create_task(self._notify_due_waits(), name="conversation-wait-notifier")
-        for channel_id in await self.mailbox.pending_channels():
+        for channel_id in await self.journal.pending_channels():
             self._ensure_task(channel_id)
 
     async def close(self) -> None:
@@ -156,6 +163,9 @@ class AgentService:
             reason="conversation_paused",
             resume_pending=False,
         )
+        await self.journal.cancel_pending_turns(channel_id, "conversation_paused")
+        if self._active_run(channel_id):
+            self._discard_cancelled_work.add(channel_id)
         self.cancel(channel_id)
 
     async def cancel_followup(
@@ -174,7 +184,7 @@ class AgentService:
             await asyncio.gather(task, return_exceptions=True)
         if not await self.waits.cancel(wait.id, reason):
             return False
-        await self.mailbox.release(channel_id, wait.run_id)
+        await self.journal.release(channel_id, wait.run_id)
         await self.store.arecord_agent_trace(
             wait.run_id,
             "followup_wait_cancelled",
@@ -185,7 +195,7 @@ class AgentService:
             "cancelled",
             f"Conversational follow-up cancelled: {reason}",
         )
-        if resume_pending and await self.mailbox.has_pending(channel_id):
+        if resume_pending and await self.journal.has_pending(channel_id):
             self._ensure_task(channel_id)
         return True
 
@@ -233,22 +243,55 @@ class AgentService:
             )
         return result
 
-    async def human_activity(self, channel_id: str) -> float:
-        snoozed_until, should_cancel = await self._record_human_activity(channel_id)
-        if should_cancel:
+    async def _apply_owner_handoff(self, channel_id: str, policy: InteractionPolicy) -> float:
+        transition = policy.owner_handoff.availability_transition
+        until = time.time()
+        if transition == "pause":
+            await self.store.aset_permanent_pause(channel_id, True)
+        elif transition == "snooze":
+            settings = self.store.automation_settings()
+            quiet_minutes = random.uniform(
+                settings.min_human_quiet_minutes,
+                settings.max_human_quiet_minutes,
+            )
+            until = await self.store.asnooze(channel_id, quiet_minutes * 60)
+        if policy.owner_handoff.active_run_action == "cancel":
+            await self.cancel_followup(
+                channel_id,
+                reason="owner_handoff",
+                resume_pending=False,
+            )
+            await self.journal.cancel_pending_turns(channel_id, "owner_handoff")
+            if self._active_run(channel_id):
+                self._discard_cancelled_work.add(channel_id)
             self.cancel(channel_id)
-        return snoozed_until
+        return until
 
-    async def _record_human_activity(self, channel_id: str) -> tuple[float, bool]:
+    def _active_run(self, channel_id: str) -> bool:
+        task = self.tasks.get(channel_id)
+        return task is not None and not task.done()
+
+    async def _can_schedule(
+        self,
+        channel_id: str,
+        policy: InteractionPolicy,
+        decision: TriggerDecision,
+    ) -> tuple[bool, str]:
+        if not self.store.automation_settings().enabled:
+            return False, "global_disabled"
         conversation = await self.store.aconversation(channel_id)
-        if conversation and conversation["mode"] == "inline" and not conversation["paused"]:
-            return time.time(), False
-        settings = self.store.automation_settings()
-        quiet_minutes = random.uniform(
-            settings.min_human_quiet_minutes,
-            settings.max_human_quiet_minutes,
-        )
-        return await self.store.asnooze(channel_id, quiet_minutes * 60), True
+        if conversation is None:
+            return False, "conversation_missing"
+        if conversation["availability"] == "paused":
+            return False, "chat_paused"
+        snoozed_until = conversation.get("snoozed_until")
+        if snoozed_until and float(snoozed_until) > time.time():
+            if not (
+                decision.rule_kind in {"direct_address", "literal_prefix"}
+                and policy.invocation_snooze_behavior == "bypass"
+            ):
+                return False, "chat_snoozed"
+        return decision.matched, decision.reason
 
     async def submit_message(
         self,
@@ -266,7 +309,7 @@ class AgentService:
         force: bool = False,
         agent_input: bool | None = None,
     ) -> bool:
-        inserted, automate = await self._ingest_message(
+        inserted, scheduled, active_input = await self._ingest_message(
             message_id=message_id,
             channel_id=channel_id,
             account_id=account_id,
@@ -280,8 +323,9 @@ class AgentService:
             force=force,
             agent_input=agent_input,
         )
-        if inserted and automate:
+        if inserted and (scheduled or active_input):
             await self._wake_followup_for_input(channel_id)
+        if inserted and scheduled:
             self._ensure_task(channel_id, force=force)
         return inserted
 
@@ -300,15 +344,53 @@ class AgentService:
         edited: bool,
         force: bool,
         agent_input: bool | None,
-    ) -> tuple[bool, bool]:
-        mode = await self._mode(channel_id)
-        automate = force or (
-            self.store.automation_settings().enabled
-            and await self.store.acan_automate(channel_id)
-            and (participant_role == "peer" or mode == "inline")
+    ) -> tuple[bool, bool, bool]:
+        policy, policy_version, _ = await self.store.ainteraction_policy(channel_id)
+        active_wait = await self.waits.active(channel_id)
+        active_turn = self._active_run(channel_id) or active_wait is not None
+        if active_turn:
+            pinned = await self.journal.policy_for_active_turn(
+                channel_id,
+                run_id=active_wait.run_id if active_wait is not None else None,
+            )
+            if pinned is not None:
+                policy, policy_version = pinned
+        profile = self.store.assistant_profile()
+        decision = evaluate_trigger(
+            policy,
+            participant=participant_role,
+            content=content,
+            assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
+            attention_words=invocation_attention_words(),
         )
-        if agent_input is not None:
-            automate = agent_input
+        scheduled, availability_reason = await self._can_schedule(channel_id, policy, decision)
+        if (
+            edited
+            and decision.matched
+            and await self.journal.message_has_trigger_work(channel_id, message_id)
+        ):
+            scheduled = False
+            decision = TriggerDecision(False, "edit_already_triggered", rule_kind=decision.rule_kind)
+        if force or agent_input is True:
+            scheduled = True
+            decision = TriggerDecision(True, "explicit_agent_input", rule_kind="manual")
+        elif agent_input is False:
+            scheduled = False
+        active_participant = participant_role in policy.active_turn_input.participants
+        active_input = False
+        if active_turn and not force and agent_input is not True:
+            scheduled = False
+            if active_participant:
+                active_input = policy.active_turn_input.timing == "inject_at_safe_points"
+                decision = TriggerDecision(
+                    False,
+                    "active_input" if active_input else "active_input_queued",
+                    rule_kind=decision.rule_kind,
+                    alias=decision.alias,
+                    distance=decision.distance,
+                )
+        if not scheduled and availability_reason != decision.reason and decision.matched:
+            decision = TriggerDecision(False, availability_reason, rule_kind=decision.rule_kind)
         event_id = (
             f"discord:edit:{message_id}:{int(observed_at * 1_000_000)}"
             if edited
@@ -323,17 +405,30 @@ class AgentService:
             "content": content,
             "attachments": attachments,
         }
-        inserted = await self.mailbox.ingest(
+        inserted = await self.journal.admit(
             event_id,
             channel_id,
             "edit" if edited else "message",
             payload,
             observed_at=observed_at,
-            enqueue=automate,
+            schedule=scheduled,
+            trigger_kind=decision.rule_kind or ("edit" if edited else "message"),
+            trigger_participant=participant_role,
+            policy=policy,
+            policy_version=policy_version,
+            decision=decision,
         )
-        if inserted and automate:
-            await self.mailbox.thread_id(account_id, channel_id)
-        return inserted, automate
+        if inserted:
+            await self.journal.thread_id(account_id, channel_id)
+            owner_participates_in_active_turn = active_turn and active_participant
+            if (
+                participant_role == "owner"
+                and agent_input is not False
+                and not scheduled
+                and not owner_participates_in_active_turn
+            ):
+                await self._apply_owner_handoff(channel_id, policy)
+        return inserted, scheduled, active_input
 
     async def submit_delete(
         self,
@@ -343,15 +438,14 @@ class AgentService:
         account_id: str,
         observed_at: float | None = None,
     ) -> bool:
-        inserted, automate = await self._ingest_delete(
+        inserted, active_input = await self._ingest_delete(
             message_id=message_id,
             channel_id=channel_id,
             account_id=account_id,
             observed_at=observed_at,
         )
-        if inserted and automate:
+        if inserted and active_input:
             await self._wake_followup_for_input(channel_id)
-            self._ensure_task(channel_id)
         return inserted
 
     async def _ingest_delete(
@@ -362,17 +456,25 @@ class AgentService:
         account_id: str,
         observed_at: float | None,
     ) -> tuple[bool, bool]:
-        automate = self.store.automation_settings().enabled and await self.store.acan_automate(channel_id)
         timestamp = observed_at or time.time()
-        inserted = await self.mailbox.ingest(
+        policy, policy_version, _ = await self.store.ainteraction_policy(channel_id)
+        active_input = self._active_run(channel_id) and (
+            policy.active_turn_input.timing == "inject_at_safe_points"
+        )
+        inserted = await self.journal.admit(
             f"discord:delete:{message_id}:{int(timestamp * 1_000_000)}",
             channel_id,
             "delete",
             {"message_id": message_id, "account_id": account_id},
             observed_at=timestamp,
-            enqueue=automate,
+            schedule=False,
+            trigger_kind="delete",
+            trigger_participant=None,
+            policy=policy,
+            policy_version=policy_version,
+            decision=TriggerDecision(False, "delete_context_only"),
         )
-        return inserted, automate
+        return inserted, active_input
 
     async def force_reply(self, *, channel_id: str, account_id: str, trigger_message_id: str) -> None:
         await self._ingest_force_reply(
@@ -397,22 +499,14 @@ class AgentService:
         return True
 
     async def _ingest_force_reply(self, *, channel_id: str, account_id: str, trigger_message_id: str) -> None:
-        event_id = f"diskovod:force:{uuid.uuid4()}"
-        await self.mailbox.ingest(
-            event_id,
+        policy, policy_version, _ = await self.store.ainteraction_policy(channel_id)
+        await self.journal.schedule_force(
             channel_id,
-            "force_reply",
-            {
-                "message_id": trigger_message_id,
-                "account_id": account_id,
-                "participant_role": "control",
-            },
-            enqueue=True,
+            trigger_message_id=trigger_message_id,
+            policy=policy,
+            policy_version=policy_version,
         )
-        await self.mailbox.thread_id(account_id, channel_id)
-
-    async def set_live_steering(self, channel_id: str, enabled: bool) -> None:
-        await self.mailbox.set_live_steering(await self._account_id(channel_id), channel_id, enabled)
+        await self.journal.thread_id(account_id, channel_id)
 
     async def checkpoint_views(self, *, limit_per_thread: int = 20) -> list[dict[str, Any]]:
         if self.checkpointer is None:
@@ -463,9 +557,7 @@ class AgentService:
                 thread_id = str(thread["thread_id"])
                 if thread_id in processed:
                     continue
-                snapshot = await self.checkpointer.aget_tuple(
-                    {"configurable": {"thread_id": thread_id}}
-                )
+                snapshot = await self.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
                 if snapshot is not None:
                     await self._roll_thread(dict(thread), reason="public_output_graph_cutover")
                 processed.add(thread_id)
@@ -495,10 +587,10 @@ class AgentService:
                 await connection.execute(
                     f"""
                     SELECT m.*, r.thread_id AS run_thread_id
-                    FROM conversation_mailbox AS m
+                    FROM agent_work AS m
                     JOIN agent_runs AS r ON r.id=m.run_id
                     WHERE m.state='claimed' AND r.thread_id IN ({placeholders})
-                    ORDER BY m.run_id, m.sequence
+                    ORDER BY m.run_id, m.created_at
                     """,
                     thread_parameters,
                 )
@@ -506,7 +598,7 @@ class AgentService:
             by_run: dict[str, list[Any]] = {}
             for event in claimed:
                 by_run.setdefault(str(event["run_id"]), []).append(event)
-            for run_id, events in by_run.items():
+            for run_id, work_items in by_run.items():
                 actions = await (
                     await connection.execute(
                         "SELECT state, result FROM outbound_actions WHERE run_id=?",
@@ -516,30 +608,45 @@ class AgentService:
                 states = [str(action["state"]) for action in actions]
                 event_state, run_state, outcome = self._claimed_run_outcome(actions)
                 failure = (
-                    "public_output_cutover_delivery_requires_review"
-                    if event_state == "failed"
-                    else None
+                    "public_output_cutover_delivery_requires_review" if event_state == "failed" else None
                 )
-                event_ids = [str(event["id"]) for event in events]
-                markers = ",".join("?" for _ in event_ids)
+                work_ids = [str(item["id"]) for item in work_items]
+                markers = ",".join("?" for _ in work_ids)
                 if event_state == "pending":
                     await connection.execute(
                         f"""
-                        UPDATE conversation_mailbox
-                        SET state='pending', run_id=NULL, injection_batch=NULL,
-                            claimed_at=NULL, completed_at=NULL, failure=NULL
+                        UPDATE agent_work
+                        SET state='pending', run_id=NULL, claimed_at=NULL,
+                            completed_at=NULL, failure=NULL
                         WHERE id IN ({markers}) AND state='claimed'
                         """,
-                        tuple(event_ids),
+                        tuple(work_ids),
+                    )
+                    await connection.execute(
+                        """
+                        UPDATE conversation_events
+                        SET context_state='unapplied', run_id=NULL, injection_batch=NULL,
+                            claimed_at=NULL, failure=NULL
+                        WHERE run_id=? AND context_state='claimed'
+                        """,
+                        (run_id,),
                     )
                 else:
                     await connection.execute(
                         f"""
-                        UPDATE conversation_mailbox
+                        UPDATE agent_work
                         SET state=?, completed_at=?, failure=?
                         WHERE id IN ({markers}) AND state='claimed'
                         """,
-                        (event_state, now, failure, *event_ids),
+                        ("completed" if event_state == "completed" else "failed", now, failure, *work_ids),
+                    )
+                    await connection.execute(
+                        """
+                        UPDATE conversation_events
+                        SET context_state='applied', applied_at=?, failure=?
+                        WHERE run_id=? AND context_state='claimed'
+                        """,
+                        (now, failure, run_id),
                     )
                 await connection.execute(
                     "UPDATE agent_runs SET status=?, completed_at=?, error=? WHERE id=?",
@@ -550,7 +657,7 @@ class AgentService:
                         run_id,
                         "public_output_cutover_claim_reconciled",
                         {
-                            "event_ids": event_ids,
+                            "work_ids": work_ids,
                             "outcome": outcome,
                             "delivery_states": states,
                         },
@@ -568,9 +675,9 @@ class AgentService:
             ).fetchall()
             for escalation in escalations:
                 payload = json.loads(escalation["payload"])
-                if payload.get("resume_strategy") == "mailbox":
+                if payload.get("resume_strategy") == "journal":
                     continue
-                payload["resume_strategy"] = "mailbox"
+                payload["resume_strategy"] = "journal"
                 payload["cutover_from_thread"] = str(escalation["thread_id"])
                 await connection.execute(
                     "UPDATE escalation_interrupts SET payload=?, updated_at=? WHERE id=?",
@@ -587,13 +694,13 @@ class AgentService:
                 if run is not None:
                     await connection.execute(
                         "UPDATE agent_runs SET status='cancelled', completed_at=?, error=? WHERE id=?",
-                        (now, "Escalation checkpoint replaced by mailbox cutover", run["id"]),
+                        (now, "Escalation checkpoint replaced by journal cutover", run["id"]),
                     )
                     audits.append(
                         (
                             str(run["id"]),
                             "public_output_cutover_escalation_reconciled",
-                            {"escalation_id": str(escalation["id"]), "resolution": "mailbox"},
+                            {"escalation_id": str(escalation["id"]), "resolution": "journal"},
                         )
                     )
         for run_id, kind, payload in audits:
@@ -607,17 +714,17 @@ class AgentService:
             rows = await (
                 await connection.execute(
                     """
-                    SELECT m.* FROM conversation_mailbox AS m
+                    SELECT m.* FROM agent_work AS m
                     JOIN agent_runs AS r ON r.id=m.run_id
                     WHERE m.state='claimed' AND r.status='running'
-                    ORDER BY m.run_id, m.sequence
+                    ORDER BY m.run_id, m.created_at
                     """
                 )
             ).fetchall()
             by_run: dict[str, list[Any]] = {}
             for event in rows:
                 by_run.setdefault(str(event["run_id"]), []).append(event)
-            for run_id, events in by_run.items():
+            for run_id, work_items in by_run.items():
                 actions = await (
                     await connection.execute(
                         "SELECT state, result FROM outbound_actions WHERE run_id=?",
@@ -627,26 +734,43 @@ class AgentService:
                 states = [str(action["state"]) for action in actions]
                 event_state, run_state, outcome = self._claimed_run_outcome(actions)
                 failure = "abandoned_run_delivery_requires_review" if event_state == "failed" else None
-                event_ids = [str(event["id"]) for event in events]
-                markers = ",".join("?" for _ in event_ids)
+                work_ids = [str(item["id"]) for item in work_items]
+                markers = ",".join("?" for _ in work_ids)
                 if event_state == "pending":
                     await connection.execute(
                         f"""
-                        UPDATE conversation_mailbox
-                        SET state='pending', run_id=NULL, injection_batch=NULL,
-                            claimed_at=NULL, completed_at=NULL, failure=NULL
+                        UPDATE agent_work
+                        SET state='pending', run_id=NULL, claimed_at=NULL,
+                            completed_at=NULL, failure=NULL
                         WHERE id IN ({markers}) AND state='claimed'
                         """,
-                        tuple(event_ids),
+                        tuple(work_ids),
+                    )
+                    await connection.execute(
+                        """
+                        UPDATE conversation_events
+                        SET context_state='unapplied', run_id=NULL, injection_batch=NULL,
+                            claimed_at=NULL, failure=NULL
+                        WHERE run_id=? AND context_state='claimed'
+                        """,
+                        (run_id,),
                     )
                 else:
                     await connection.execute(
                         f"""
-                        UPDATE conversation_mailbox
+                        UPDATE agent_work
                         SET state=?, completed_at=?, failure=?
                         WHERE id IN ({markers}) AND state='claimed'
                         """,
-                        (event_state, now, failure, *event_ids),
+                        ("completed" if event_state == "completed" else "failed", now, failure, *work_ids),
+                    )
+                    await connection.execute(
+                        """
+                        UPDATE conversation_events
+                        SET context_state='applied', applied_at=?, failure=?
+                        WHERE run_id=? AND context_state='claimed'
+                        """,
+                        (now, failure, run_id),
                     )
                 await connection.execute(
                     "UPDATE agent_runs SET status=?, completed_at=?, error=? WHERE id=?",
@@ -656,7 +780,7 @@ class AgentService:
                     (
                         run_id,
                         {
-                            "event_ids": event_ids,
+                            "work_ids": work_ids,
                             "outcome": outcome,
                             "delivery_states": states,
                         },
@@ -776,6 +900,7 @@ class AgentService:
         interface = self.store.interface_settings()
         profile = self.store.assistant_profile()
         conversation = await self.store.aconversation(channel_id)
+        interaction_policy, _, _ = await self.store.ainteraction_policy(channel_id)
         replay_id = str(uuid.uuid4())
         trace_id = f"replay:{replay_id}"
         context = AgentRuntimeContext(
@@ -786,13 +911,17 @@ class AgentService:
             ui_locale=interface.locale,
             prompt_locale=profile.prompt_locale,
             assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
-            automation_mode=str(conversation["mode"] if conversation else "automatic"),
+            conversation_role=interaction_policy.conversation_role,
             force_reply=False,
             provider_id=configuration.provider_id,
             model_id=configuration.model_id,
             transport_profile=configuration.transport_profile,
             capabilities=self._capabilities(configuration),
             trace_id=trace_id,
+            identity_marker=interaction_policy.identity_marker,
+            delivery=interaction_policy.delivery,
+            active_turn_timing=interaction_policy.active_turn_input.timing,
+            active_turn_participants=interaction_policy.active_turn_input.participants,
             run_id=replay_id,
             thread_id=f"replay:{thread_id}:{checkpoint_id}",
             owner_timezone=profile.owner_timezone,
@@ -937,7 +1066,7 @@ class AgentService:
             summary = ""
         if not summary:
             summary = runtime_context_text(locale)["rollover_summary"].format(count=len(messages))
-        new_thread_id = await self.mailbox.roll_generation(
+        new_thread_id = await self.journal.roll_generation(
             str(thread["account_id"]),
             str(thread["channel_id"]),
             reason=reason,
@@ -993,6 +1122,8 @@ class AgentService:
         owner_message_id: str = "",
         owner_author_id: str = "",
         owner_author_name: str = "",
+        owner_attachments: list[dict[str, Any]] | None = None,
+        owner_observed_at: float | None = None,
     ) -> bool:
         if action not in {"resolved", "dismissed", "owner_reply"}:
             raise ValueError("Unknown escalation resolution")
@@ -1000,7 +1131,7 @@ class AgentService:
         if escalation is None or escalation["state"] not in {"pending", "claimed"}:
             return False
         payload = escalation["payload"]
-        if payload.get("migrated") or payload.get("resume_strategy") == "mailbox":
+        if payload.get("migrated") or payload.get("resume_strategy") == "journal":
             channel_id = str(escalation["channel_id"])
             await self.store.aset_interrupt_state(
                 escalation_id,
@@ -1008,7 +1139,7 @@ class AgentService:
             )
             if action == "owner_reply" and owner_message.strip():
                 account_id = await self._account_id(channel_id)
-                inserted, automate = await self._ingest_message(
+                inserted, scheduled, _ = await self._ingest_message(
                     message_id=owner_message_id or f"migrated-owner-reply:{time.time_ns()}",
                     channel_id=channel_id,
                     account_id=account_id,
@@ -1017,13 +1148,13 @@ class AgentService:
                     or runtime_context_text(self.store.assistant_profile().prompt_locale)["account_owner"],
                     participant_role="owner",
                     content=owner_message[:4000],
-                    attachments=[],
-                    observed_at=time.time(),
+                    attachments=owner_attachments or [],
+                    observed_at=owner_observed_at or time.time(),
                     edited=False,
                     force=False,
                     agent_input=True,
                 )
-                if inserted and automate:
+                if inserted and scheduled:
                     self._ensure_task(channel_id)
             return True
         if self.checkpointer is None or not self.models.ready:
@@ -1034,12 +1165,35 @@ class AgentService:
             raise RuntimeError("The interrupted agent run cannot be found")
         channel_id = str(escalation["channel_id"])
         thread_id = str(escalation["thread_id"])
+        account_id = await self._account_id(channel_id)
+        if action == "owner_reply" and owner_message.strip():
+            await self._ingest_message(
+                message_id=owner_message_id or f"owner-reply:{time.time_ns()}",
+                channel_id=channel_id,
+                account_id=account_id,
+                author_id=owner_author_id or account_id,
+                author_name=owner_author_name
+                or runtime_context_text(self.store.assistant_profile().prompt_locale)["account_owner"],
+                participant_role="owner",
+                content=owner_message[:4000],
+                attachments=owner_attachments or [],
+                observed_at=owner_observed_at or time.time(),
+                edited=False,
+                force=False,
+                agent_input=False,
+            )
         interface = self.store.interface_settings()
         profile = self.store.assistant_profile()
         configuration = self.models.configuration
         assert configuration is not None
         conversation = await self.store.aconversation(channel_id)
-        account_id = await self._account_id(channel_id)
+        interaction_policy, _, _ = await self.store.ainteraction_policy(channel_id)
+        pinned_policy = await self.journal.policy_for_active_turn(
+            channel_id,
+            run_id=str(run["id"]),
+        )
+        if pinned_policy is not None:
+            interaction_policy, _ = pinned_policy
         context = AgentRuntimeContext(
             account_id=account_id,
             channel_id=channel_id,
@@ -1048,13 +1202,17 @@ class AgentService:
             ui_locale=interface.locale,
             prompt_locale=profile.prompt_locale,
             assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
-            automation_mode=str(conversation["mode"] if conversation else "automatic"),
+            conversation_role=interaction_policy.conversation_role,
             force_reply=False,
             provider_id=configuration.provider_id,
             model_id=configuration.model_id,
             transport_profile=configuration.transport_profile,
             capabilities=self._capabilities(configuration),
             trace_id=trace_id,
+            identity_marker=interaction_policy.identity_marker,
+            delivery=interaction_policy.delivery,
+            active_turn_timing=interaction_policy.active_turn_input.timing,
+            active_turn_participants=interaction_policy.active_turn_input.participants,
             run_id=str(run["id"]),
             thread_id=thread_id,
             owner_timezone=profile.owner_timezone,
@@ -1100,26 +1258,19 @@ class AgentService:
             "recursion_limit": 40,
         }
         if action == "owner_reply" and owner_message.strip():
+            injected = await self.journal.claim_injection(
+                channel_id,
+                str(run["id"]),
+                injection_batch=1,
+                participants=frozenset({"owner", "peer"}),
+            )
             await agent.aupdate_state(
                 invocation_config,
                 {
                     "messages": [
-                        HumanMessage(
-                            owner_message[:4000],
-                            id=owner_message_id or f"owner-reply:{time.time_ns()}",
-                            additional_kwargs={
-                                "diskovod_participant": {
-                                    "id": owner_author_id or account_id,
-                                    "name": owner_author_name
-                                    or runtime_context_text(profile.prompt_locale)["account_owner"],
-                                    "role": "owner",
-                                    "discord_event_id": (
-                                        f"discord:message:{owner_message_id}" if owner_message_id else ""
-                                    ),
-                                }
-                            },
-                        )
-                    ]
+                        message for event in injected if (message := self._message(event)) is not None
+                    ],
+                    "claimed_event_ids": [event.id for event in injected],
                 },
             )
         try:
@@ -1129,7 +1280,7 @@ class AgentService:
                 context=context,
             )
         except Exception as error:
-            await self.mailbox.fail(
+            await self.journal.fail(
                 channel_id,
                 str(run["id"]),
                 f"{type(error).__name__}: {error}",
@@ -1147,14 +1298,14 @@ class AgentService:
             )
             raise
         await self._flush_trace(trace_id, str(run["id"]))
-        await self.mailbox.complete(channel_id, str(run["id"]))
+        await self.journal.complete(channel_id, str(run["id"]))
         state = "dismissed" if action == "dismissed" else "resolved"
         await self.store.aset_interrupt_state(escalation_id, state)
         await self.store.afinish_agent_run(
             str(run["id"]),
             "interrupted" if result.get("__interrupt__") else "completed",
         )
-        if not result.get("__interrupt__") and await self.mailbox.has_pending(channel_id):
+        if not result.get("__interrupt__") and await self.journal.has_pending(channel_id):
             self._ensure_task(channel_id)
         return True
 
@@ -1166,6 +1317,8 @@ class AgentService:
         message_id: str = "",
         author_id: str = "",
         author_name: str = "",
+        attachments: list[dict[str, Any]] | None = None,
+        observed_at: float | None = None,
     ) -> bool:
         escalation = await self.store.aactive_interrupt_for_channel(channel_id)
         if escalation is None:
@@ -1177,6 +1330,8 @@ class AgentService:
             owner_message_id=message_id,
             owner_author_id=author_id,
             owner_author_name=author_name,
+            owner_attachments=attachments,
+            owner_observed_at=observed_at,
         )
 
     def _ensure_task(self, channel_id: str, *, force: bool = False) -> None:
@@ -1204,6 +1359,14 @@ class AgentService:
             await self._resume_followup(incomplete)
             return
         if await self.store.ahas_active_interrupt(channel_id):
+            return
+        force = force or await self.journal.next_ready_kind(channel_id) == "force"
+        conversation = await self.store.aconversation(channel_id)
+        if not force and (
+            not self.store.automation_settings().enabled
+            or conversation is None
+            or conversation["availability"] == "paused"
+        ):
             return
         await self._run(channel_id, force=force)
 
@@ -1253,17 +1416,38 @@ class AgentService:
                 exc_info=(type(error), error, error.__traceback__),
             )
         if not self._closing:
-            asyncio.create_task(self._resume_pending(channel_id), name=f"agent-resume-{channel_id}")
+            discard = channel_id in self._discard_cancelled_work
+            self._discard_cancelled_work.discard(channel_id)
+            asyncio.create_task(
+                self._after_finished(channel_id, cancelled=task.cancelled(), discard=discard),
+                name=f"agent-finished-{channel_id}",
+            )
+
+    async def _after_finished(self, channel_id: str, *, cancelled: bool, discard: bool) -> None:
+        if cancelled:
+            for run_id in await self.journal.claimed_run_ids(channel_id):
+                if discard:
+                    await self.journal.cancel_claimed(channel_id, run_id, "owner_handoff")
+                else:
+                    await self.journal.release(channel_id, run_id)
+                await self.store.afinish_agent_run(run_id, "cancelled")
+        await self._resume_pending(channel_id)
 
     async def _resume_pending(self, channel_id: str) -> None:
         if self._closing:
             return
-        if not self.store.automation_settings().enabled or not await self.store.acan_automate(channel_id):
+        force = await self.journal.next_ready_kind(channel_id) == "force"
+        conversation = await self.store.aconversation(channel_id)
+        if not force and (
+            not self.store.automation_settings().enabled
+            or conversation is None
+            or conversation["availability"] == "paused"
+        ):
             return
-        if not await self.store.ahas_active_interrupt(channel_id) and await self.mailbox.has_pending(
+        if not await self.store.ahas_active_interrupt(channel_id) and await self.journal.has_pending(
             channel_id
         ):
-            self._ensure_task(channel_id)
+            self._ensure_task(channel_id, force=force)
 
     async def _run(self, channel_id: str, *, force: bool) -> None:
         if self.checkpointer is None or not self.models.ready:
@@ -1274,20 +1458,22 @@ class AgentService:
         if not force:
             await asyncio.sleep(automation.debounce_seconds)
         account_id = await self._account_id(channel_id)
-        thread_id = await self.mailbox.thread_id(account_id, channel_id)
+        thread_id = await self.journal.thread_id(account_id, channel_id)
         run_id = str(uuid.uuid4())
         trace_id = str(uuid.uuid4())
-        claimed = await self.mailbox.claim_ready(channel_id, run_id)
-        if not claimed:
+        batch = await self.journal.claim_ready(channel_id, run_id)
+        if batch is None:
             return
-        force = force or any(event.kind == "force_reply" for event in claimed)
+        claimed = list(batch.events)
+        force = force or batch.work.kind == "force"
+        trigger_fallback = str(batch.work.decision.get("message_id") or "")
         trigger_message_id = next(
             (
                 str(event.payload.get("message_id") or "")
                 for event in reversed(claimed)
                 if event.payload.get("participant_role") == "peer"
             ),
-            str(claimed[-1].payload.get("message_id") or ""),
+            str(claimed[-1].payload.get("message_id") or "") if claimed else trigger_fallback,
         )
         reaction_target_message_id = next(
             (
@@ -1299,7 +1485,10 @@ class AgentService:
         )
         configuration = self.models.configuration
         assert configuration is not None
-        conversation = await self.store.aconversation(channel_id)
+        if batch.work.policy_snapshot.get("preset"):
+            interaction_policy = InteractionPolicy.from_dict(batch.work.policy_snapshot)
+        else:
+            interaction_policy, _, _ = await self.store.ainteraction_policy(channel_id)
         participant_ids = tuple(
             dict.fromkeys(
                 str(event.payload.get("author_id")) for event in claimed if event.payload.get("author_id")
@@ -1313,13 +1502,19 @@ class AgentService:
             ui_locale=interface.locale,
             prompt_locale=profile.prompt_locale,
             assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
-            automation_mode=str(conversation["mode"] if conversation else "automatic"),
+            conversation_role=interaction_policy.conversation_role,
             force_reply=force,
             provider_id=configuration.provider_id,
             model_id=configuration.model_id,
             transport_profile=configuration.transport_profile,
             capabilities=self._capabilities(configuration),
             trace_id=trace_id,
+            identity_marker=interaction_policy.identity_marker,
+            delivery=interaction_policy.delivery,
+            active_turn_timing=interaction_policy.active_turn_input.timing,
+            active_turn_participants=interaction_policy.active_turn_input.participants,
+            trigger_kind=batch.work.trigger_kind,
+            trigger_participant=batch.work.trigger_participant or "",
             run_id=run_id,
             thread_id=thread_id,
             owner_timezone=profile.owner_timezone,
@@ -1374,24 +1569,35 @@ class AgentService:
             thread_id=thread_id,
             channel_id=channel_id,
             trace_id=trace_id,
-            trigger_kind="force_reply" if force else claimed[-1].kind,
+            trigger_kind=batch.work.trigger_kind,
             trigger_message_id=trigger_message_id,
         )
         await self.store.arecord_agent_trace(
             run_id,
             "run_input",
-            {"event_ids": [event.id for event in claimed], "force_reply": force},
+            {
+                "work_id": batch.work.id,
+                "event_ids": [event.id for event in claimed],
+                "captured_through_sequence": batch.work.captured_through_sequence,
+                "policy_version": batch.work.policy_version,
+                "trigger_decision": batch.work.decision,
+                "force_reply": force,
+            },
         )
         try:
             result = await agent.ainvoke(state, config=config, context=context)
         except asyncio.CancelledError:
-            await self.mailbox.release(channel_id, run_id)
+            if channel_id in self._discard_cancelled_work:
+                self._discard_cancelled_work.discard(channel_id)
+                await self.journal.cancel_claimed(channel_id, run_id, "owner_handoff")
+            else:
+                await self.journal.release(channel_id, run_id)
             await self._flush_trace(trace_id, run_id)
             await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
             await self.store.afinish_agent_run(run_id, "cancelled")
             raise
         except Exception as error:
-            await self.mailbox.fail(channel_id, run_id, f"{type(error).__name__}: {error}")
+            await self.journal.fail(channel_id, run_id, f"{type(error).__name__}: {error}")
             await self._flush_trace(trace_id, run_id)
             await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
             await self.store.afinish_agent_run(
@@ -1416,7 +1622,7 @@ class AgentService:
             )
         await self._flush_trace(trace_id, run_id)
         await self._index_run_checkpoints(thread_id, run_id, previous_checkpoint_id)
-        await self.mailbox.complete(channel_id, run_id)
+        await self.journal.complete(channel_id, run_id)
         await self.store.afinish_agent_run(
             run_id,
             "interrupted" if interrupted else "completed",
@@ -1459,7 +1665,11 @@ class AgentService:
             "personality": self.store.personality() or {},
             "account_id": context.account_id,
             "participant_ids": list(context.participant_ids),
-            "automation_mode": context.automation_mode,
+            "conversation_role": context.conversation_role,
+            "identity_marker": context.identity_marker,
+            "delivery": context.delivery,
+            "active_turn_timing": context.active_turn_timing,
+            "active_turn_participants": sorted(context.active_turn_participants),
             "trigger_message_id": context.trigger_message_id,
             "duration": duration,
             "pause": pause,
@@ -1506,7 +1716,7 @@ class AgentService:
             )
             return
         profile = AssistantProfile(**dict(wait.payload["assistant_profile"]))
-        conversation = await self.store.aconversation(wait.channel_id)
+        current_policy, _, _ = await self.store.ainteraction_policy(wait.channel_id)
         context = AgentRuntimeContext(
             account_id=str(wait.payload.get("account_id") or await self._account_id(wait.channel_id)),
             channel_id=wait.channel_id,
@@ -1515,15 +1725,21 @@ class AgentService:
             ui_locale=self.store.interface_settings().locale,
             prompt_locale=profile.prompt_locale,
             assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
-            automation_mode=str(
-                wait.payload.get("automation_mode") or (conversation["mode"] if conversation else "automatic")
-            ),
+            conversation_role=str(wait.payload.get("conversation_role") or current_policy.conversation_role),
             force_reply=False,
             provider_id=configuration.provider_id,
             model_id=configuration.model_id,
             transport_profile=configuration.transport_profile,
             capabilities=self._capabilities(configuration),
             trace_id=wait.trace_id,
+            identity_marker=str(wait.payload.get("identity_marker") or current_policy.identity_marker),
+            delivery=str(wait.payload.get("delivery") or current_policy.delivery),
+            active_turn_timing=str(
+                wait.payload.get("active_turn_timing") or current_policy.active_turn_input.timing
+            ),
+            active_turn_participants=frozenset(
+                wait.payload.get("active_turn_participants") or current_policy.active_turn_input.participants
+            ),
             run_id=wait.run_id,
             thread_id=wait.thread_id,
             owner_timezone=profile.owner_timezone,
@@ -1568,18 +1784,14 @@ class AgentService:
             "run_id": uuid.UUID(wait.run_id),
             "recursion_limit": 40,
         }
-        snapshot = await self.checkpointer.aget_tuple(
-            {"configurable": {"thread_id": wait.thread_id}}
-        )
+        snapshot = await self.checkpointer.aget_tuple({"configurable": {"thread_id": wait.thread_id}})
         pending_writes = snapshot.pending_writes if snapshot is not None else None
         has_wait_interrupt = any(
             channel == "__interrupt__" and wait.id in str(value)
             for _, channel, value in (pending_writes or [])
         )
         graph_input = (
-            Command(resume={"reason": wait.resume_reason, "wait_id": wait.id})
-            if has_wait_interrupt
-            else None
+            Command(resume={"reason": wait.resume_reason, "wait_id": wait.id}) if has_wait_interrupt else None
         )
         await self.store.arecord_agent_trace(
             wait.run_id,
@@ -1601,7 +1813,7 @@ class AgentService:
             raise
         except Exception as error:
             await self.waits.fail(wait.id, f"{type(error).__name__}: {error}")
-            await self.mailbox.fail(
+            await self.journal.fail(
                 wait.channel_id,
                 wait.run_id,
                 f"{type(error).__name__}: {error}",
@@ -1618,7 +1830,7 @@ class AgentService:
         if interrupted and next_wait is not None and next_wait.id != wait.id:
             await self.waits.schedule(next_wait.id)
         await self.waits.resolve(wait.id)
-        await self.mailbox.complete(wait.channel_id, wait.run_id)
+        await self.journal.complete(wait.channel_id, wait.run_id)
         await self._flush_trace(wait.trace_id, wait.run_id)
         await self.store.afinish_agent_run(
             wait.run_id,
@@ -1633,7 +1845,7 @@ class AgentService:
                 "outbound_delivery_count": result.get("outbound_delivery_count", 0),
             },
         )
-        if not interrupted and await self.mailbox.has_pending(wait.channel_id):
+        if not interrupted and await self.journal.has_pending(wait.channel_id):
             self._ensure_task(wait.channel_id)
 
     async def _inject_pending(
@@ -1641,7 +1853,7 @@ class AgentService:
         state: DiskovodAgentState,
         context: AgentRuntimeContext,
     ) -> dict[str, Any] | None:
-        if not state.get("continuation_resume") and not await self.mailbox.live_steering(context.channel_id):
+        if not state.get("continuation_resume") and context.active_turn_timing != "inject_at_safe_points":
             return None
         run_id = str(state.get("logical_request_id") or "")
         if not run_id:
@@ -1649,12 +1861,17 @@ class AgentService:
         batch = int(state.get("live_injection_batches", 0)) + 1
         known = set(state.get("claimed_event_ids", []))
         recovered = [
-            event for event in await self.mailbox.claimed(context.channel_id, run_id) if event.id not in known
+            event for event in await self.journal.claimed(context.channel_id, run_id) if event.id not in known
         ]
-        newly_claimed = await self.mailbox.claim_ready(
+        newly_claimed = await self.journal.claim_injection(
             context.channel_id,
             run_id,
             injection_batch=batch,
+            participants=(
+                frozenset({"owner", "peer"})
+                if state.get("continuation_resume")
+                else context.active_turn_participants
+            ),
         )
         events = recovered + newly_claimed
         messages = [message for event in events if (message := self._message(event)) is not None]
@@ -1670,7 +1887,7 @@ class AgentService:
         )
         self._buffer_trace(
             context.trace_id,
-            "mailbox_injection",
+            "context_injection",
             {
                 "event_ids": [event.id for event in events],
                 "batch": batch,
@@ -1685,8 +1902,6 @@ class AgentService:
         }
 
     def _message(self, event: ConversationEvent) -> BaseMessage | None:
-        if event.kind == "force_reply":
-            return None
         if event.kind == "delete":
             return RemoveMessage(id=str(event.payload["message_id"]))
         content = str(event.payload.get("content") or "")
@@ -1741,10 +1956,6 @@ class AgentService:
         # A model-provider account is unrelated to the Discord identity. Offline migration uses
         # one installation-scoped owner label, which remains stable after Discord connects.
         return "discord-owner"
-
-    async def _mode(self, channel_id: str) -> str:
-        conversation = await self.store.aconversation(channel_id)
-        return str(conversation["mode"] if conversation else "automatic")
 
     def _buffer_trace(self, trace_id: str, kind: str, payload: dict[str, Any]) -> None:
         self._trace_buffers.setdefault(trace_id, []).append((kind, payload))

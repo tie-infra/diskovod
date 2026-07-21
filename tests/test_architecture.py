@@ -17,9 +17,7 @@ def _class_node(module: str, name: str) -> ast.ClassDef:
 def _members(module: str, name: str) -> set[str]:
     class_node = _class_node(module, name)
     members = {
-        node.name
-        for node in class_node.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        node.name for node in class_node.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     for node in ast.walk(class_node):
         if isinstance(node, ast.AnnAssign):
@@ -71,7 +69,7 @@ def _service_references(module: str, owner: str, attribute: str) -> dict[str, in
         ("migration.py", "LegacyMigrator", "store", "store.py", "Store"),
         ("runtime.py", "AgentService", "store", "store.py", "Store"),
         ("runtime.py", "AgentService", "models", "providers/service.py", "ModelService"),
-        ("runtime.py", "AgentService", "mailbox", "mailbox.py", "ConversationMailbox"),
+        ("runtime.py", "AgentService", "journal", "conversation.py", "ConversationJournal"),
         ("runtime.py", "AgentService", "attachments", "attachments.py", "AttachmentRepository"),
         ("runtime.py", "AgentService", "publisher", "outbound.py", "OutboundPublisher"),
         ("runtime.py", "AgentService", "waits", "waits.py", "ConversationWaits"),
@@ -88,11 +86,7 @@ def test_internal_service_paths_resolve(
     available = _members(target_module, target)
     references = _service_references(owner_module, owner, attribute)
 
-    missing = {
-        member: line
-        for member, line in references.items()
-        if member not in available
-    }
+    missing = {member: line for member, line in references.items() if member not in available}
     assert missing == {}, (
         f"{owner_module}:{owner} has invalid self.{attribute} references for "
         f"{target_module}:{target}: {missing}"

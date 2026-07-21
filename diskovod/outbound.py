@@ -174,9 +174,7 @@ class OutboundPublisher:
                         self.owner,
                     ),
                 )
-                reconciled.append(
-                    {"id": str(row["id"]), "run_id": str(row["run_id"]), "state": "ambiguous"}
-                )
+                reconciled.append({"id": str(row["id"]), "run_id": str(row["run_id"]), "state": "ambiguous"})
         return reconciled
 
     async def action(self, action_id: str) -> dict[str, object] | None:
@@ -483,7 +481,7 @@ class OutboundPublisher:
             ui_locale="en",
             prompt_locale="en",
             assistant_name="Diskovod",
-            automation_mode="automatic",
+            conversation_role="owner_delegate",
             force_reply=False,
             provider_id="",
             model_id="",

@@ -49,14 +49,15 @@ TOOL_POLICIES = {locale: cast(str, locale_data["tool_policy"]) for locale, local
 TOOL_TEXT = {
     locale: cast(dict[str, Any], locale_data["tool_text"]) for locale, locale_data in _LOCALES.items()
 }
-INLINE_TOOL_TEXT = {
-    locale: cast(dict[str, str], locale_data["inline_tool_text"]) for locale, locale_data in _LOCALES.items()
-}
 SUMMARIZATION_PROMPTS = {
     locale: cast(str, locale_data["summarization_prompt"]) for locale, locale_data in _LOCALES.items()
 }
 RUNTIME_CONTEXT_TEXT = {
     locale: cast(dict[str, str], locale_data["runtime_context"]) for locale, locale_data in _LOCALES.items()
+}
+INVOCATION_ATTENTION_WORDS = {
+    locale: tuple(cast(list[str], locale_data.get("invocation_attention_words", [])))
+    for locale, locale_data in _LOCALES.items()
 }
 
 _UI_KEYS = cast(dict[str, str], _LOCALES[DEFAULT_LOCALE]["ui"])
@@ -96,16 +97,16 @@ def tool_text(locale: str) -> dict[str, Any]:
     return TOOL_TEXT[normalize_locale(locale)]
 
 
-def inline_tool_text(locale: str) -> dict[str, str]:
-    return INLINE_TOOL_TEXT[normalize_locale(locale)]
-
-
 def summarization_prompt(locale: str) -> str:
     return SUMMARIZATION_PROMPTS[normalize_locale(locale)]
 
 
 def runtime_context_text(locale: str) -> dict[str, str]:
     return RUNTIME_CONTEXT_TEXT[normalize_locale(locale)]
+
+
+def invocation_attention_words() -> dict[str, tuple[str, ...]]:
+    return INVOCATION_ATTENTION_WORDS
 
 
 def ui_text(locale: str, key: str, **values: object) -> str:

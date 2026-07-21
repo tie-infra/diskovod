@@ -31,13 +31,19 @@ class AgentRuntimeContext:
     ui_locale: str
     prompt_locale: str
     assistant_name: str
-    automation_mode: str
+    conversation_role: str
     force_reply: bool
     provider_id: str
     model_id: str
     transport_profile: str
     capabilities: CapabilityProfile
     trace_id: str
+    identity_marker: str = "configurable"
+    delivery: str = "immediate"
+    active_turn_timing: str = "inject_at_safe_points"
+    active_turn_participants: frozenset[str] = frozenset({"owner", "peer"})
+    trigger_kind: str = ""
+    trigger_participant: str = ""
     run_id: str = ""
     thread_id: str = ""
     owner_timezone: str = "UTC"

@@ -58,7 +58,7 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
         event_count = (
             await (
                 await connection.execute(
-                    "SELECT COUNT(*) FROM conversation_mailbox WHERE id LIKE 'legacy:message:%'"
+                    "SELECT COUNT(*) FROM conversation_events WHERE id LIKE 'legacy:message:%'"
                 )
             ).fetchone()
         )[0]
@@ -68,13 +68,19 @@ async def test_cutover_migration_backs_up_audits_and_seeds_each_chat_once(tmp_pa
         table_rows = await (
             await connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         ).fetchall()
+        cursor = await (
+            await connection.execute(
+                "SELECT applied_event_sequence FROM chat_threads WHERE channel_id='channel'"
+            )
+        ).fetchone()
     assert event_count == 2
     assert checkpoint_count > 0
+    assert cursor[0] == 2
     tables = {row[0] for row in table_rows}
     assert "model_request_logs" not in tables
     assert "chatgpt_usage" not in tables
     assert "conversation_escalations" not in tables
-    thread_id = await runtime.mailbox.thread_id("discord-owner", "channel")
+    thread_id = await runtime.journal.thread_id("discord-owner", "channel")
     checkpoint = await runtime.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
     assert [message.content for message in checkpoint.checkpoint["channel_values"]["messages"]] == [
         "Do you remember this?",

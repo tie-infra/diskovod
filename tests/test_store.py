@@ -1,8 +1,10 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import aiosqlite
 import pytest
+from diskovod.interaction import preset_policy
 
 from diskovod.models import (
     DEFAULT_BASE_INSTRUCTIONS,
@@ -165,7 +167,7 @@ async def test_new_conversations_follow_default_without_changing_existing_enroll
 
     assert await store.acan_automate("existing") is True
     assert (await store.aconversation("existing"))["peer_name"] == "Existing renamed"
-    assert (await store.aconversation("new"))["paused"] is True
+    assert (await store.aconversation("new"))["availability"] == "paused"
     assert await store.acan_automate("new") is False
 
     await store.aset_permanent_pause("new", False)
@@ -281,7 +283,7 @@ async def test_human_quiet_window_expires_without_permanent_pause(tmp_path: Path
     store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aupsert_conversation("dm-1", "peer-1", "Sam")
     until = await store.asnooze("dm-1", 60)
-    assert (await store.aconversation("dm-1"))["paused"] is False
+    assert (await store.aconversation("dm-1"))["availability"] == "active"
     assert await store.acan_automate("dm-1", now=until - 1) is False
     assert await store.acan_automate("dm-1", now=until + 1) is True
 
@@ -295,26 +297,51 @@ async def test_permanent_pause_remains_until_explicit_resume(tmp_path: Path):
     assert await store.acan_automate("dm-1", now=10**12) is False
 
     await store.aset_permanent_pause("dm-1", False)
-    assert (await store.aconversation("dm-1"))["paused"] is False
+    assert (await store.aconversation("dm-1"))["availability"] == "active"
     await store.aclose()
 
 
-async def test_inline_conversation_mode_survives_pause_and_resume(tmp_path: Path):
+async def test_interaction_policy_survives_pause_and_resume(tmp_path: Path):
     store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aupsert_conversation("dm-1", "peer-1", "Sam")
 
-    assert (await store.aconversation("dm-1"))["mode"] == "automatic"
-    assert await store.aset_conversation_mode("dm-1", "inline") is True
-    assert (await store.aconversation("dm-1"))["mode"] == "inline"
+    assert (await store.ainteraction_policy("dm-1"))[0].preset == "autonomous"
+    assert await store.aset_interaction_policy("dm-1", preset_policy("shared")) is True
+    assert (await store.ainteraction_policy("dm-1"))[0].preset == "shared"
     assert await store.acan_automate("dm-1") is True
 
     await store.aset_permanent_pause("dm-1", True)
-    assert (await store.aconversation("dm-1"))["mode"] == "inline"
+    assert (await store.ainteraction_policy("dm-1"))[0].preset == "shared"
     assert await store.acan_automate("dm-1") is False
 
     await store.aset_permanent_pause("dm-1", False)
-    assert (await store.aconversation("dm-1"))["mode"] == "inline"
+    assert (await store.ainteraction_policy("dm-1"))[0].preset == "shared"
     assert await store.acan_automate("dm-1") is True
+    await store.aclose()
+
+
+async def test_inherited_policy_and_dynamic_name_changes_have_distinct_effective_versions(
+    tmp_path: Path,
+):
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), default_interaction_preset="on_invocation")
+    )
+    await store.aupsert_conversation("dm-1", "peer-1", "Sam")
+
+    policy, original_version, inherited = await store.ainteraction_policy("dm-1")
+    assert policy.preset == "on_invocation"
+    assert inherited is True
+    await store.aset_assistant_profile(replace(store.assistant_profile(), assistant_name="Nova"))
+    renamed_policy, renamed_version, renamed_inherited = await store.ainteraction_policy("dm-1")
+
+    assert renamed_policy == policy
+    assert renamed_inherited is True
+    assert renamed_version != original_version
+    assert await store.aset_interaction_policy("dm-1", renamed_policy)
+    assert (await store.ainteraction_policy("dm-1"))[2] is False
+    assert await store.areset_interaction_policy("dm-1")
+    assert (await store.ainteraction_policy("dm-1"))[2] is True
     await store.aclose()
 
 

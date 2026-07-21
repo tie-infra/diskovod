@@ -269,16 +269,14 @@ async def test_service_resumes_a_durable_wait_when_new_input_arrives(tmp_path: P
     async with store.database.transaction() as connection:
         trace_kinds = {
             str(row["kind"])
-            for row in await (
-                await connection.execute("SELECT kind FROM agent_trace_events")
-            ).fetchall()
+            for row in await (await connection.execute("SELECT kind FROM agent_trace_events")).fetchall()
         }
     assert {
         "followup_wait_armed",
         "followup_wait_scheduled",
         "followup_wait_woken",
         "followup_wait_resume",
-        "mailbox_injection",
+        "context_injection",
         "followup_wait_result",
     } <= trace_kinds
     await service.close()
@@ -333,8 +331,7 @@ async def test_owner_can_cancel_a_durable_followup_without_another_model_call(tm
     async with store.database.transaction() as connection:
         cancellation = await (
             await connection.execute(
-                "SELECT payload FROM agent_trace_events "
-                "WHERE run_id=? AND kind='followup_wait_cancelled'",
+                "SELECT payload FROM agent_trace_events WHERE run_id=? AND kind='followup_wait_cancelled'",
                 (wait.run_id,),
             )
         ).fetchone()
@@ -357,9 +354,7 @@ async def test_service_recovers_a_followup_interrupted_during_resume(
     await store.aset_assistant_profile(replace(AssistantProfile(), allow_conversational_followups=True))
     await store.aupsert_conversation("channel", "peer", "Peer")
     transport = SignallingTransport()
-    model = ScriptedChatModel(
-        responses=[wait_call("I may follow up."), AIMessage("Recovered follow-up.")]
-    )
+    model = ScriptedChatModel(responses=[wait_call("I may follow up."), AIMessage("Recovered follow-up.")])
     service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
     await service.start()
     await service.submit_message(
@@ -482,8 +477,8 @@ async def test_scheduled_followup_resumes_after_restart_at_its_deadline(tmp_path
             (wait.id,),
         )
         await connection.execute(
-            "UPDATE conversation_mailbox SET available_at=0 WHERE id=?",
-            (wait.wake_event_id,),
+            "UPDATE agent_work SET available_at=0 WHERE id=?",
+            (wait.wake_work_id,),
         )
 
     recovered = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
@@ -498,8 +493,7 @@ async def test_scheduled_followup_resumes_after_restart_at_its_deadline(tmp_path
     async with store.database.transaction() as connection:
         resume = await (
             await connection.execute(
-                "SELECT payload FROM agent_trace_events "
-                "WHERE run_id=? AND kind='followup_wait_resume'",
+                "SELECT payload FROM agent_trace_events WHERE run_id=? AND kind='followup_wait_resume'",
                 (wait.run_id,),
             )
         ).fetchone()
@@ -647,9 +641,7 @@ async def test_model_configuration_rollover_cancels_an_active_followup(tmp_path:
 
     async with store.database.transaction() as connection:
         saved_wait = await (
-            await connection.execute(
-                "SELECT state, failure FROM conversation_waits WHERE id=?", (wait.id,)
-            )
+            await connection.execute("SELECT state, failure FROM conversation_waits WHERE id=?", (wait.id,))
         ).fetchone()
         original_run = await (
             await connection.execute("SELECT status FROM agent_runs WHERE id=?", (wait.run_id,))

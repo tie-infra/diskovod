@@ -22,7 +22,7 @@
   <div class="col-md-4"><section class="card h-100"><div class="card-body">
     <h2 class="h6 text-body-secondary">{{ t("automation_settings") }}</h2>
     <div class="d-flex align-items-center gap-2"><span class="status-dot {{ 'is-on' if overview.automation_enabled }}"></span><strong>{{ t("automation_enabled") if overview.automation_enabled else t("automation_disabled") }}</strong></div>
-    <p class="small text-body-secondary mb-0">{% for mode, count in overview.conversation_modes.items() %}{{ t("mode_" ~ mode) }}: {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+    <p class="small text-body-secondary mb-0">{% for preset, count in overview.interaction_policies.items() %}{{ t("interaction_preset_" ~ preset) }}: {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
   </div></section></div>
 </div>
 <div class="row g-4">
@@ -33,7 +33,7 @@
   <div class="list-group list-group-flush">
     {% for chat in overview.recent_chats %}
       <a class="list-group-item list-group-item-action" href="/chats/{{ chat.channel_id }}">
-        <div class="d-flex justify-content-between gap-3"><strong>{{ chat.peer_name or t("unknown_peer") }}</strong><span class="badge text-bg-secondary">{{ t("mode_" ~ chat.mode) }}</span></div>
+        <div class="d-flex justify-content-between gap-3"><strong>{{ chat.peer_name or t("unknown_peer") }}</strong><span class="badge text-bg-secondary">{{ t("interaction_preset_" ~ chat.mode) }}</span></div>
         <small class="d-block text-body-secondary text-truncate">{{ chat.latest_content or t("no_messages") }}</small>
       </a>
     {% else %}<div class="empty-state">{{ t("no_messages") }}</div>{% endfor %}

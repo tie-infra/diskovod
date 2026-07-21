@@ -13,7 +13,6 @@ from diskovod.agent_tools import localized_agent_tools
 from diskovod.localization import (
     ASSISTANT_IDENTITIES,
     ASSISTANT_NAMES,
-    INLINE_TOOL_TEXT,
     PROMPTS,
     RUNTIME_CONTEXT_TEXT,
     SUPPORTED_LOCALES,
@@ -35,12 +34,12 @@ CATALOG_PATH = Path(__file__).parents[1] / "diskovod" / "localization.json"
 TOP_LEVEL_FIELDS = {"schema_version", "default_locale", "locales"}
 LOCALE_FIELDS = {
     "display_name",
+    "invocation_attention_words",
     "assistant_name",
     "assistant_identity",
     "escalation_fallback",
     "tool_policy",
     "tool_text",
-    "inline_tool_text",
     "summarization_prompt",
     "runtime_context",
     "ui",
@@ -54,7 +53,7 @@ SIMPLE_STRING_FIELDS = {
     "tool_policy",
     "summarization_prompt",
 }
-STRING_MAP_FIELDS = {"tool_text", "inline_tool_text", "runtime_context", "ui", "prompts"}
+STRING_MAP_FIELDS = {"tool_text", "runtime_context", "ui", "prompts"}
 PROMPT_FIELDS = set(PromptBundle.__dataclass_fields__)
 
 
@@ -128,6 +127,9 @@ def _validate_catalog(catalog: dict[str, Any]) -> None:
 
     reference = locale_records[default_locale]
     for locale, record in locale_records.items():
+        words = record["invocation_attention_words"]
+        assert isinstance(words, list) and words
+        assert all(isinstance(word, str) and word for word in words)
         for field in SIMPLE_STRING_FIELDS:
             _validate_localized_value(reference[field], record[field], f"locales.{locale}.{field}")
         for field in STRING_MAP_FIELDS:
@@ -221,6 +223,25 @@ def test_every_admin_string_supports_every_locale():
             assert ui_text(locale, key) == translations[locale]
 
 
+def test_literal_ui_keys_used_by_templates_and_web_routes_are_localized():
+    project = Path(__file__).parents[1]
+    sources = list((project / "diskovod" / "templates").glob("*.html")) + [project / "diskovod" / "web.py"]
+    patterns = (
+        re.compile(r"\bt\(\s*['\"]([^'\"]+)['\"]"),
+        re.compile(r"self\._t\(\s*['\"]([^'\"]+)['\"]"),
+    )
+    missing: list[str] = []
+    for source in sources:
+        text = source.read_text(encoding="utf-8")
+        for pattern in patterns:
+            missing.extend(
+                f"{source.name}: {match.group(1)}"
+                for match in pattern.finditer(text)
+                if not match.group(1).endswith("_") and match.group(1) not in UI_TEXT
+            )
+    assert missing == []
+
+
 def test_database_explorer_can_label_every_managed_table_in_every_locale():
     for locale in SUPPORTED_LOCALES:
         for table in DATABASE_TABLES:
@@ -263,12 +284,6 @@ def test_every_tool_string_supports_every_locale():
     expected_keys = set(TOOL_TEXT["en"])
     for locale, translations in TOOL_TEXT.items():
         assert set(translations) == expected_keys, locale
-        assert all(translations.values()), locale
-
-    assert set(INLINE_TOOL_TEXT) == set(SUPPORTED_LOCALES)
-    inline_keys = set(INLINE_TOOL_TEXT["en"])
-    for locale, translations in INLINE_TOOL_TEXT.items():
-        assert set(translations) == inline_keys, locale
         assert all(translations.values()), locale
 
 
@@ -352,7 +367,7 @@ def test_dynamic_admin_presentation_values_are_localized():
         "trace_kind_followup_wait_result",
         "trace_kind_followup_wait_cancelled",
         "trace_kind_followup_wait_reconciled",
-        "trace_kind_mailbox_injection",
+        "trace_kind_context_injection",
         "trace_kind_outbound_action_reconciled",
         "trace_kind_outbound_action_operator_resolution",
         "trace_kind_public_output_cutover_claim_reconciled",

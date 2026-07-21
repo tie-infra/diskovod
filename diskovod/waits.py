@@ -18,7 +18,7 @@ class ConversationWait:
     run_id: str
     trace_id: str
     tool_call_id: str
-    wake_event_id: str
+    wake_work_id: str
     state: str
     resume_at: float
     payload: dict[str, Any]
@@ -26,7 +26,7 @@ class ConversationWait:
 
 
 class ConversationWaits:
-    """Durable follow-up continuations and their mailbox wake events."""
+    """Durable follow-up continuations and their independent wake work."""
 
     def __init__(self, database: AsyncSQLite):
         self.database = database
@@ -41,7 +41,7 @@ class ConversationWaits:
         payload: dict[str, Any],
     ) -> ConversationWait:
         wait_id = self.wait_id(context.thread_id, run_id, tool_call_id)
-        wake_event_id = f"continuation:{wait_id}"
+        wake_work_id = f"continuation:{wait_id}"
         now = time.time()
         resume_at = now + duration
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
@@ -51,40 +51,29 @@ class ConversationWaits:
             ).fetchone()
             if existing is not None:
                 return self._record(existing)
-            sequence = int(
-                (
-                    await (
-                        await connection.execute(
-                            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM conversation_mailbox "
-                            "WHERE channel_id=?",
-                            (context.channel_id,),
-                        )
-                    ).fetchone()
-                )[0]
-            )
             await connection.execute(
                 """
-                INSERT INTO conversation_mailbox(
-                  id, channel_id, sequence, kind, available_at, observed_at, payload, state
-                ) VALUES(?, ?, ?, 'continuation_due', ?, ?, ?, 'pending')
+                INSERT INTO agent_work(
+                  id, channel_id, kind, trigger_kind, policy_version, policy_snapshot,
+                  available_at, state, decision, created_at
+                ) VALUES(?, ?, 'continuation', 'continuation_due', 0, '{}', ?, 'pending', ?, ?)
                 """,
                 (
-                    wake_event_id,
+                    wake_work_id,
                     context.channel_id,
-                    sequence,
                     resume_at,
-                    now,
                     json.dumps(
                         {"wait_id": wait_id, "reason": "deadline"},
                         separators=(",", ":"),
                     ),
+                    now,
                 ),
             )
             await connection.execute(
                 """
                 INSERT INTO conversation_waits(
                   id, thread_id, channel_id, run_id, trace_id, tool_call_id,
-                  wake_event_id, state, resume_at, created_at, updated_at, payload
+                  wake_work_id, state, resume_at, created_at, updated_at, payload
                 ) VALUES(?, ?, ?, ?, ?, ?, ?, 'arming', ?, ?, ?, ?)
                 """,
                 (
@@ -94,7 +83,7 @@ class ConversationWaits:
                     run_id,
                     context.trace_id,
                     tool_call_id,
-                    wake_event_id,
+                    wake_work_id,
                     resume_at,
                     now,
                     now,
@@ -129,9 +118,7 @@ class ConversationWaits:
         now = time.time()
         async with self.database.transaction() as connection:
             row = await (
-                await connection.execute(
-                    "SELECT wake_event_id FROM conversation_waits WHERE id=?", (wait_id,)
-                )
+                await connection.execute("SELECT wake_work_id FROM conversation_waits WHERE id=?", (wait_id,))
             ).fetchone()
             if row is None:
                 return False
@@ -143,8 +130,8 @@ class ConversationWaits:
                       state IN ('arming','scheduled','resuming') OR (
                         state='completed'
                         AND EXISTS(
-                          SELECT 1 FROM conversation_mailbox AS m
-                          WHERE m.id=conversation_waits.wake_event_id
+                          SELECT 1 FROM agent_work AS m
+                          WHERE m.id=conversation_waits.wake_work_id
                             AND m.state IN ('pending','claimed')
                         )
                         AND EXISTS(
@@ -160,10 +147,10 @@ class ConversationWaits:
             if changed:
                 await connection.execute(
                     """
-                    UPDATE conversation_mailbox SET state='cancelled', completed_at=?
+                    UPDATE agent_work SET state='cancelled', completed_at=?
                     WHERE id=? AND state IN ('pending','claimed')
                     """,
-                    (now, row["wake_event_id"]),
+                    (now, row["wake_work_id"]),
                 )
         return changed == 1
 
@@ -173,7 +160,7 @@ class ConversationWaits:
             row = await (
                 await connection.execute(
                     """
-                    SELECT id, wake_event_id FROM conversation_waits
+                    SELECT id, wake_work_id FROM conversation_waits
                     WHERE channel_id=? AND state='scheduled' LIMIT 1
                     """,
                     (channel_id,),
@@ -183,7 +170,7 @@ class ConversationWaits:
                 return None
             await connection.execute(
                 """
-                UPDATE conversation_mailbox SET available_at=?, payload=?
+                UPDATE agent_work SET available_at=?, decision=?
                 WHERE id=? AND state='pending'
                 """,
                 (
@@ -192,7 +179,7 @@ class ConversationWaits:
                         {"wait_id": str(row["id"]), "reason": "new_input"},
                         separators=(",", ":"),
                     ),
-                    row["wake_event_id"],
+                    row["wake_work_id"],
                 ),
             )
             await connection.execute(
@@ -207,8 +194,8 @@ class ConversationWaits:
             row = await (
                 await connection.execute(
                     """
-                    SELECT w.*, m.payload AS wake_payload FROM conversation_waits AS w
-                    JOIN conversation_mailbox AS m ON m.id=w.wake_event_id
+                    SELECT w.*, m.decision AS wake_payload FROM conversation_waits AS w
+                    JOIN agent_work AS m ON m.id=w.wake_work_id
                     WHERE w.channel_id=? AND w.state='scheduled'
                       AND m.state='pending' AND m.available_at<=?
                     LIMIT 1
@@ -227,6 +214,13 @@ class ConversationWaits:
             ).rowcount
             if changed != 1:
                 return None
+            await connection.execute(
+                """
+                UPDATE agent_work SET state='claimed', run_id=?, claimed_at=?
+                WHERE id=? AND state='pending'
+                """,
+                (row["run_id"], now, row["wake_work_id"]),
+            )
         return self._record(row, state="resuming")
 
     async def active(self, channel_id: str) -> ConversationWait | None:
@@ -248,9 +242,9 @@ class ConversationWaits:
             row = await (
                 await connection.execute(
                     """
-                    SELECT w.*, m.payload AS wake_payload
+                    SELECT w.*, m.decision AS wake_payload
                     FROM conversation_waits AS w
-                    JOIN conversation_mailbox AS m ON m.id=w.wake_event_id
+                    JOIN agent_work AS m ON m.id=w.wake_work_id
                     JOIN agent_runs AS r ON r.id=w.run_id
                     WHERE w.channel_id=? AND w.state='completed'
                       AND m.state IN ('pending','claimed') AND r.status='interrupted'
@@ -267,9 +261,9 @@ class ConversationWaits:
             rows = await (
                 await connection.execute(
                     """
-                    SELECT w.*, m.payload AS wake_payload
+                    SELECT w.*, m.decision AS wake_payload
                     FROM conversation_waits AS w
-                    JOIN conversation_mailbox AS m ON m.id=w.wake_event_id
+                    JOIN agent_work AS m ON m.id=w.wake_work_id
                     LEFT JOIN agent_runs AS r ON r.id=w.run_id
                     WHERE w.state IN ('arming','scheduled','resuming')
                        OR (w.state='completed' AND m.state IN ('pending','claimed')
@@ -289,7 +283,7 @@ class ConversationWaits:
                     WHERE (state='scheduled' AND resume_at<=?) OR state='resuming'
                     UNION
                     SELECT w.channel_id FROM conversation_waits AS w
-                    JOIN conversation_mailbox AS m ON m.id=w.wake_event_id
+                    JOIN agent_work AS m ON m.id=w.wake_work_id
                     JOIN agent_runs AS r ON r.id=w.run_id
                     WHERE w.state='completed' AND m.state IN ('pending','claimed')
                       AND r.status='interrupted'
@@ -332,7 +326,7 @@ class ConversationWaits:
             run_id=str(row["run_id"]),
             trace_id=str(row["trace_id"]),
             tool_call_id=str(row["tool_call_id"]),
-            wake_event_id=str(row["wake_event_id"]),
+            wake_work_id=str(row["wake_work_id"]),
             state=state or str(row["state"]),
             resume_at=float(row["resume_at"]),
             payload=json.loads(row["payload"]),

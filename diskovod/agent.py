@@ -441,9 +441,11 @@ def _tool_result_ok(message: ToolMessage) -> bool:
 def _runtime_system_message(prompt: AgentPrompt, context: AgentRuntimeContext) -> SystemMessage:
     prompts = prompts_for(context.prompt_locale)
     runtime_text = runtime_context_text(context.prompt_locale)
-    mode = runtime_text.get(f"mode_{context.automation_mode}", context.automation_mode)
+    role = runtime_text.get(f"role_{context.conversation_role}", context.conversation_role)
+    delivery = runtime_text.get(f"delivery_{context.delivery}", context.delivery)
     suffix = [
-        runtime_text["mode"].format(mode=mode),
+        runtime_text["role"].format(role=role),
+        runtime_text["delivery"].format(delivery=delivery),
         runtime_text["participants"].format(channel=context.channel_id),
     ]
     if context.force_reply:

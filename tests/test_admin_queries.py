@@ -2,17 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+from dataclasses import replace
 
 from diskovod.admin_queries import AdminQueryService
-from diskovod.mailbox import ConversationMailbox
+from diskovod.conversation import ConversationJournal
+from diskovod.interaction import preset_policy
 from diskovod.redaction import REDACTED, redact_sensitive
 from diskovod.store import Store
 
 
 async def test_overview_and_diagnostics_support_the_current_runtime_schema(tmp_path: Path):
     store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
-    mailbox = ConversationMailbox(store.database)
-    await mailbox.ingest("pending", "channel", "message", {}, observed_at=20.0)
+    journal = ConversationJournal(store.database)
+    await journal.schedule_force(
+        "channel", trigger_message_id="message", policy=preset_policy("autonomous"), policy_version=1
+    )
 
     queries = AdminQueryService(store)
     overview = await queries.overview()
@@ -20,6 +24,23 @@ async def test_overview_and_diagnostics_support_the_current_runtime_schema(tmp_p
 
     assert overview["chats"] == 0
     assert diagnostics["pending_events"] == 1
+    await store.aclose()
+
+
+async def test_inherited_chats_use_the_configured_default_policy_in_admin_views(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), default_interaction_preset="shared")
+    )
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    queries = AdminQueryService(store)
+
+    overview = await queries.overview()
+    chats = await queries.chats(state="shared")
+
+    assert overview["interaction_policies"] == {"shared": 1}
+    assert chats["total"] == 1
+    assert chats["items"][0]["preset"] == "shared"
     await store.aclose()
 
 
@@ -40,17 +61,13 @@ async def test_chat_projection_is_bounded_and_supports_loading_older_messages(tm
     queries = AdminQueryService(store)
 
     chat = await queries.chat("channel")
-    assert [item["id"] for item in chat["messages"]] == [
-        f"message-{index:02}" for index in range(11, 61)
-    ]
+    assert [item["id"] for item in chat["messages"]] == [f"message-{index:02}" for index in range(11, 61)]
     assert chat["messages"][0]["role"] == "peer"
     assert chat["messages"][1]["role"] == "owner"
     assert chat["older_messages_before"] == 11
 
     older = await queries.messages("channel", before=chat["older_messages_before"], limit=50)
-    assert [item["id"] for item in older["items"]] == [
-        f"message-{index:02}" for index in range(1, 11)
-    ]
+    assert [item["id"] for item in older["items"]] == [f"message-{index:02}" for index in range(1, 11)]
     assert older["next_before"] is None
     await store.aclose()
 
@@ -75,17 +92,18 @@ async def test_run_projection_redacts_nested_credentials_but_preserves_usage_cou
     async with store.database.transaction() as connection:
         await connection.execute(
             """
-            INSERT INTO conversation_mailbox(
-              id, channel_id, sequence, kind, available_at, observed_at,
-              payload, state
-            ) VALUES('wake', 'channel', 1, 'continuation_due', 20, 10, '{}', 'pending')
+            INSERT INTO agent_work(
+              id, channel_id, kind, trigger_kind, policy_version, policy_snapshot,
+              available_at, state, decision, created_at
+            ) VALUES('wake', 'channel', 'continuation', 'continuation_due', 1, '{}',
+              20, 'pending', '{}', 10)
             """
         )
         await connection.execute(
             """
             INSERT INTO conversation_waits(
               id, thread_id, channel_id, run_id, trace_id, tool_call_id,
-              wake_event_id, state, resume_at, created_at, updated_at, payload
+              wake_work_id, state, resume_at, created_at, updated_at, payload
             ) VALUES(
               'wait', 'thread', 'channel', 'run', 'trace', 'tool',
               'wake', 'scheduled', 20, 10, 10, '{"api_key":"private"}'

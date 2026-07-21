@@ -141,26 +141,23 @@ class PrivateDiscordClient(discord.Client):
                 message_id=str(message.id),
                 author_id=str(self.user.id),
                 author_name=str(self.user),
+                attachments=attachments,
+                observed_at=message.created_at.timestamp(),
             )
             if resumed:
                 log.info("Manual owner reply resumed the interrupted agent for %s", channel_id)
-            conversation = await self.store.aconversation(channel_id)
-            await self.runtime.submit_message(
-                message_id=str(message.id),
-                channel_id=channel_id,
-                account_id=str(self.user.id),
-                author_id=str(self.user.id),
-                author_name=str(self.user),
-                participant_role="owner",
-                content=message.content,
-                attachments=attachments,
-                observed_at=message.created_at.timestamp(),
-                agent_input=False if resumed else None,
-            )
-            if not resumed and not (
-                conversation and conversation["mode"] == "inline" and not conversation["paused"]
-            ):
-                await self.runtime.human_activity(channel_id)
+            if not resumed:
+                await self.runtime.submit_message(
+                    message_id=str(message.id),
+                    channel_id=channel_id,
+                    account_id=str(self.user.id),
+                    author_id=str(self.user.id),
+                    author_name=str(self.user),
+                    participant_role="owner",
+                    content=message.content,
+                    attachments=attachments,
+                    observed_at=message.created_at.timestamp(),
+                )
             return
         if message.author.bot:
             return
@@ -207,7 +204,6 @@ class PrivateDiscordClient(discord.Client):
                 source="human",
             )
             if updated and updated["changed"]:
-                conversation = await self.store.aconversation(channel_id)
                 await self.runtime.submit_message(
                     message_id=str(message.id),
                     channel_id=channel_id,
@@ -220,8 +216,6 @@ class PrivateDiscordClient(discord.Client):
                     observed_at=time.time(),
                     edited=True,
                 )
-                if not (conversation and conversation["mode"] == "inline" and not conversation["paused"]):
-                    await self.runtime.human_activity(channel_id)
             return
         if message.author.bot:
             return
@@ -325,8 +319,6 @@ class DiscordService:
     ) -> list[DeliveryRecord]:
         channel = self._channel(context.channel_id)
         settings = self.store.automation_settings()
-        conversation = await self.store.aconversation(context.channel_id)
-        inline = bool(conversation and conversation["mode"] == "inline")
         records: list[DeliveryRecord] = []
         for index, part in enumerate(messages):
             if index:
@@ -342,7 +334,9 @@ class DiscordService:
                     await asyncio.sleep(min(12.0, max(0.8, len(part) / cps)))
                 nonce = secrets.token_hex(12)
                 await self.store.aremember_nonce(nonce)
-                outbound = f"🤖 {part}" if settings.robot_prefix or inline else part
+                outbound = (
+                    f"🤖 {part}" if settings.robot_prefix or context.identity_marker == "forced" else part
+                )
                 sent = await channel.send(
                     outbound,
                     nonce=nonce,

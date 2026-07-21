@@ -6,21 +6,22 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from diskovod.agent import build_agent
-from diskovod.mailbox import ConversationMailbox
+from diskovod.conversation import ConversationJournal
+from diskovod.interaction import TriggerDecision, preset_policy
 from diskovod.store import Store
 
 from test_agent import RecordingGateway, ScriptedChatModel, UnusedPublicHTTP, prompt, runtime_context
 
 
 class InjectingModel(ScriptedChatModel):
-    mailbox: object
+    journal: object
     injected: bool = False
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
         if not self.injected:
             self.injected = True
-            await self.mailbox.ingest(
+            await self.journal.admit(
                 "steer-1",
                 "channel",
                 "message",
@@ -31,18 +32,30 @@ class InjectingModel(ScriptedChatModel):
                     "participant_role": "peer",
                     "content": "Actually, use 8 instead.",
                 },
+                observed_at=1,
+                schedule=False,
+                trigger_kind="active_input",
+                trigger_participant="peer",
+                policy=preset_policy("shared"),
+                policy_version=1,
+                decision=TriggerDecision(False, "active_input"),
             )
         return result
 
 
-def mailbox_injector(mailbox: ConversationMailbox):
+def journal_injector(journal: ConversationJournal):
     async def inject(state, context):
         run_id = str(state.get("logical_request_id") or "")
         known = set(state.get("claimed_event_ids", []))
         recovered = [
-            event for event in await mailbox.claimed(context.channel_id, run_id) if event.id not in known
+            event for event in await journal.claimed(context.channel_id, run_id) if event.id not in known
         ]
-        events = recovered + await mailbox.claim_ready(context.channel_id, run_id)
+        events = recovered + await journal.claim_injection(
+            context.channel_id,
+            run_id,
+            injection_batch=1,
+            participants=frozenset({"owner", "peer"}),
+        )
         if not events:
             return None
         return {
@@ -59,8 +72,8 @@ def mailbox_injector(mailbox: ConversationMailbox):
 @pytest.mark.asyncio
 async def test_new_input_is_injected_at_the_safe_point_after_tool_execution(tmp_path: Path):
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
-    mailbox = ConversationMailbox(store.database)
-    await mailbox.thread_id("account", "channel")
+    journal = ConversationJournal(store.database)
+    await journal.thread_id("account", "channel")
     model = InjectingModel(
         responses=[
             AIMessage(
@@ -76,14 +89,14 @@ async def test_new_input_is_injected_at_the_safe_point_after_tool_execution(tmp_
             ),
             AIMessage(content="reconsidered after steering"),
         ],
-        mailbox=mailbox,
+        journal=journal,
     )
     agent = build_agent(
         model,
         RecordingGateway(),
         prompt(),
         UnusedPublicHTTP(),
-        input_injector=mailbox_injector(mailbox),
+        input_injector=journal_injector(journal),
     )
 
     result = await agent.ainvoke(
@@ -109,17 +122,28 @@ async def test_new_input_is_injected_at_the_safe_point_after_tool_execution(tmp_
 @pytest.mark.asyncio
 async def test_recovery_reapplies_claimed_but_uncheckpointed_events(tmp_path: Path):
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
-    mailbox = ConversationMailbox(store.database)
-    await mailbox.thread_id("account", "channel")
-    await mailbox.ingest(
+    journal = ConversationJournal(store.database)
+    await journal.thread_id("account", "channel")
+    await journal.admit(
         "event",
         "channel",
         "message",
-        {"message_id": "message", "content": "recovered"},
+        {"message_id": "message", "content": "recovered", "participant_role": "peer"},
+        observed_at=1,
+        schedule=False,
+        trigger_kind="active_input",
+        trigger_participant="peer",
+        policy=preset_policy("shared"),
+        policy_version=1,
+        decision=TriggerDecision(False, "active_input"),
     )
-    assert (await mailbox.claim_ready("channel", "request-1"))[0].id == "event"
+    assert (
+        await journal.claim_injection(
+            "channel", "request-1", injection_batch=1, participants=frozenset({"peer"})
+        )
+    )[0].id == "event"
 
-    update = await mailbox_injector(mailbox)(
+    update = await journal_injector(journal)(
         {"messages": [], "logical_request_id": "request-1"}, runtime_context()
     )
 

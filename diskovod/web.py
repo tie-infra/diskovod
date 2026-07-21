@@ -8,7 +8,7 @@ import platform
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -24,8 +24,19 @@ from .admin_queries import AdminQueryService
 from .localization import (
     SUPPORTED_LOCALES,
     assistant_name_for,
+    invocation_attention_words,
     prompts_for,
     ui_text,
+)
+from .interaction import (
+    ActiveTurnInput,
+    InvocationAlias,
+    OwnerHandoff,
+    TriggerRule,
+    TypoTolerance,
+    evaluate_trigger,
+    normalize_invocation_text,
+    preset_policy,
 )
 from .models import (
     ADMIN_THEMES,
@@ -55,8 +66,6 @@ CUSTOM_PROTOCOLS = frozenset({"responses", "chat_completions"})
 LIVE_TOPIC_PATTERN = re.compile(r"^(?:jobs|inbox|(?:chat|run|job):[A-Za-z0-9_.:-]{1,500})$")
 AUTOMATION_TIMING_FIELDS = (
     "debounce_seconds",
-    "min_delay_seconds",
-    "max_delay_seconds",
     "min_typing_cps",
     "max_typing_cps",
     "min_human_quiet_minutes",
@@ -65,9 +74,9 @@ AUTOMATION_TIMING_FIELDS = (
     "max_message_gap_seconds",
 )
 AUTOMATION_PRESETS = {
-    "responsive": (0.8, 0.8, 2.5, 24.0, 40.0, 5.0, 12.0, 0.3, 0.9),
-    "natural": (1.8, 2.2, 6.5, 18.0, 32.0, 15.0, 30.0, 0.7, 2.0),
-    "reserved": (3.0, 5.0, 12.0, 14.0, 24.0, 30.0, 60.0, 1.2, 3.0),
+    "responsive": (0.8, 24.0, 40.0, 5.0, 12.0, 0.3, 0.9),
+    "natural": (1.8, 18.0, 32.0, 15.0, 30.0, 0.7, 2.0),
+    "reserved": (3.0, 14.0, 24.0, 30.0, 60.0, 1.2, 3.0),
 }
 
 
@@ -272,11 +281,31 @@ class WebApp:
             )
 
         @self.app.get("/chats/{channel_id}")
-        async def chat(request: Request, channel_id: str, _: str = Depends(auth)):
+        async def chat(
+            request: Request,
+            channel_id: str,
+            test_input: str = "",
+            test_participant: str = "peer",
+            _: str = Depends(auth),
+        ):
             view = await self.queries.chat(channel_id)
             if view is None:
                 raise HTTPException(404, self._t("conversation_not_found"))
             await self._prepare_chat_view(view)
+            profile = self.store.assistant_profile()
+            view["assistant_display_name"] = assistant_name_for(profile.prompt_locale, profile.assistant_name)
+            if test_input:
+                policy, _, _ = await self.store.ainteraction_policy(channel_id)
+                participant = "owner" if test_participant == "owner" else "peer"
+                view["invocation_test_input"] = test_input[:1000]
+                view["invocation_test_participant"] = participant
+                view["invocation_test_result"] = evaluate_trigger(
+                    policy,
+                    participant=participant,
+                    content=test_input[:1000],
+                    assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
+                    attention_words=invocation_attention_words(),
+                ).to_dict() | {"normalized_input": normalize_invocation_text(test_input[:1000])}
             return await self._render(
                 request, "chat.html", "chats", "chat", chat=view, live_topic=f"chat:{channel_id}"
             )
@@ -935,9 +964,8 @@ class WebApp:
             silent_replies: str | None = Form(None),
             robot_prefix: str | None = Form(None),
             default_conversation_enabled: str | None = Form(None),
+            default_interaction_preset: str = Form("autonomous"),
             debounce_seconds: float = Form(1.8),
-            min_delay_seconds: float = Form(2.2),
-            max_delay_seconds: float = Form(6.5),
             min_typing_cps: float = Form(18),
             max_typing_cps: float = Form(32),
             min_human_quiet_minutes: float = Form(15),
@@ -949,8 +977,6 @@ class WebApp:
             if preset in AUTOMATION_PRESETS:
                 (
                     debounce_seconds,
-                    min_delay_seconds,
-                    max_delay_seconds,
                     min_typing_cps,
                     max_typing_cps,
                     min_human_quiet_minutes,
@@ -961,8 +987,7 @@ class WebApp:
             elif preset != "custom":
                 return self._redirect("/settings/automation", error=self._t("unknown_automation_preset"))
             if (
-                min_delay_seconds > max_delay_seconds
-                or min_typing_cps > max_typing_cps
+                min_typing_cps > max_typing_cps
                 or min_human_quiet_minutes > max_human_quiet_minutes
                 or min_message_gap_seconds > max_message_gap_seconds
             ):
@@ -977,14 +1002,20 @@ class WebApp:
                     "/settings/automation", error=self._t("detect_native_calls_before_enable")
                 )
             previous_automation = self.store.automation_settings()
+            if default_interaction_preset not in {
+                "autonomous",
+                "shared",
+                "on_invocation",
+                "manual",
+            }:
+                return self._redirect("/settings/automation", error=self._t("interaction_policy_invalid"))
             updated_automation = AutomationSettings(
                 enabled=enabled is not None,
                 silent_replies=silent_replies is not None,
                 robot_prefix=robot_prefix is not None,
                 default_conversation_enabled=default_conversation_enabled is not None,
+                default_interaction_preset=default_interaction_preset,
                 debounce_seconds=max(0, debounce_seconds),
-                min_delay_seconds=max(0, min_delay_seconds),
-                max_delay_seconds=max(0, max_delay_seconds),
                 min_typing_cps=max(1, min_typing_cps),
                 max_typing_cps=max(1, max_typing_cps),
                 min_human_quiet_minutes=max(0, min_human_quiet_minutes),
@@ -1453,26 +1484,126 @@ class WebApp:
             await self.store.aclear_snooze(channel_id)
             return self._redirect(f"/chats/{channel_id}", message=self._t("conversation_resumed"))
 
-        @self.app.post("/chats/{channel_id}/mode")
-        async def conversation_mode(
+        @self.app.post("/chats/{channel_id}/interaction")
+        async def conversation_interaction(
             channel_id: str,
-            mode: str = Form(...),
+            preset: str = Form(...),
+            trigger_participants: list[str] = Form([]),
+            active_turn_participants: list[str] = Form([]),
+            active_turn_timing: str = Form("inject_at_safe_points"),
+            invocation_aliases: str = Form(""),
+            literal_prefixes: str = Form(""),
+            attention_locales: list[str] = Form([]),
+            additional_attention_words: str = Form(""),
+            typo_tolerance: str | None = Form(None),
+            invocation_snooze_behavior: str = Form("bypass"),
+            owner_handoff_transition: str = Form(""),
+            owner_handoff_active_action: str = Form(""),
+            conversation_role: str = Form(""),
+            identity_marker: str = Form(""),
             _: str = Depends(auth),
         ):
-            if mode not in {"automatic", "inline", "paused"}:
+            if preset not in {"autonomous", "shared", "on_invocation", "manual"}:
                 return self._redirect(
                     f"/chats/{channel_id}",
-                    error=self._t("conversation_mode_invalid"),
+                    error=self._t("interaction_policy_invalid"),
                 )
-            if not await self.store.aset_conversation_mode(channel_id, mode):
+            profile = self.store.assistant_profile()
+            policy = preset_policy(
+                preset,  # type: ignore[arg-type]
+                prompt_locale=profile.prompt_locale,
+                inject_active_input=active_turn_timing == "inject_at_safe_points",
+            )
+            participants = frozenset(item for item in trigger_participants if item in {"owner", "peer"})
+            active_participants = frozenset(
+                item for item in active_turn_participants if item in {"owner", "peer"}
+            )
+            policy = replace(
+                policy,
+                trigger_participants=participants,
+                active_turn_input=ActiveTurnInput(
+                    timing=(
+                        "queue_for_next_turn"
+                        if active_turn_timing == "queue_for_next_turn"
+                        else "inject_at_safe_points"
+                    ),
+                    participants=active_participants,
+                ),
+                invocation_snooze_behavior=(
+                    "respect" if invocation_snooze_behavior == "respect" else "bypass"
+                ),
+                owner_handoff=OwnerHandoff(
+                    availability_transition=(
+                        owner_handoff_transition
+                        if owner_handoff_transition in {"none", "snooze", "pause"}
+                        else policy.owner_handoff.availability_transition
+                    ),
+                    active_run_action=(
+                        "cancel"
+                        if owner_handoff_active_action == "cancel"
+                        else policy.owner_handoff.active_run_action
+                    ),
+                ),
+                conversation_role=(
+                    conversation_role
+                    if conversation_role in {"owner_delegate", "shared_assistant", "owner_copilot"}
+                    else policy.conversation_role
+                ),
+                identity_marker=(
+                    identity_marker
+                    if identity_marker in {"configurable", "forced"}
+                    else policy.identity_marker
+                ),
+            )
+            if preset == "on_invocation":
+                aliases = [InvocationAlias()]
+                for item in invocation_aliases.splitlines():
+                    if clean := item.strip():
+                        aliases.append(InvocationAlias("literal", clean[:80]))
+                direct_rule = TriggerRule(
+                    "direct_address",
+                    aliases=tuple(aliases[:16]),
+                    attention_locales=tuple(item for item in attention_locales if item in SUPPORTED_LOCALES)
+                    or (profile.prompt_locale,),
+                    additional_attention_words=tuple(
+                        clean[:80]
+                        for item in additional_attention_words.splitlines()
+                        if (clean := item.strip())
+                    )[:32],
+                    typo_tolerance=TypoTolerance(enabled=typo_tolerance is not None),
+                )
+                strict_rules = tuple(
+                    TriggerRule("literal_prefix", literal=clean[:80])
+                    for item in literal_prefixes.splitlines()
+                    if (clean := item.strip())
+                )[:15]
+                policy = replace(
+                    policy,
+                    trigger_rules=(direct_rule, *strict_rules),
+                )
+            try:
+                saved = await self.store.aset_interaction_policy(channel_id, policy)
+            except ValueError:
+                return self._redirect(
+                    f"/chats/{channel_id}",
+                    error=self._t("interaction_policy_invalid"),
+                )
+            if not saved:
                 return self._redirect(
                     f"/chats/{channel_id}",
                     error=self._t("conversation_not_found"),
                 )
-            self.runtime.cancel(channel_id)
             return self._redirect(
                 f"/chats/{channel_id}",
-                message=self._t("conversation_mode_saved"),
+                message=self._t("interaction_policy_saved"),
+            )
+
+        @self.app.post("/chats/{channel_id}/interaction/reset")
+        async def conversation_interaction_reset(channel_id: str, _: str = Depends(auth)):
+            await self.store.areset_interaction_policy(channel_id)
+            return self._redirect(
+                f"/chats/{channel_id}",
+                message=self._t("interaction_policy_saved"),
             )
 
         @self.app.post("/chats/{channel_id}/force-reply")
@@ -1493,17 +1624,6 @@ class WebApp:
             if not await self.runtime.cancel_followup(channel_id):
                 return self._redirect(f"/chats/{channel_id}", error=self._t("followup_not_active"))
             return self._redirect(f"/chats/{channel_id}", message=self._t("followup_cancelled"))
-
-        @self.app.post("/chats/{channel_id}/steering")
-        async def live_steering(
-            channel_id: str,
-            enabled: str | None = Form(None),
-            _: str = Depends(auth),
-        ):
-            if await self.store.aconversation(channel_id) is None:
-                return self._redirect(f"/chats/{channel_id}", error=self._t("conversation_not_found"))
-            await self.runtime.set_live_steering(channel_id, enabled is not None)
-            return self._redirect(f"/chats/{channel_id}", message=self._t("settings_saved"))
 
         @self.app.post("/inbox/escalations/{escalation_id}/claim")
         async def escalation_claim(escalation_id: str, _: str = Depends(auth)):

@@ -7,12 +7,14 @@ import threading
 import time
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
-from .localization import normalize_locale
+from .localization import assistant_name_for, invocation_attention_words, normalize_locale
+from .interaction import InteractionPolicy, preset_policy, validate_policy
 from .models import (
     ADMIN_DENSITIES,
     ADMIN_THEMES,
@@ -66,10 +68,22 @@ DATABASE_TABLES = {
         "order_by": "updated_at",
         "read_only": True,
     },
-    "conversation_mailbox": {
-        "label": "Conversation mailbox",
+    "conversation_events": {
+        "label": "Conversation events",
         "primary_key": "id",
         "order_by": "observed_at",
+        "read_only": True,
+    },
+    "agent_work": {
+        "label": "Agent work",
+        "primary_key": "id",
+        "order_by": "created_at",
+        "read_only": True,
+    },
+    "chat_interaction_policies": {
+        "label": "Chat interaction policies",
+        "primary_key": "channel_id",
+        "order_by": "updated_at",
         "read_only": True,
     },
     "outbound_actions": {
@@ -280,14 +294,6 @@ class Store:
         }
         if "attachments" not in message_columns:
             await connection.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
-        conversation_columns = {
-            row["name"]
-            for row in await (await connection.execute("PRAGMA table_info(conversations)")).fetchall()
-        }
-        if "mode" not in conversation_columns:
-            await connection.execute(
-                "ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'automatic'"
-            )
         config = {
             str(row["key"]): self._decode_config(row["value"], bool(row["secret"]))
             for row in await (await connection.execute("SELECT key, value, secret FROM config")).fetchall()
@@ -370,7 +376,15 @@ class Store:
             saved = {}
         defaults = AutomationSettings().to_dict()
         known = {key: value for key, value in saved.items() if key in defaults}
-        return AutomationSettings(**(defaults | known))
+        result = AutomationSettings(**(defaults | known))
+        if result.default_interaction_preset not in {
+            "autonomous",
+            "shared",
+            "on_invocation",
+            "manual",
+        }:
+            result.default_interaction_preset = "autonomous"
+        return result
 
     def discord_token(self) -> str | None:
         return self._get("discord.token", None)
@@ -408,9 +422,8 @@ class Store:
             "channel_id": row["channel_id"],
             "peer_id": row["peer_id"],
             "peer_name": row["peer_name"],
-            "paused": bool(row["paused"]),
+            "availability": row["availability"],
             "paused_at": row["paused_at"],
-            "mode": row["mode"],
             "snoozed_until": row["snoozed_until"],
             "updated_at": row["updated_at"],
         }
@@ -528,7 +541,7 @@ class Store:
 
     async def acan_automate(self, channel_id: str, now: float | None = None) -> bool:
         conversation = await self.aconversation(channel_id)
-        if not conversation or conversation["paused"]:
+        if not conversation or conversation["availability"] == "paused":
             return False
         current_time = time.time() if now is None else now
         return not conversation["snoozed_until"] or conversation["snoozed_until"] <= current_time
@@ -774,8 +787,8 @@ class Store:
         async with self.database.transaction() as connection:
             await connection.execute(
                 """INSERT INTO conversations
-                   (channel_id, peer_id, peer_name, paused, paused_at, updated_at, snoozed_until, mode)
-                   VALUES(?,?,?,?,?,?,NULL,'automatic')
+                   (channel_id, peer_id, peer_name, availability, paused_at, updated_at, snoozed_until)
+                   VALUES(?,?,?,?,?,?,NULL)
                    ON CONFLICT(channel_id) DO UPDATE SET
                      peer_id=excluded.peer_id, peer_name=excluded.peer_name,
                      updated_at=excluded.updated_at""",
@@ -783,7 +796,7 @@ class Store:
                     channel_id,
                     peer_id,
                     peer_name,
-                    int(default_paused),
+                    "paused" if default_paused else "active",
                     now if default_paused else None,
                     now,
                 ),
@@ -793,24 +806,117 @@ class Store:
         now = time.time()
         async with self.database.transaction() as connection:
             await connection.execute(
-                "UPDATE conversations SET paused=?, paused_at=?, updated_at=? WHERE channel_id=?",
-                (int(paused), now if paused else None, now, channel_id),
+                "UPDATE conversations SET availability=?, paused_at=?, updated_at=? WHERE channel_id=?",
+                ("paused" if paused else "active", now if paused else None, now, channel_id),
             )
 
-    async def aset_conversation_mode(self, channel_id: str, mode: str) -> bool:
-        if mode not in {"automatic", "inline", "paused"}:
-            raise ValueError("Unknown conversation mode")
+    async def ainteraction_policy(
+        self,
+        channel_id: str,
+    ) -> tuple[InteractionPolicy, int, bool]:
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT * FROM chat_interaction_policies WHERE channel_id=?",
+                    (channel_id,),
+                )
+            ).fetchone()
+        if row is None:
+            settings = self.automation_settings()
+            policy = preset_policy(
+                settings.default_interaction_preset,  # type: ignore[arg-type]
+                prompt_locale=self.assistant_profile().prompt_locale,
+            )
+            return policy, self._effective_policy_version(policy, 0), True
+        value = {
+            "preset": row["preset"],
+            "trigger_rules": json.loads(row["trigger_rules"]),
+            "trigger_participants": json.loads(row["trigger_participants"]),
+            "owner_handoff": json.loads(row["owner_handoff"]),
+            "conversation_role": row["conversation_role"],
+            "identity_marker": row["identity_marker"],
+            "delivery": row["delivery"],
+            "active_turn_input": json.loads(row["active_turn_input"]),
+            "invocation_snooze_behavior": row["invocation_snooze_behavior"],
+            "invocation_turn_lifetime": row["invocation_turn_lifetime"],
+        }
+        policy = InteractionPolicy.from_dict(value)
+        return policy, self._effective_policy_version(policy, int(row["policy_version"])), False
+
+    def _effective_policy_version(self, policy: InteractionPolicy, stored_version: int) -> int:
+        profile = self.assistant_profile()
+        material = "\0".join(
+            (
+                str(stored_version),
+                policy.encoded(),
+                profile.prompt_locale,
+                profile.assistant_name,
+            )
+        )
+        return int.from_bytes(hashlib.sha256(material.encode()).digest()[:8], "big") & ((1 << 63) - 1)
+
+    async def aset_interaction_policy(self, channel_id: str, policy: InteractionPolicy) -> bool:
+        profile = self.assistant_profile()
+        validate_policy(
+            policy,
+            assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
+            supported_attention_locales=frozenset(invocation_attention_words()),
+        )
         now = time.time()
-        paused = mode == "paused"
+        async with self.database.transaction() as connection:
+            if not await (
+                await connection.execute("SELECT 1 FROM conversations WHERE channel_id=?", (channel_id,))
+            ).fetchone():
+                return False
+            await connection.execute(
+                """
+                INSERT INTO chat_interaction_policies(
+                  channel_id, preset, trigger_rules, trigger_participants, owner_handoff,
+                  conversation_role, identity_marker, delivery, active_turn_input,
+                  invocation_snooze_behavior, invocation_turn_lifetime, policy_version, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                  preset=excluded.preset,
+                  trigger_rules=excluded.trigger_rules,
+                  trigger_participants=excluded.trigger_participants,
+                  owner_handoff=excluded.owner_handoff,
+                  conversation_role=excluded.conversation_role,
+                  identity_marker=excluded.identity_marker,
+                  delivery=excluded.delivery,
+                  active_turn_input=excluded.active_turn_input,
+                  invocation_snooze_behavior=excluded.invocation_snooze_behavior,
+                  invocation_turn_lifetime=excluded.invocation_turn_lifetime,
+                  policy_version=chat_interaction_policies.policy_version + 1,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    channel_id,
+                    policy.preset,
+                    json.dumps([asdict(rule) for rule in policy.trigger_rules], ensure_ascii=False),
+                    json.dumps(sorted(policy.trigger_participants)),
+                    json.dumps(asdict(policy.owner_handoff)),
+                    policy.conversation_role,
+                    policy.identity_marker,
+                    policy.delivery,
+                    json.dumps(
+                        {
+                            "timing": policy.active_turn_input.timing,
+                            "participants": sorted(policy.active_turn_input.participants),
+                        }
+                    ),
+                    policy.invocation_snooze_behavior,
+                    policy.invocation_turn_lifetime,
+                    now,
+                ),
+            )
+        return True
+
+    async def areset_interaction_policy(self, channel_id: str) -> bool:
         async with self.database.transaction() as connection:
             cursor = await connection.execute(
-                """UPDATE conversations
-                   SET mode=CASE WHEN ?='paused' THEN mode ELSE ? END,
-                       paused=?, paused_at=?, snoozed_until=NULL, updated_at=?
-                   WHERE channel_id=?""",
-                (mode, mode, int(paused), now if paused else None, now, channel_id),
+                "DELETE FROM chat_interaction_policies WHERE channel_id=?", (channel_id,)
             )
-            return cursor.rowcount > 0
+        return cursor.rowcount > 0
 
     async def asnooze(self, channel_id: str, seconds: float) -> float:
         until = time.time() + max(0.0, seconds)

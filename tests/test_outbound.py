@@ -35,7 +35,7 @@ def context() -> AgentRuntimeContext:
         ui_locale="en",
         prompt_locale="en",
         assistant_name="Diskovod",
-        automation_mode="inline",
+        conversation_role="shared_assistant",
         force_reply=False,
         provider_id="test",
         model_id="test",
@@ -121,9 +121,7 @@ async def test_long_logical_reply_uses_deterministic_transport_segments(tmp_path
         payloads = [
             row[0]
             for row in await (
-                await connection.execute(
-                    "SELECT payload FROM outbound_actions ORDER BY ordinal"
-                )
+                await connection.execute("SELECT payload FROM outbound_actions ORDER BY ordinal")
             ).fetchall()
         ]
     assert all('"transport_segment"' in payload for payload in payloads)
@@ -135,9 +133,7 @@ async def test_abandoned_dispatch_requires_explicit_operator_retry(tmp_path: Pat
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     transport = Transport()
     publisher = OutboundPublisher(store.database, transport)
-    await publisher.publish_messages(
-        context(), ("hello",), source_kind="assistant_text", source_id="ai-1"
-    )
+    await publisher.publish_messages(context(), ("hello",), source_kind="assistant_text", source_id="ai-1")
     async with store.database.transaction() as connection:
         row = await (await connection.execute("SELECT id FROM outbound_actions")).fetchone()
         action_id = str(row["id"])
@@ -168,9 +164,7 @@ async def test_operator_can_resolve_ambiguous_delivery_without_transport(tmp_pat
     store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
     transport = Transport(raises=True)
     publisher = OutboundPublisher(store.database, transport)
-    await publisher.publish_messages(
-        context(), ("hello",), source_kind="assistant_text", source_id="ai-1"
-    )
+    await publisher.publish_messages(context(), ("hello",), source_kind="assistant_text", source_id="ai-1")
     async with store.database.transaction() as connection:
         row = await (await connection.execute("SELECT id FROM outbound_actions")).fetchone()
         action_id = str(row["id"])

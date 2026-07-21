@@ -67,10 +67,7 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/search" in route_paths
     assert "/chats" in route_paths
     assert "/chats/{channel_id}" in route_paths
-    assert (
-        "/chats/{channel_id}/generations/{generation}/checkpoints/{checkpoint_id}"
-        in route_paths
-    )
+    assert "/chats/{channel_id}/generations/{generation}/checkpoints/{checkpoint_id}" in route_paths
     assert "/activity/runs" in route_paths
     assert "/activity/runs/{run_id}" in route_paths
     assert "/activity/runs/{run_id}/diagnostic.json" in route_paths
@@ -106,7 +103,8 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/discord/captcha/{request_id}" in route_paths
     assert "/system/database/delete" in route_paths
     assert "/chats/{channel_id}/force-reply" in route_paths
-    assert "/chats/{channel_id}/mode" in route_paths
+    assert "/chats/{channel_id}/interaction" in route_paths
+    assert "/chats/{channel_id}/interaction/reset" in route_paths
     assert "/inbox/escalations/{escalation_id}/claim" in route_paths
     assert "/inbox/escalations/{escalation_id}/resolve" in route_paths
     assert "/inbox/escalations/{escalation_id}/dismiss" in route_paths

@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 from .agent_types import DiskovodAgentState
+from .interaction import TriggerDecision
 from .localization import runtime_context_text, summarization_prompt
 from .runtime import AgentService
 from .store import Store
@@ -48,7 +49,8 @@ class LegacyMigrator:
         for conversation in conversations:
             channel_id = str(conversation["channel_id"])
             account_id = await self.runtime._account_id(channel_id)
-            thread_id = await self.runtime.mailbox.thread_id(account_id, channel_id)
+            thread_id = await self.runtime.journal.thread_id(account_id, channel_id)
+            policy, policy_version, _ = await self.store.ainteraction_policy(channel_id)
             history = await self.store.ahistory(channel_id, 100_000)
             messages = await self._messages(history, conversation, account_id)
             for item in history:
@@ -62,13 +64,19 @@ class LegacyMigrator:
                     "attachments": item.get("attachments") or [],
                     "legacy_source": str(item["source"]),
                 }
-                if await self.runtime.mailbox.ingest(
+                if await self.runtime.journal.admit(
                     f"legacy:message:{item['id']}",
                     channel_id,
                     "message",
                     payload,
                     observed_at=float(item["timestamp"]),
-                    enqueue=False,
+                    schedule=False,
+                    trigger_kind="legacy_history",
+                    trigger_participant=payload["participant_role"],
+                    policy=policy,
+                    policy_version=policy_version,
+                    decision=TriggerDecision(False, "legacy_history"),
+                    applied=True,
                 ):
                     event_count += 1
             if messages and not await self.runtime.checkpointer.aget_tuple(
@@ -160,7 +168,7 @@ class LegacyMigrator:
                 (
                     await (
                         await connection.execute(
-                            "SELECT COUNT(*) FROM conversation_mailbox WHERE id LIKE 'legacy:message:%'"
+                            "SELECT COUNT(*) FROM conversation_events WHERE id LIKE 'legacy:message:%'"
                         )
                     ).fetchone()
                 )[0]
@@ -184,7 +192,7 @@ class LegacyMigrator:
             raise RuntimeError("Migration found invalid side-effect ledger states")
         for conversation in await self.store.aconversations():
             channel_id = str(conversation["channel_id"])
-            thread_id = await self.runtime.mailbox.thread_id(
+            thread_id = await self.runtime.journal.thread_id(
                 await self.runtime._account_id(channel_id),
                 channel_id,
             )
@@ -340,7 +348,7 @@ class LegacyMigrator:
         for row in rows:
             channel_id = str(row["channel_id"])
             account_id = await self.runtime._account_id(channel_id)
-            thread_id = await self.runtime.mailbox.thread_id(account_id, channel_id)
+            thread_id = await self.runtime.journal.thread_id(account_id, channel_id)
             escalation_id = f"legacy:escalation:{row['id']}"
             if await self.store.aescalation_interrupt(escalation_id) is not None:
                 continue

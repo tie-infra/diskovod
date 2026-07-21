@@ -31,6 +31,7 @@ def test_multipage_admin_templates_parse_and_use_the_shared_shell():
         "settings_model.html",
         "settings_assistant.html",
         "settings_automation.html",
+        "settings_interaction.html",
         "settings_interface.html",
         "diagnostics.html",
         "database.html",

@@ -30,6 +30,7 @@ from .localization import (
 )
 from .interaction import (
     ActiveTurnInput,
+    InteractionPolicy,
     InvocationAlias,
     OwnerHandoff,
     TriggerRule,
@@ -183,6 +184,98 @@ class WebApp:
             parsed.hostname.lower(),
             port or (443 if parsed.scheme.lower() == "https" else 80),
         )
+
+    def _interaction_policy_from_form(self, form: Any) -> InteractionPolicy:
+        preset = str(form.get("preset") or "")
+        if preset not in {"autonomous", "shared", "on_invocation", "manual"}:
+            raise ValueError("Unknown interaction preset")
+        profile = self.store.assistant_profile()
+        timing = (
+            "queue_for_next_turn"
+            if form.get("active_turn_timing") == "queue_for_next_turn"
+            else "inject_at_safe_points"
+        )
+        policy = preset_policy(
+            preset,  # type: ignore[arg-type]
+            prompt_locale=profile.prompt_locale,
+            inject_active_input=timing == "inject_at_safe_points",
+        )
+        policy = replace(
+            policy,
+            trigger_participants=frozenset(
+                item for item in form.getlist("trigger_participants") if item in {"owner", "peer"}
+            ),
+            active_turn_input=ActiveTurnInput(
+                timing=timing,
+                participants=frozenset(
+                    item for item in form.getlist("active_turn_participants") if item in {"owner", "peer"}
+                ),
+            ),
+            invocation_snooze_behavior=(
+                "respect" if form.get("invocation_snooze_behavior") == "respect" else "bypass"
+            ),
+            owner_handoff=OwnerHandoff(
+                availability_transition=(
+                    str(form.get("owner_handoff_transition"))
+                    if form.get("owner_handoff_transition") in {"none", "snooze", "pause"}
+                    else policy.owner_handoff.availability_transition
+                ),
+                active_run_action=(
+                    "cancel" if form.get("owner_handoff_active_action") == "cancel" else "keep_or_inject"
+                ),
+            ),
+            conversation_role=(
+                str(form.get("conversation_role"))
+                if form.get("conversation_role") in {"owner_delegate", "shared_assistant", "owner_copilot"}
+                else policy.conversation_role
+            ),
+            identity_marker=(
+                str(form.get("identity_marker"))
+                if form.get("identity_marker") in {"configurable", "forced"}
+                else policy.identity_marker
+            ),
+        )
+        rules: list[TriggerRule] = []
+        if form.get("trigger_every_message") is not None:
+            rules.append(TriggerRule("every_message", id="every-message"))
+        if form.get("trigger_direct_address") is not None:
+            aliases = [InvocationAlias()] if form.get("use_assistant_name_alias") is not None else []
+            aliases.extend(
+                InvocationAlias("literal", clean[:80])
+                for item in str(form.get("invocation_aliases") or "").splitlines()
+                if (clean := item.strip())
+            )
+            rules.append(
+                TriggerRule(
+                    "direct_address",
+                    id="direct-address",
+                    aliases=tuple(aliases[:16]),
+                    attention_locales=(
+                        ()
+                        if form.get("attention_mode") == "replace"
+                        else tuple(
+                            item for item in form.getlist("attention_locales") if item in SUPPORTED_LOCALES
+                        )
+                        or (profile.prompt_locale,)
+                    ),
+                    additional_attention_words=tuple(
+                        clean[:80]
+                        for item in str(form.get("additional_attention_words") or "").splitlines()
+                        if (clean := item.strip())
+                    )[:32],
+                    allow_bare_alias=form.get("allow_bare_alias") is not None,
+                    typo_tolerance=TypoTolerance(enabled=form.get("typo_tolerance") is not None),
+                )
+            )
+        rules.extend(
+            TriggerRule("literal_prefix", id=f"literal-{index}", literal=clean[:80])
+            for index, item in enumerate(
+                str(form.get("literal_prefixes") or "").splitlines(),
+                1,
+            )
+            if (clean := item.strip())
+        )
+        return replace(policy, trigger_rules=tuple(rules[:16]))
 
     def _routes(self) -> None:
         auth = self.require_admin
@@ -595,6 +688,40 @@ class WebApp:
                 },
             )
 
+        @self.app.get("/settings/interaction")
+        async def interaction_settings(
+            request: Request,
+            test_input: str = "",
+            test_participant: str = "peer",
+            _: str = Depends(auth),
+        ):
+            policy = self.store.default_interaction_policy()
+            profile = self.store.assistant_profile()
+            test_result = None
+            participant = "owner" if test_participant == "owner" else "peer"
+            if test_input:
+                test_result = evaluate_trigger(
+                    policy,
+                    participant=participant,
+                    content=test_input[:1000],
+                    assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
+                    attention_words=invocation_attention_words(),
+                ).to_dict() | {"normalized_input": normalize_invocation_text(test_input[:1000])}
+            return await self._render(
+                request,
+                "settings_interaction.html",
+                "settings",
+                "interaction_settings",
+                interaction_policy=policy.to_dict(),
+                assistant_display_name=assistant_name_for(
+                    profile.prompt_locale,
+                    profile.assistant_name,
+                ),
+                invocation_test_input=test_input[:1000],
+                invocation_test_participant=participant,
+                invocation_test_result=test_result,
+            )
+
         @self.app.get("/settings/interface")
         async def interface_settings(request: Request, _: str = Depends(auth)):
             return await self._render(
@@ -1002,6 +1129,7 @@ class WebApp:
                     "/settings/automation", error=self._t("detect_native_calls_before_enable")
                 )
             previous_automation = self.store.automation_settings()
+            previous_default_policy = self.store.default_interaction_policy()
             if default_interaction_preset not in {
                 "autonomous",
                 "shared",
@@ -1024,9 +1152,39 @@ class WebApp:
                 max_message_gap_seconds=max(0, max_message_gap_seconds),
             )
             await self.store.aset_automation_settings(updated_automation)
+            if previous_default_policy.preset != default_interaction_preset:
+                await self.store.aset_default_interaction_policy(
+                    preset_policy(
+                        default_interaction_preset,  # type: ignore[arg-type]
+                        prompt_locale=self.store.assistant_profile().prompt_locale,
+                    )
+                )
             if previous_automation.enabled and not updated_automation.enabled:
                 await self.runtime.cancel_all_followups("automation_disabled")
             return self._redirect("/settings/automation", message=self._t("settings_saved"))
+
+        @self.app.post("/settings/interaction")
+        async def interaction_save(request: Request, _: str = Depends(auth)):
+            try:
+                policy = self._interaction_policy_from_form(await request.form())
+                await self.store.aset_default_interaction_policy(policy)
+            except (KeyError, TypeError, ValueError):
+                return self._redirect(
+                    "/settings/interaction",
+                    error=self._t("interaction_policy_invalid"),
+                )
+            return self._redirect(
+                "/settings/interaction",
+                message=self._t("interaction_policy_saved"),
+            )
+
+        @self.app.post("/settings/interaction/reset")
+        async def interaction_reset(_: str = Depends(auth)):
+            await self.store.areset_default_interaction_policy()
+            return self._redirect(
+                "/settings/interaction",
+                message=self._t("interaction_policy_saved"),
+            )
 
         @self.app.post("/settings/model")
         async def model_save(
@@ -1486,104 +1644,14 @@ class WebApp:
 
         @self.app.post("/chats/{channel_id}/interaction")
         async def conversation_interaction(
+            request: Request,
             channel_id: str,
-            preset: str = Form(...),
-            trigger_participants: list[str] = Form([]),
-            active_turn_participants: list[str] = Form([]),
-            active_turn_timing: str = Form("inject_at_safe_points"),
-            invocation_aliases: str = Form(""),
-            literal_prefixes: str = Form(""),
-            attention_locales: list[str] = Form([]),
-            additional_attention_words: str = Form(""),
-            typo_tolerance: str | None = Form(None),
-            invocation_snooze_behavior: str = Form("bypass"),
-            owner_handoff_transition: str = Form(""),
-            owner_handoff_active_action: str = Form(""),
-            conversation_role: str = Form(""),
-            identity_marker: str = Form(""),
             _: str = Depends(auth),
         ):
-            if preset not in {"autonomous", "shared", "on_invocation", "manual"}:
-                return self._redirect(
-                    f"/chats/{channel_id}",
-                    error=self._t("interaction_policy_invalid"),
-                )
-            profile = self.store.assistant_profile()
-            policy = preset_policy(
-                preset,  # type: ignore[arg-type]
-                prompt_locale=profile.prompt_locale,
-                inject_active_input=active_turn_timing == "inject_at_safe_points",
-            )
-            participants = frozenset(item for item in trigger_participants if item in {"owner", "peer"})
-            active_participants = frozenset(
-                item for item in active_turn_participants if item in {"owner", "peer"}
-            )
-            policy = replace(
-                policy,
-                trigger_participants=participants,
-                active_turn_input=ActiveTurnInput(
-                    timing=(
-                        "queue_for_next_turn"
-                        if active_turn_timing == "queue_for_next_turn"
-                        else "inject_at_safe_points"
-                    ),
-                    participants=active_participants,
-                ),
-                invocation_snooze_behavior=(
-                    "respect" if invocation_snooze_behavior == "respect" else "bypass"
-                ),
-                owner_handoff=OwnerHandoff(
-                    availability_transition=(
-                        owner_handoff_transition
-                        if owner_handoff_transition in {"none", "snooze", "pause"}
-                        else policy.owner_handoff.availability_transition
-                    ),
-                    active_run_action=(
-                        "cancel"
-                        if owner_handoff_active_action == "cancel"
-                        else policy.owner_handoff.active_run_action
-                    ),
-                ),
-                conversation_role=(
-                    conversation_role
-                    if conversation_role in {"owner_delegate", "shared_assistant", "owner_copilot"}
-                    else policy.conversation_role
-                ),
-                identity_marker=(
-                    identity_marker
-                    if identity_marker in {"configurable", "forced"}
-                    else policy.identity_marker
-                ),
-            )
-            if preset == "on_invocation":
-                aliases = [InvocationAlias()]
-                for item in invocation_aliases.splitlines():
-                    if clean := item.strip():
-                        aliases.append(InvocationAlias("literal", clean[:80]))
-                direct_rule = TriggerRule(
-                    "direct_address",
-                    aliases=tuple(aliases[:16]),
-                    attention_locales=tuple(item for item in attention_locales if item in SUPPORTED_LOCALES)
-                    or (profile.prompt_locale,),
-                    additional_attention_words=tuple(
-                        clean[:80]
-                        for item in additional_attention_words.splitlines()
-                        if (clean := item.strip())
-                    )[:32],
-                    typo_tolerance=TypoTolerance(enabled=typo_tolerance is not None),
-                )
-                strict_rules = tuple(
-                    TriggerRule("literal_prefix", literal=clean[:80])
-                    for item in literal_prefixes.splitlines()
-                    if (clean := item.strip())
-                )[:15]
-                policy = replace(
-                    policy,
-                    trigger_rules=(direct_rule, *strict_rules),
-                )
             try:
+                policy = self._interaction_policy_from_form(await request.form())
                 saved = await self.store.aset_interaction_policy(channel_id, policy)
-            except ValueError:
+            except (KeyError, TypeError, ValueError):
                 return self._redirect(
                     f"/chats/{channel_id}",
                     error=self._t("interaction_policy_invalid"),

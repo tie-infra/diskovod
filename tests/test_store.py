@@ -345,6 +345,30 @@ async def test_inherited_policy_and_dynamic_name_changes_have_distinct_effective
     await store.aclose()
 
 
+async def test_complete_global_policy_is_inherited_and_reset_restores_inheritance(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
+    await store.aupsert_conversation("dm-1", "peer-1", "Sam")
+    global_policy = replace(
+        preset_policy("on_invocation"),
+        trigger_participants=frozenset({"owner"}),
+        active_turn_input=replace(
+            preset_policy("on_invocation").active_turn_input,
+            participants=frozenset({"owner"}),
+        ),
+    )
+
+    await store.aset_default_interaction_policy(global_policy)
+    inherited, _, is_inherited = await store.ainteraction_policy("dm-1")
+    assert inherited == global_policy
+    assert is_inherited
+
+    assert await store.aset_interaction_policy("dm-1", preset_policy("shared"))
+    assert (await store.ainteraction_policy("dm-1"))[0].preset == "shared"
+    assert await store.areset_interaction_policy("dm-1")
+    assert (await store.ainteraction_policy("dm-1"))[0] == global_policy
+    await store.aclose()
+
+
 async def test_bot_markers_are_consumed_once(tmp_path: Path):
     store = await Store.open(tmp_path / "state.sqlite3", SECRET)
     await store.aremember_nonce("nonce")

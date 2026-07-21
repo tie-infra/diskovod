@@ -80,6 +80,8 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/settings/model" in route_paths
     assert "/settings/assistant" in route_paths
     assert "/settings/automation" in route_paths
+    assert "/settings/interaction" in route_paths
+    assert "/settings/interaction/reset" in route_paths
     assert "/settings/interface" in route_paths
     assert "/system/diagnostics" in route_paths
     assert "/system/diagnostics.json" in route_paths

@@ -26,6 +26,7 @@ class TypoTolerance:
 @dataclass(frozen=True, slots=True)
 class TriggerRule:
     kind: Literal["every_message", "direct_address", "literal_prefix"]
+    id: str = ""
     aliases: tuple[InvocationAlias, ...] = ()
     attention_locales: tuple[str, ...] = ()
     additional_attention_words: tuple[str, ...] = ()
@@ -68,12 +69,13 @@ class InteractionPolicy:
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> InteractionPolicy:
         rules = []
-        for raw in value.get("trigger_rules", []):
+        for index, raw in enumerate(value.get("trigger_rules", [])):
             aliases = tuple(InvocationAlias(**item) for item in raw.get("aliases", []))
             typo = TypoTolerance(**raw.get("typo_tolerance", {}))
             rules.append(
                 TriggerRule(
                     kind=raw["kind"],
+                    id=str(raw.get("id") or f"{raw['kind']}-{index + 1}"),
                     aliases=aliases,
                     attention_locales=tuple(raw.get("attention_locales", [])),
                     additional_attention_words=tuple(raw.get("additional_attention_words", [])),
@@ -115,7 +117,7 @@ def preset_policy(
     if preset == "autonomous":
         return InteractionPolicy(
             preset=preset,
-            trigger_rules=(TriggerRule("every_message"),),
+            trigger_rules=(TriggerRule("every_message", id="every-message"),),
             trigger_participants=frozenset({"peer"}),
             owner_handoff=OwnerHandoff("snooze", "cancel"),
             conversation_role="owner_delegate",
@@ -126,7 +128,7 @@ def preset_policy(
     if preset == "shared":
         return InteractionPolicy(
             preset=preset,
-            trigger_rules=(TriggerRule("every_message"),),
+            trigger_rules=(TriggerRule("every_message", id="every-message"),),
             trigger_participants=frozenset({"owner", "peer"}),
             owner_handoff=OwnerHandoff(),
             conversation_role="shared_assistant",
@@ -140,6 +142,7 @@ def preset_policy(
             trigger_rules=(
                 TriggerRule(
                     "direct_address",
+                    id="assistant-name",
                     aliases=(InvocationAlias(),),
                     attention_locales=(prompt_locale,),
                 ),
@@ -253,6 +256,7 @@ class TriggerDecision:
     matched: bool
     reason: str
     rule_kind: str = ""
+    rule_id: str = ""
     alias: str = ""
     distance: int = 0
     rule_matched: bool = False
@@ -272,9 +276,15 @@ def evaluate_trigger(
 ) -> TriggerDecision:
     participant_eligible = participant in policy.trigger_participants
     abstention: TriggerDecision | None = None
-    for rule in policy.trigger_rules:
+    for index, rule in enumerate(policy.trigger_rules):
+        rule_id = rule.id or f"{rule.kind}-{index + 1}"
         if rule.kind == "every_message":
-            decision = TriggerDecision(True, "every_message", rule_kind=rule.kind)
+            decision = TriggerDecision(
+                True,
+                "every_message",
+                rule_kind=rule.kind,
+                rule_id=rule_id,
+            )
             break
         if rule.kind == "literal_prefix":
             literal = _normalize(rule.literal)
@@ -284,6 +294,7 @@ def evaluate_trigger(
                     True,
                     "literal_match",
                     rule_kind=rule.kind,
+                    rule_id=rule_id,
                     alias=rule.literal,
                 )
                 break
@@ -293,7 +304,7 @@ def evaluate_trigger(
             tuple(word for locale in rule.attention_locales for word in attention_words.get(locale, ()))
             + rule.additional_attention_words
         )
-        result = _match_direct_address(content, aliases, words, rule)
+        result = _match_direct_address(content, aliases, words, rule, rule_id=rule_id)
         if result.matched:
             decision = result
             break
@@ -333,6 +344,8 @@ def _match_direct_address(
     aliases: tuple[str, ...],
     attention_words: tuple[str, ...],
     rule: TriggerRule,
+    *,
+    rule_id: str,
 ) -> TriggerDecision:
     text = _normalize(content)
     starts = [0] if rule.allow_bare_alias else []
@@ -351,6 +364,7 @@ def _match_direct_address(
                     True,
                     "direct_address",
                     rule_kind=rule.kind,
+                    rule_id=rule_id,
                     alias=alias,
                 )
     tolerance = rule.typo_tolerance
@@ -389,6 +403,7 @@ def _match_direct_address(
         True,
         "fuzzy_direct_address",
         rule_kind=rule.kind,
+        rule_id=rule_id,
         alias=best_alias,
         distance=best_distance,
     )

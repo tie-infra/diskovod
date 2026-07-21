@@ -17,7 +17,7 @@ class AdminQueryService:
         self.store = store
 
     async def overview(self) -> dict[str, Any]:
-        default_preset = self.store.automation_settings().default_interaction_preset
+        default_preset = self.store.default_interaction_policy().preset
         async with self.store.database.transaction() as connection:
             counts = {}
             for key, query in {
@@ -84,7 +84,7 @@ class AdminQueryService:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        default_preset = self.store.automation_settings().default_interaction_preset
+        default_preset = self.store.default_interaction_policy().preset
         clauses: list[str] = []
         parameters: list[Any] = []
         if query:
@@ -473,7 +473,7 @@ class AdminQueryService:
                 "WHERE c.peer_name LIKE ? OR c.channel_id LIKE ? "
                 "ORDER BY c.updated_at DESC LIMIT ?",
                 (
-                    self.store.automation_settings().default_interaction_preset,
+                    self.store.default_interaction_policy().preset,
                     pattern,
                     pattern,
                     bounded,

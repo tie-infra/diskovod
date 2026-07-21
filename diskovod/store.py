@@ -386,6 +386,26 @@ class Store:
             result.default_interaction_preset = "autonomous"
         return result
 
+    def default_interaction_policy(self) -> InteractionPolicy:
+        settings = self.automation_settings()
+        saved = self._get("interaction.default_policy", None)
+        if isinstance(saved, dict):
+            try:
+                policy = InteractionPolicy.from_dict(saved)
+                profile = self.assistant_profile()
+                validate_policy(
+                    policy,
+                    assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
+                    supported_attention_locales=frozenset(invocation_attention_words()),
+                )
+                return policy
+            except (KeyError, TypeError, ValueError):
+                pass
+        return preset_policy(
+            settings.default_interaction_preset,  # type: ignore[arg-type]
+            prompt_locale=self.assistant_profile().prompt_locale,
+        )
+
     def discord_token(self) -> str | None:
         return self._get("discord.token", None)
 
@@ -446,6 +466,23 @@ class Store:
 
     async def aset_automation_settings(self, value: AutomationSettings) -> None:
         await self._aset("automation.settings", value.to_dict())
+
+    async def aset_default_interaction_policy(self, policy: InteractionPolicy) -> None:
+        profile = self.assistant_profile()
+        validate_policy(
+            policy,
+            assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
+            supported_attention_locales=frozenset(invocation_attention_words()),
+        )
+        await self._aset("interaction.default_policy", policy.to_dict())
+        settings = self.automation_settings()
+        if settings.default_interaction_preset != policy.preset:
+            await self.aset_automation_settings(
+                AutomationSettings(**(settings.to_dict() | {"default_interaction_preset": policy.preset}))
+            )
+
+    async def areset_default_interaction_policy(self) -> None:
+        await self._adelete("interaction.default_policy")
 
     async def aset_discord_token(self, value: str) -> None:
         await self._aset("discord.token", value, secret=True)
@@ -822,11 +859,7 @@ class Store:
                 )
             ).fetchone()
         if row is None:
-            settings = self.automation_settings()
-            policy = preset_policy(
-                settings.default_interaction_preset,  # type: ignore[arg-type]
-                prompt_locale=self.assistant_profile().prompt_locale,
-            )
+            policy = self.default_interaction_policy()
             return policy, self._effective_policy_version(policy, 0), True
         value = {
             "preset": row["preset"],

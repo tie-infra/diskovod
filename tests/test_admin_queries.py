@@ -223,6 +223,24 @@ async def test_chat_list_searches_messages_and_filters_actionable_states(tmp_pat
     await store.aclose()
 
 
+async def test_global_search_uses_the_effective_interaction_preset(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), default_interaction_preset="shared")
+    )
+    await store.aupsert_conversation("inherited", "peer-a", "Inherited Peer")
+    await store.aupsert_conversation("custom", "peer-b", "Custom Peer")
+    await store.aset_interaction_policy("custom", preset_policy("on_invocation"))
+
+    result = await AdminQueryService(store).search("Peer")
+
+    assert {item["channel_id"]: item["mode"] for item in result["chats"]} == {
+        "inherited": "shared",
+        "custom": "on_invocation",
+    }
+    await store.aclose()
+
+
 async def test_checkpoint_lookup_supports_historical_thread_generations(tmp_path: Path):
     store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
     async with store.database.transaction() as connection:

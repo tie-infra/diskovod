@@ -89,6 +89,28 @@ async def test_multiple_triggers_coalesce_with_an_auditable_event_decision(tmp_p
         second = await (
             await connection.execute("SELECT admission_decision FROM conversation_events WHERE id='second'")
         ).fetchone()
+        work_rows = await (await connection.execute("SELECT id, state FROM agent_work")).fetchall()
     assert '"reason":"coalesced"' in second[0]
     assert '"coalesced_into":"work:first"' in second[0]
+    assert [dict(row) for row in work_rows] == [{"id": "work:first", "state": "claimed"}]
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_passive_backlog_uses_a_deterministic_recent_window(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("diskovod.conversation.PASSIVE_CONTEXT_EVENT_LIMIT", 2)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    journal = ConversationJournal(store.database)
+    await admit(journal, "one", "first", schedule=False)
+    await admit(journal, "two", "second", schedule=False)
+    await admit(journal, "three", "trigger", schedule=True)
+
+    batch = await journal.claim_ready("chat", "run")
+
+    assert batch is not None
+    assert batch.omitted_event_count == 1
+    assert [event.id for event in batch.events] == ["two", "three"]
+    assert batch.claimed_event_ids == ("one", "two", "three")
+    assert [event.id for event in await journal.claimed("chat", "run")] == ["one", "two", "three"]
+    assert await journal.complete("chat", "run") == 3
     await store.aclose()

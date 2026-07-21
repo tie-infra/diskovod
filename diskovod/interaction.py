@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import unicodedata
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Iterable, Literal
 
 
@@ -255,6 +255,8 @@ class TriggerDecision:
     rule_kind: str = ""
     alias: str = ""
     distance: int = 0
+    rule_matched: bool = False
+    participant_eligible: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -268,17 +270,23 @@ def evaluate_trigger(
     assistant_name: str,
     attention_words: dict[str, Iterable[str]],
 ) -> TriggerDecision:
-    if participant not in policy.trigger_participants:
-        return TriggerDecision(False, "participant_not_eligible")
+    participant_eligible = participant in policy.trigger_participants
     abstention: TriggerDecision | None = None
     for rule in policy.trigger_rules:
         if rule.kind == "every_message":
-            return TriggerDecision(True, "every_message", rule_kind=rule.kind)
+            decision = TriggerDecision(True, "every_message", rule_kind=rule.kind)
+            break
         if rule.kind == "literal_prefix":
             literal = _normalize(rule.literal)
             text = _normalize(content)
             if literal and text.startswith(literal) and _has_boundary(text, len(literal), literal):
-                return TriggerDecision(True, "literal_match", rule_kind=rule.kind, alias=rule.literal)
+                decision = TriggerDecision(
+                    True,
+                    "literal_match",
+                    rule_kind=rule.kind,
+                    alias=rule.literal,
+                )
+                break
             continue
         aliases = _resolve_aliases(rule.aliases, assistant_name)
         words = (
@@ -287,10 +295,26 @@ def evaluate_trigger(
         )
         result = _match_direct_address(content, aliases, words, rule)
         if result.matched:
-            return result
+            decision = result
+            break
         if result.reason != "not_addressed":
             abstention = result
-    return abstention or TriggerDecision(False, "not_addressed")
+    else:
+        decision = abstention or TriggerDecision(False, "not_addressed")
+    rule_matched = decision.matched
+    if rule_matched and not participant_eligible:
+        return replace(
+            decision,
+            matched=False,
+            reason="participant_not_eligible",
+            rule_matched=True,
+            participant_eligible=False,
+        )
+    return replace(
+        decision,
+        rule_matched=rule_matched,
+        participant_eligible=participant_eligible,
+    )
 
 
 def _resolve_aliases(entries: tuple[InvocationAlias, ...], assistant_name: str) -> tuple[str, ...]:

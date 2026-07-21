@@ -7,6 +7,7 @@ import random
 import time
 import uuid
 from contextlib import AbstractAsyncContextManager
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -374,7 +375,7 @@ class AgentService:
             and await self.journal.message_has_trigger_work(channel_id, message_id)
         ):
             scheduled = False
-            decision = TriggerDecision(False, "edit_already_triggered", rule_kind=decision.rule_kind)
+            decision = replace(decision, matched=False, reason="edit_already_triggered")
         if force or agent_input is True:
             scheduled = True
             decision = TriggerDecision(True, "explicit_agent_input", rule_kind="manual")
@@ -386,15 +387,13 @@ class AgentService:
             scheduled = False
             if active_participant:
                 active_input = policy.active_turn_input.timing == "inject_at_safe_points"
-                decision = TriggerDecision(
-                    False,
-                    "active_input" if active_input else "active_input_queued",
-                    rule_kind=decision.rule_kind,
-                    alias=decision.alias,
-                    distance=decision.distance,
+                decision = replace(
+                    decision,
+                    matched=False,
+                    reason="active_input" if active_input else "active_input_queued",
                 )
         if not scheduled and availability_reason != decision.reason and decision.matched:
-            decision = TriggerDecision(False, availability_reason, rule_kind=decision.rule_kind)
+            decision = replace(decision, matched=False, reason=availability_reason)
         event_id = (
             f"discord:edit:{message_id}:{int(observed_at * 1_000_000)}"
             if edited
@@ -1548,11 +1547,29 @@ class AgentService:
             followup_scheduler=(self if context.allow_conversational_followups else None),
             native_tools=context.capabilities.native_tools,
         )
-        initial_messages = [message for event in claimed if (message := self._message(event)) is not None]
+        initial_messages: list[BaseMessage] = []
+        if batch.omitted_event_count:
+            text = runtime_context_text(profile.prompt_locale)["passive_context_omission"].format(
+                count=batch.omitted_event_count,
+                limit=len(claimed),
+            )
+            initial_messages.append(
+                SystemMessage(
+                    text,
+                    id=f"context-omission:{run_id}",
+                    additional_kwargs={
+                        "diskovod_context_omission": {
+                            "count": batch.omitted_event_count,
+                            "limit": len(claimed),
+                        }
+                    },
+                )
+            )
+        initial_messages.extend(message for event in claimed if (message := self._message(event)) is not None)
         state = {
             "messages": initial_messages,
             "logical_request_id": run_id,
-            "claimed_event_ids": [event.id for event in claimed],
+            "claimed_event_ids": list(batch.claimed_event_ids),
             "reaction_target_message_id": reaction_target_message_id,
         }
         config = {
@@ -1579,8 +1596,9 @@ class AgentService:
             "run_input",
             {
                 "work_id": batch.work.id,
-                "event_ids": [event.id for event in claimed],
+                "event_ids": list(batch.claimed_event_ids),
                 "captured_through_sequence": batch.work.captured_through_sequence,
+                "omitted_event_count": batch.omitted_event_count,
                 "policy_version": batch.work.policy_version,
                 "trigger_decision": batch.work.decision,
                 "force_reply": force,

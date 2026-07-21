@@ -10,6 +10,8 @@ import aiosqlite
 from .interaction import InteractionPolicy, TriggerDecision
 from .persistence import AsyncSQLite
 
+PASSIVE_CONTEXT_EVENT_LIMIT = 200
+
 
 @dataclass(frozen=True, slots=True)
 class ConversationEvent:
@@ -40,6 +42,8 @@ class AgentWork:
 class CapturedBatch:
     work: AgentWork
     events: tuple[ConversationEvent, ...]
+    claimed_event_ids: tuple[str, ...] = ()
+    omitted_event_count: int = 0
 
 
 class ConversationJournal:
@@ -157,6 +161,26 @@ class ConversationJournal:
                     ).fetchone()
                 )[0]
             )
+            encoded_decision = decision.to_dict()
+            coalesced_into: str | None = None
+            if schedule:
+                pending = await (
+                    await connection.execute(
+                        """
+                        SELECT id FROM agent_work
+                        WHERE channel_id=? AND kind='turn' AND state='pending'
+                        ORDER BY created_at, id LIMIT 1
+                        """,
+                        (channel_id,),
+                    )
+                ).fetchone()
+                if pending is not None:
+                    coalesced_into = str(pending["id"])
+                    encoded_decision |= {
+                        "matched": False,
+                        "reason": "coalesced",
+                        "coalesced_into": coalesced_into,
+                    }
             await connection.execute(
                 """
                 INSERT INTO conversation_events(
@@ -171,11 +195,11 @@ class ConversationJournal:
                     kind,
                     encoded_payload,
                     observed_at,
-                    _json(decision.to_dict()),
+                    _json(encoded_decision),
                     "applied" if applied else "unapplied",
                 ),
             )
-            if schedule:
+            if schedule and coalesced_into is None:
                 await connection.execute(
                     """
                     INSERT INTO agent_work(
@@ -316,7 +340,14 @@ class ConversationJournal:
             events = await self._claim_events(connection, channel_id, run_id, int(cutoff), 0, now)
             claimed = dict(row)
             claimed["captured_through_sequence"] = cutoff
-            return CapturedBatch(self._work(claimed), tuple(self._event(item) for item in events))
+            omitted = max(0, len(events) - PASSIVE_CONTEXT_EVENT_LIMIT)
+            visible_events = events[omitted:]
+            return CapturedBatch(
+                self._work(claimed),
+                tuple(self._event(item) for item in visible_events),
+                tuple(str(item["id"]) for item in events),
+                omitted,
+            )
 
     async def claim_injection(
         self,

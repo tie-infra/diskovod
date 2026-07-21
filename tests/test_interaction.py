@@ -167,6 +167,14 @@ def test_participant_scope_is_independent_from_the_trigger_rule():
     peer = decide("Diskovod help", participant="peer", policy=owner_only)
     assert not peer.matched
     assert peer.reason == "participant_not_eligible"
+    assert peer.rule_matched
+    assert not peer.participant_eligible
+
+    unrelated = decide("Talking about lunch", participant="peer", policy=owner_only)
+    assert not unrelated.matched
+    assert not unrelated.rule_matched
+    assert not unrelated.participant_eligible
+    assert unrelated.reason == "not_addressed"
 
 
 def test_literal_prefix_is_strict_and_never_uses_typo_tolerance():

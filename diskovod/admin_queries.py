@@ -467,9 +467,17 @@ class AdminQueryService:
         bounded = max(1, min(limit, 20))
         queries = {
             "chats": (
-                "SELECT channel_id, peer_name, mode, updated_at FROM conversations "
-                "WHERE peer_name LIKE ? OR channel_id LIKE ? ORDER BY updated_at DESC LIMIT ?",
-                (pattern, pattern, bounded),
+                "SELECT c.channel_id, c.peer_name, COALESCE(p.preset, ?) AS mode, c.updated_at "
+                "FROM conversations AS c LEFT JOIN chat_interaction_policies AS p "
+                "ON p.channel_id=c.channel_id "
+                "WHERE c.peer_name LIKE ? OR c.channel_id LIKE ? "
+                "ORDER BY c.updated_at DESC LIMIT ?",
+                (
+                    self.store.automation_settings().default_interaction_preset,
+                    pattern,
+                    pattern,
+                    bounded,
+                ),
             ),
             "messages": (
                 "SELECT id, channel_id, author_name, content, timestamp FROM messages "

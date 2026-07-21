@@ -112,6 +112,9 @@ class PrivateDiscordClient(discord.Client):
             channel_id=channel_id,
             message_id=str(message.id),
         )
+        reference = getattr(message, "reference", None)
+        reference_id = str(reference.message_id or "") if reference else ""
+        reply_to_assistant = bool(reference_id) and await self.store.ais_bot_message(reference_id)
         if message.author == self.user:
             nonce = str(message.nonce) if message.nonce is not None else ""
             consumed_nonce = bool(nonce) and await self.store.aconsume_nonce(nonce)
@@ -157,6 +160,7 @@ class PrivateDiscordClient(discord.Client):
                     content=message.content,
                     attachments=attachments,
                     observed_at=message.created_at.timestamp(),
+                    reply_to_assistant=reply_to_assistant,
                 )
             return
         if message.author.bot:
@@ -187,6 +191,38 @@ class PrivateDiscordClient(discord.Client):
             content=message.content,
             attachments=attachments,
             observed_at=message.created_at.timestamp(),
+            reply_to_assistant=reply_to_assistant,
+        )
+
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        if not self.user:
+            return
+        channel = self.get_channel(payload.channel_id)
+        if not isinstance(channel, discord.DMChannel):
+            return
+        emoji = str(payload.emoji)
+        message_id = str(payload.message_id)
+        if payload.user_id == self.user.id:
+            if await self.store.ais_assistant_reaction(message_id, emoji):
+                return
+            author_id = str(self.user.id)
+            author_name = str(self.user)
+            participant_role = "owner"
+        else:
+            peer = channel.recipient
+            if peer is None or payload.user_id != peer.id or peer.bot:
+                return
+            author_id = str(peer.id)
+            author_name = str(peer)
+            participant_role = "peer"
+        await self.runtime.submit_reaction(
+            message_id=message_id,
+            channel_id=str(channel.id),
+            account_id=str(self.user.id),
+            author_id=author_id,
+            author_name=author_name,
+            participant_role=participant_role,
+            emoji=emoji,
         )
 
     async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
@@ -197,6 +233,9 @@ class PrivateDiscordClient(discord.Client):
             return
         channel_id = str(message.channel.id)
         content = message.content
+        reference = getattr(message, "reference", None)
+        reference_id = str(reference.message_id or "") if reference else ""
+        reply_to_assistant = bool(reference_id) and await self.store.ais_bot_message(reference_id)
         if message.author == self.user:
             updated = await self.store.aupdate_message_content(
                 str(message.id),
@@ -215,6 +254,7 @@ class PrivateDiscordClient(discord.Client):
                     attachments=[],
                     observed_at=time.time(),
                     edited=True,
+                    reply_to_assistant=reply_to_assistant,
                 )
             return
         if message.author.bot:
@@ -233,6 +273,7 @@ class PrivateDiscordClient(discord.Client):
             attachments=[],
             observed_at=time.time(),
             edited=True,
+            reply_to_assistant=reply_to_assistant,
         )
 
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
@@ -391,21 +432,22 @@ class DiscordService:
         emoji: str,
     ) -> DeliveryRecord:
         channel = self._channel(context.channel_id)
+        await self.store.arecord_assistant_reaction(
+            trigger_message_id=message_id,
+            channel_id=context.channel_id,
+            emoji=emoji,
+        )
         try:
             message = await channel.fetch_message(int(message_id))
             await message.add_reaction(emoji)
         except Exception as error:
+            await self.store.aremove_assistant_reaction(message_id, emoji)
             return DeliveryRecord(
                 "failed",
                 0,
                 error_code="discord_reaction_failed",
                 error_detail=f"{type(error).__name__}: {error}"[:1000],
             )
-        await self.store.arecord_assistant_reaction(
-            trigger_message_id=message_id,
-            channel_id=context.channel_id,
-            emoji=emoji,
-        )
         return DeliveryRecord("accepted", 0, discord_message_id=f"reaction:{message_id}:{emoji}")
 
     def _channel(self, channel_id: str):

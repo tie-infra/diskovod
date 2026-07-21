@@ -183,6 +183,7 @@ class CallbackRuntime(EditRuntime):
         self.attachments = CallbackAttachments()
         self.deleted: list[dict] = []
         self.owner_reply_channels: list[str] = []
+        self.reactions: list[dict] = []
         self.resume_result = False
 
     async def resume_escalation_for_owner_reply(self, channel_id: str, _content: str, **_values):
@@ -191,6 +192,9 @@ class CallbackRuntime(EditRuntime):
 
     async def submit_delete(self, **values):
         self.deleted.append(values)
+
+    async def submit_reaction(self, **values):
+        self.reactions.append(values)
 
 
 class ForceRuntime:
@@ -230,6 +234,64 @@ async def test_discord_message_callbacks_use_current_runtime_ingress(tmp_path: P
     assert runtime.submitted[0]["participant_role"] == "peer"
     assert runtime.submitted[0]["message_id"] == "456"
     assert (await store.ahistory("42", 1))[0]["content"] == "Hello"
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reply_to_assistant_metadata_uses_durable_message_identity(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    await store.aremember_bot_message("assistant-message")
+    user = SimpleNamespace(id=999)
+    peer = SimpleNamespace(id=123, bot=False)
+    runtime = CallbackRuntime()
+    client = SimpleNamespace(user=user, store=store, runtime=runtime)
+    message = SimpleNamespace(
+        id=456,
+        channel=FakeEditDMChannel(),
+        author=peer,
+        content="Following up",
+        attachments=(),
+        reference=SimpleNamespace(message_id="assistant-message"),
+        created_at=datetime.now(timezone.utc),
+    )
+
+    await PrivateDiscordClient.on_message(client, message)
+
+    assert runtime.submitted[0]["reply_to_assistant"] is True
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_discord_reaction_callback_ignores_assistant_reactions(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(discord_module.discord, "DMChannel", FakeEditDMChannel)
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    await store.aupsert_conversation("42", "123", "Peer")
+    await store.arecord_assistant_reaction(trigger_message_id="456", channel_id="42", emoji="👀")
+    user = SimpleNamespace(id=999, __str__=lambda self: "Owner")
+    peer = SimpleNamespace(id=123, bot=False, __str__=lambda self: "Peer")
+    channel = FakeEditDMChannel()
+    channel.recipient = peer
+    runtime = CallbackRuntime()
+    client = SimpleNamespace(
+        user=user,
+        store=store,
+        runtime=runtime,
+        get_channel=lambda channel_id: channel if channel_id == 42 else None,
+    )
+
+    await PrivateDiscordClient.on_raw_reaction_add(
+        client,
+        SimpleNamespace(channel_id=42, message_id=456, user_id=999, emoji="👀"),
+    )
+    await PrivateDiscordClient.on_raw_reaction_add(
+        client,
+        SimpleNamespace(channel_id=42, message_id=456, user_id=123, emoji="👀"),
+    )
+
+    assert len(runtime.reactions) == 1
+    assert runtime.reactions[0]["participant_role"] == "peer"
+    assert runtime.reactions[0]["emoji"] == "👀"
     await store.aclose()
 
 

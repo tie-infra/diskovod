@@ -66,8 +66,35 @@ async def test_target_schema_is_idempotent_and_uses_one_database(tmp_path: Path)
             (10,),
             (11,),
             (12,),
+            (13,),
         ]
         assert (await (await connection.execute("PRAGMA journal_mode")).fetchone())[0] == "wal"
+
+
+async def test_reaction_events_are_supported_by_the_current_schema(tmp_path: Path):
+    path = tmp_path / "diskovod.sqlite3"
+    async with aiosqlite.connect(path) as connection:
+        await initialize_target_schema(connection)
+        await connection.execute(
+            """
+            INSERT INTO conversations(
+              channel_id, peer_id, peer_name, availability, updated_at
+            ) VALUES('chat','peer','Peer','active',1)
+            """
+        )
+        await connection.execute(
+            """
+            INSERT INTO conversation_events(
+              id, channel_id, sequence, kind, observed_at, payload, context_state
+            ) VALUES('reaction','chat',1,'reaction',1,'{}','unapplied')
+            """
+        )
+        await connection.commit()
+        assert (
+            await (
+                await connection.execute("SELECT kind FROM conversation_events WHERE id='reaction'")
+            ).fetchone()
+        ) == ("reaction",)
 
 
 async def test_v11_interaction_state_is_migrated_once_without_legacy_runtime_tables(tmp_path: Path):

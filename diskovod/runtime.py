@@ -301,7 +301,8 @@ class AgentService:
         snoozed_until = conversation.get("snoozed_until")
         if snoozed_until and float(snoozed_until) > time.time():
             if not (
-                decision.rule_kind in {"direct_address", "literal_prefix"}
+                decision.rule_kind
+                in {"direct_address", "literal_prefix", "reply_to_assistant", "reaction_invocation"}
                 and policy.invocation_snooze_behavior == "bypass"
             ):
                 return False, "chat_snoozed"
@@ -322,6 +323,7 @@ class AgentService:
         edited: bool = False,
         force: bool = False,
         agent_input: bool | None = None,
+        reply_to_assistant: bool = False,
     ) -> bool:
         inserted, scheduled, active_input = await self._ingest_message(
             message_id=message_id,
@@ -336,6 +338,7 @@ class AgentService:
             edited=edited,
             force=force,
             agent_input=agent_input,
+            reply_to_assistant=reply_to_assistant,
         )
         if inserted and (scheduled or active_input):
             await self._wake_followup_for_input(channel_id)
@@ -358,6 +361,7 @@ class AgentService:
         edited: bool,
         force: bool,
         agent_input: bool | None,
+        reply_to_assistant: bool = False,
     ) -> tuple[bool, bool, bool]:
         policy, policy_version, active_turn = await self._policy_for_input(channel_id)
         profile = self.store.assistant_profile()
@@ -367,6 +371,8 @@ class AgentService:
             content=content,
             assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
             attention_words=invocation_attention_words(),
+            event_kind="edit" if edited else "message",
+            reply_to_assistant=reply_to_assistant,
         )
         scheduled, availability_reason = await self._can_schedule(channel_id, policy, decision)
         if (
@@ -407,6 +413,7 @@ class AgentService:
             "participant_role": participant_role,
             "content": content,
             "attachments": attachments,
+            "reply_to_assistant": reply_to_assistant,
         }
         inserted = await self.journal.admit(
             event_id,
@@ -476,6 +483,71 @@ class AgentService:
             decision=TriggerDecision(False, "delete_context_only"),
         )
         return inserted, active_input
+
+    async def submit_reaction(
+        self,
+        *,
+        message_id: str,
+        channel_id: str,
+        account_id: str,
+        author_id: str,
+        author_name: str,
+        participant_role: str,
+        emoji: str,
+        observed_at: float | None = None,
+    ) -> bool:
+        timestamp = observed_at or time.time()
+        policy, policy_version, active_turn = await self._policy_for_input(channel_id)
+        decision = evaluate_trigger(
+            policy,
+            participant=participant_role,
+            content="",
+            assistant_name=assistant_name_for(
+                self.store.assistant_profile().prompt_locale,
+                self.store.assistant_profile().assistant_name,
+            ),
+            attention_words=invocation_attention_words(),
+            event_kind="reaction",
+            reaction=emoji,
+        )
+        scheduled, availability_reason = await self._can_schedule(channel_id, policy, decision)
+        active_input = False
+        if active_turn:
+            scheduled = False
+            if participant_role in policy.active_turn_input.participants:
+                active_input = policy.active_turn_input.timing == "inject_at_safe_points"
+                decision = replace(
+                    decision,
+                    matched=False,
+                    reason="active_input" if active_input else "active_input_queued",
+                )
+        if not scheduled and availability_reason != decision.reason and decision.matched:
+            decision = replace(decision, matched=False, reason=availability_reason)
+        inserted = await self.journal.admit(
+            f"discord:reaction:{message_id}:{author_id}:{emoji}",
+            channel_id,
+            "reaction",
+            {
+                "message_id": message_id,
+                "account_id": account_id,
+                "author_id": author_id,
+                "author_name": author_name,
+                "participant_role": participant_role,
+                "emoji": emoji,
+            },
+            observed_at=timestamp,
+            schedule=scheduled,
+            trigger_kind=decision.rule_kind or "reaction",
+            trigger_participant=participant_role,
+            policy=policy,
+            policy_version=policy_version,
+            decision=decision,
+        )
+        if inserted and (scheduled or active_input):
+            await self._wake_followup_for_input(channel_id)
+        if inserted and scheduled:
+            self._ensure_task(channel_id)
+        return inserted
 
     async def force_reply(self, *, channel_id: str, account_id: str, trigger_message_id: str) -> None:
         await self._ingest_force_reply(
@@ -1924,6 +1996,26 @@ class AgentService:
     def _message(self, event: ConversationEvent) -> BaseMessage | None:
         if event.kind == "delete":
             return RemoveMessage(id=str(event.payload["message_id"]))
+        if event.kind == "reaction":
+            text_bundle = runtime_context_text(self.store.assistant_profile().prompt_locale)
+            return HumanMessage(
+                text_bundle["reaction_event"].format(
+                    participant=str(event.payload.get("author_name") or text_bundle["unknown_participant"]),
+                    message_id=str(event.payload.get("message_id") or ""),
+                    emoji=str(event.payload.get("emoji") or ""),
+                ),
+                id=event.id,
+                additional_kwargs={
+                    "diskovod_participant": {
+                        "id": str(event.payload.get("author_id") or "unknown"),
+                        "name": str(event.payload.get("author_name") or text_bundle["unknown_participant"]),
+                        "role": str(event.payload.get("participant_role") or "peer"),
+                        "discord_event_id": event.id,
+                        "observed_at": event.observed_at,
+                        "reaction_to_message_id": str(event.payload.get("message_id") or ""),
+                    }
+                },
+            )
         content = str(event.payload.get("content") or "")
         attachments = event.payload.get("attachments") or []
         text_bundle = runtime_context_text(self.store.assistant_profile().prompt_locale)

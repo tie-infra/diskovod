@@ -1085,6 +1085,23 @@ class Store:
                 (timestamp, channel_id),
             )
 
+    async def ais_assistant_reaction(self, trigger_message_id: str, emoji: str) -> bool:
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT 1 FROM assistant_reactions WHERE trigger_message_id=? AND emoji=?",
+                    (trigger_message_id, emoji),
+                )
+            ).fetchone()
+        return row is not None
+
+    async def aremove_assistant_reaction(self, trigger_message_id: str, emoji: str) -> None:
+        async with self.database.transaction() as connection:
+            await connection.execute(
+                "DELETE FROM assistant_reactions WHERE trigger_message_id=? AND emoji=?",
+                (trigger_message_id, emoji),
+            )
+
     async def aprune(self) -> None:
         cutoff = time.time() - 86400
         async with self.database.transaction() as connection:

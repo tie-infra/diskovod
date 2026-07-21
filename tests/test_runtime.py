@@ -7,7 +7,7 @@ from dataclasses import replace
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from diskovod.interaction import ActiveTurnInput, preset_policy
+from diskovod.interaction import ActiveTurnInput, TriggerRule, preset_policy
 from diskovod.outbound import DeliveryRecord
 from diskovod.providers import ModelConfiguration, ProviderCapabilities
 from diskovod.runtime import AgentService
@@ -171,6 +171,53 @@ async def test_invocation_turn_captures_passive_context_without_passive_provider
                 await connection.execute("SELECT context_state FROM conversation_events ORDER BY sequence")
             ).fetchall()
         } == {"applied"}
+    await service.close()
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_configured_reaction_starts_a_turn_and_is_added_to_context(tmp_path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=0)
+    )
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    await store.aset_interaction_policy(
+        "channel",
+        replace(
+            preset_policy("on_invocation"),
+            trigger_rules=(TriggerRule("reaction_invocation", reactions=("👀",)),),
+        ),
+    )
+    model = CapturingModel(responses=[AIMessage(content="I’ll take a look.")])
+    transport = RecordingTransport()
+    service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
+    await service.start()
+
+    await service.submit_reaction(
+        message_id="discord-1",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        emoji="👀",
+        observed_at=time.time(),
+    )
+    await wait_for_idle(service)
+
+    assert model.index == 1
+    assert model.seen_inputs[-1][-1] == "Peer reacted to message discord-1 with 👀."
+    assert transport.messages == [("channel", ("I’ll take a look.",))]
+    async with store.database.transaction() as connection:
+        event = await (
+            await connection.execute(
+                "SELECT kind, json_extract(admission_decision, '$.reason'), context_state "
+                "FROM conversation_events"
+            )
+        ).fetchone()
+    assert tuple(event) == ("reaction", "reaction_invocation", "applied")
+
     await service.close()
     await store.aclose()
 

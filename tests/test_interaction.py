@@ -201,7 +201,68 @@ def test_cjk_names_match_without_requiring_spaces_or_western_punctuation():
 
 
 def test_policy_round_trip_preserves_frozen_participant_sets():
-    policy = preset_policy("on_invocation", prompt_locale="ja", inject_active_input=False)
+    policy = replace(
+        preset_policy("on_invocation", prompt_locale="ja", inject_active_input=False),
+        trigger_rules=(
+            TriggerRule("reply_to_assistant", id="reply"),
+            TriggerRule("reaction_invocation", id="reaction", reactions=("👀", "🤖")),
+        ),
+    )
     restored = type(policy).from_dict(policy.to_dict())
     assert restored == policy
     assert restored.active_turn_input.timing == "queue_for_next_turn"
+
+
+def test_reply_to_assistant_is_an_explicit_message_trigger():
+    policy = replace(
+        preset_policy("on_invocation"),
+        trigger_rules=(TriggerRule("reply_to_assistant", id="reply"),),
+    )
+    ordinary = evaluate_trigger(
+        policy,
+        participant="peer",
+        content="Following up",
+        assistant_name="Diskovod",
+        attention_words=ATTENTION,
+    )
+    reply = evaluate_trigger(
+        policy,
+        participant="peer",
+        content="Following up",
+        assistant_name="Diskovod",
+        attention_words=ATTENTION,
+        reply_to_assistant=True,
+    )
+    assert not ordinary.matched
+    assert reply.matched
+    assert reply.reason == "reply_to_assistant"
+    assert reply.rule_id == "reply"
+
+
+def test_reaction_invocation_matches_only_configured_reactions():
+    policy = replace(
+        preset_policy("on_invocation"),
+        trigger_rules=(TriggerRule("reaction_invocation", id="reaction", reactions=("👀",)),),
+    )
+    matched = evaluate_trigger(
+        policy,
+        participant="owner",
+        content="",
+        assistant_name="Diskovod",
+        attention_words=ATTENTION,
+        event_kind="reaction",
+        reaction="👀",
+    )
+    ignored = evaluate_trigger(
+        policy,
+        participant="owner",
+        content="",
+        assistant_name="Diskovod",
+        attention_words=ATTENTION,
+        event_kind="reaction",
+        reaction="👍",
+    )
+    assert matched.matched
+    assert matched.reason == "reaction_invocation"
+    assert matched.alias == "👀"
+    assert not ignored.matched

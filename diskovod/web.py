@@ -245,6 +245,21 @@ class WebApp:
                 for item in str(form.get("invocation_aliases") or "").splitlines()
                 if (clean := item.strip())
             )
+        if form.get("trigger_reply_to_assistant") is not None:
+            rules.append(TriggerRule("reply_to_assistant", id="reply-to-assistant"))
+        reactions = tuple(
+            clean[:64]
+            for item in str(form.get("reaction_emojis") or "").splitlines()
+            if (clean := item.strip())
+        )[:16]
+        if reactions:
+            rules.append(
+                TriggerRule(
+                    "reaction_invocation",
+                    id="reaction-invocation",
+                    reactions=reactions,
+                )
+            )
             rules.append(
                 TriggerRule(
                     "direct_address",

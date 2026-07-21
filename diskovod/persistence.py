@@ -30,7 +30,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 12
+TARGET_SCHEMA_VERSION = 13
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -699,6 +699,82 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE conversations RENAME TO conversations_v11;
     ALTER TABLE conversations_v12 RENAME TO conversations;
     DROP TABLE conversations_v11;
+    """,
+    """
+    CREATE TABLE conversation_events_v13 (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('message','edit','delete','reaction')),
+      payload TEXT NOT NULL,
+      observed_at REAL NOT NULL,
+      admission_decision TEXT NOT NULL DEFAULT '{}',
+      context_state TEXT NOT NULL CHECK(context_state IN ('unapplied','claimed','applied')),
+      run_id TEXT,
+      injection_batch INTEGER,
+      claimed_at REAL,
+      applied_at REAL,
+      failure TEXT,
+      UNIQUE(channel_id, sequence)
+    );
+    INSERT INTO conversation_events_v13 SELECT * FROM conversation_events;
+
+    CREATE TABLE agent_work_v13 (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('turn','force','continuation')),
+      source_event_id TEXT REFERENCES conversation_events_v13(id) ON DELETE SET NULL,
+      trigger_kind TEXT NOT NULL,
+      trigger_participant TEXT,
+      policy_version INTEGER NOT NULL,
+      policy_snapshot TEXT NOT NULL,
+      available_at REAL NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('pending','claimed','completed','cancelled','failed')),
+      run_id TEXT,
+      captured_through_sequence INTEGER,
+      decision TEXT NOT NULL DEFAULT '{}',
+      created_at REAL NOT NULL,
+      claimed_at REAL,
+      completed_at REAL,
+      failure TEXT
+    );
+    INSERT INTO agent_work_v13 SELECT * FROM agent_work;
+
+    CREATE TABLE conversation_waits_v13 (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      trace_id TEXT NOT NULL,
+      tool_call_id TEXT NOT NULL,
+      wake_work_id TEXT NOT NULL REFERENCES agent_work_v13(id) ON DELETE CASCADE,
+      state TEXT NOT NULL CHECK(state IN (
+        'arming','scheduled','resuming','completed','cancelled','failed'
+      )),
+      resume_at REAL NOT NULL,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      failure TEXT,
+      payload TEXT NOT NULL DEFAULT '{}'
+    );
+    INSERT INTO conversation_waits_v13 SELECT * FROM conversation_waits;
+
+    DROP TABLE conversation_waits;
+    DROP TABLE agent_work;
+    DROP TABLE conversation_events;
+    ALTER TABLE conversation_events_v13 RENAME TO conversation_events;
+    ALTER TABLE agent_work_v13 RENAME TO agent_work;
+    ALTER TABLE conversation_waits_v13 RENAME TO conversation_waits;
+    CREATE INDEX conversation_events_context
+      ON conversation_events(channel_id, context_state, sequence);
+    CREATE INDEX conversation_events_run
+      ON conversation_events(run_id, context_state, sequence);
+    CREATE INDEX agent_work_ready ON agent_work(channel_id, state, available_at, created_at);
+    CREATE INDEX agent_work_run ON agent_work(run_id, state, created_at);
+    CREATE INDEX conversation_waits_due ON conversation_waits(state, resume_at);
+    CREATE UNIQUE INDEX conversation_waits_active_channel
+      ON conversation_waits(channel_id)
+      WHERE state IN ('arming','scheduled','resuming');
     """,
 )
 

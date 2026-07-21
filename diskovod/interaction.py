@@ -25,13 +25,20 @@ class TypoTolerance:
 
 @dataclass(frozen=True, slots=True)
 class TriggerRule:
-    kind: Literal["every_message", "direct_address", "literal_prefix"]
+    kind: Literal[
+        "every_message",
+        "direct_address",
+        "literal_prefix",
+        "reply_to_assistant",
+        "reaction_invocation",
+    ]
     id: str = ""
     aliases: tuple[InvocationAlias, ...] = ()
     attention_locales: tuple[str, ...] = ()
     additional_attention_words: tuple[str, ...] = ()
     allow_bare_alias: bool = True
     literal: str = ""
+    reactions: tuple[str, ...] = ()
     typo_tolerance: TypoTolerance = field(default_factory=TypoTolerance)
 
 
@@ -81,6 +88,7 @@ class InteractionPolicy:
                     additional_attention_words=tuple(raw.get("additional_attention_words", [])),
                     allow_bare_alias=bool(raw.get("allow_bare_alias", True)),
                     literal=str(raw.get("literal", "")),
+                    reactions=tuple(str(item) for item in raw.get("reactions", [])),
                     typo_tolerance=typo,
                 )
             )
@@ -205,9 +213,21 @@ def validate_policy(
     if len(policy.trigger_rules) > 16:
         raise ValueError("An interaction policy may contain at most sixteen trigger rules")
     for rule in policy.trigger_rules:
-        if rule.kind not in {"every_message", "direct_address", "literal_prefix"}:
+        if rule.kind not in {
+            "every_message",
+            "direct_address",
+            "literal_prefix",
+            "reply_to_assistant",
+            "reaction_invocation",
+        }:
             raise ValueError("Unknown trigger rule")
-        if rule.kind == "every_message":
+        if rule.kind in {"every_message", "reply_to_assistant"}:
+            continue
+        if rule.kind == "reaction_invocation":
+            if not rule.reactions or len(rule.reactions) > 16:
+                raise ValueError("Reaction invocation requires between one and sixteen emoji")
+            if any(not item.strip() or len(item) > 64 for item in rule.reactions):
+                raise ValueError("Invalid reaction invocation emoji")
             continue
         if rule.kind == "literal_prefix":
             literal = _normalize(rule.literal)
@@ -273,12 +293,15 @@ def evaluate_trigger(
     content: str,
     assistant_name: str,
     attention_words: dict[str, Iterable[str]],
+    event_kind: str = "message",
+    reply_to_assistant: bool = False,
+    reaction: str = "",
 ) -> TriggerDecision:
     participant_eligible = participant in policy.trigger_participants
     abstention: TriggerDecision | None = None
     for index, rule in enumerate(policy.trigger_rules):
         rule_id = rule.id or f"{rule.kind}-{index + 1}"
-        if rule.kind == "every_message":
+        if rule.kind == "every_message" and event_kind in {"message", "edit"}:
             decision = TriggerDecision(
                 True,
                 "every_message",
@@ -286,6 +309,29 @@ def evaluate_trigger(
                 rule_id=rule_id,
             )
             break
+        if rule.kind == "reply_to_assistant":
+            if event_kind in {"message", "edit"} and reply_to_assistant:
+                decision = TriggerDecision(
+                    True,
+                    "reply_to_assistant",
+                    rule_kind=rule.kind,
+                    rule_id=rule_id,
+                )
+                break
+            continue
+        if rule.kind == "reaction_invocation":
+            if event_kind == "reaction" and reaction in rule.reactions:
+                decision = TriggerDecision(
+                    True,
+                    "reaction_invocation",
+                    rule_kind=rule.kind,
+                    rule_id=rule_id,
+                    alias=reaction,
+                )
+                break
+            continue
+        if event_kind not in {"message", "edit"}:
+            continue
         if rule.kind == "literal_prefix":
             literal = _normalize(rule.literal)
             text = _normalize(content)

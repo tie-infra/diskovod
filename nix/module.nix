@@ -19,6 +19,9 @@ in
         port = 3090;
         public_url = "http://localhost:3090";
         log_level = "INFO";
+        log_levels = {
+          "uvicorn.access" = "WARNING";
+        };
       };
       description = ''
         Diskovod configuration rendered to a JSON file. Secrets must be

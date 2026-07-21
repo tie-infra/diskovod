@@ -1,52 +1,35 @@
 from __future__ import annotations
 
-from io import StringIO
-import logging
 from pathlib import Path
 
 import pytest
 
 from diskovod.config import RuntimeConfig
-from diskovod.main import _SuccessfulAccessLogFilter, build
+from diskovod.main import _logging_config, build
 
 
-def _access_record(status_code: int) -> logging.LogRecord:
-    return logging.LogRecord(
-        "uvicorn.access",
-        logging.INFO,
-        __file__,
-        1,
-        '%s - "%s %s HTTP/%s" %d',
-        ("[::1]", "GET", "/", "1.1", status_code),
-        None,
+def test_logging_config_applies_root_and_component_levels() -> None:
+    config = _logging_config(
+        RuntimeConfig(
+            log_level="INFO",
+            log_levels={
+                "uvicorn": "DEBUG",
+                "diskovod.runtime": "DEBUG",
+            },
+        )
     )
+    assert config["root"]["level"] == "INFO"
+    assert config["loggers"]["uvicorn"]["level"] == "DEBUG"
+    assert config["loggers"]["uvicorn.error"]["level"] == "NOTSET"
+    assert config["loggers"]["uvicorn.access"]["level"] == "WARNING"
+    assert config["loggers"]["diskovod.runtime"]["level"] == "DEBUG"
+    assert "level" not in config["handlers"]["access"]
+    assert "filters" not in config["loggers"]["uvicorn.access"]
 
 
-def test_successful_access_logs_are_debug_but_errors_remain_info() -> None:
-    success = _access_record(204)
-    error = _access_record(404)
-
-    log_filter = _SuccessfulAccessLogFilter()
-    assert log_filter.filter(success)
-    assert log_filter.filter(error)
-
-    assert success.levelno == logging.DEBUG
-    assert success.levelname == "DEBUG"
-    assert error.levelno == logging.INFO
-
-
-def test_info_access_handler_suppresses_success_after_filtering() -> None:
-    output = StringIO()
-    logger = logging.Logger("test.access", logging.INFO)
-    logger.addFilter(_SuccessfulAccessLogFilter())
-    handler = logging.StreamHandler(output)
-    handler.setLevel(logging.INFO)
-    logger.addHandler(handler)
-
-    logger.handle(_access_record(200))
-    logger.handle(_access_record(401))
-
-    assert output.getvalue().splitlines() == ['[::1] - "GET / HTTP/1.1" 401']
+def test_access_log_level_can_be_overridden() -> None:
+    config = _logging_config(RuntimeConfig(log_levels={"uvicorn.access": "INFO"}))
+    assert config["loggers"]["uvicorn.access"]["level"] == "INFO"
 
 
 @pytest.mark.asyncio

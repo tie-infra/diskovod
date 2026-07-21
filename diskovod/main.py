@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
-import logging
+from logging.config import dictConfig
 from pathlib import Path
 from typing import Any
 
@@ -22,26 +22,31 @@ from .store import Store
 from .web import WebApp
 
 
-class _SuccessfulAccessLogFilter(logging.Filter):
-    """Expose successful Uvicorn access records at DEBUG instead of INFO."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        args = record.args
-        if isinstance(args, tuple) and len(args) >= 5:
-            status_code = args[4]
-            if isinstance(status_code, int) and 200 <= status_code < 400:
-                record.levelno = logging.DEBUG
-                record.levelname = logging.getLevelName(logging.DEBUG)
-        return True
-
-
-def _uvicorn_log_config(log_level: str) -> dict[str, Any]:
+def _logging_config(runtime_config: RuntimeConfig) -> dict[str, Any]:
     config = deepcopy(LOGGING_CONFIG)
-    config["filters"] = {
-        "successful_access": {"()": _SuccessfulAccessLogFilter},
+    config["formatters"]["application"] = {
+        "format": "%(asctime)s %(levelname)s %(name)s: %(message)s",
     }
-    config["loggers"]["uvicorn.access"]["filters"] = ["successful_access"]
-    config["handlers"]["access"]["level"] = log_level
+    config["handlers"]["application"] = {
+        "class": "logging.StreamHandler",
+        "formatter": "application",
+        "stream": "ext://sys.stderr",
+    }
+    config["root"] = {
+        "handlers": ["application"],
+        "level": runtime_config.log_level,
+    }
+
+    # Uvicorn supplies explicit INFO levels for these loggers. Make its child
+    # loggers inherit the configured Uvicorn level unless specifically overridden.
+    config["loggers"]["uvicorn"]["level"] = runtime_config.log_level
+    config["loggers"]["uvicorn.error"]["level"] = "NOTSET"
+    config["loggers"]["uvicorn.asgi"] = {"level": "NOTSET"}
+
+    for logger_name, level in runtime_config.log_levels.items():
+        logger_config = config["loggers"].setdefault(logger_name, {})
+        logger_config["level"] = level
+
     return config
 
 
@@ -88,10 +93,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, help="Path to the JSON configuration file")
     args = parser.parse_args()
     config = RuntimeConfig.load(args.config)
-    logging.basicConfig(
-        level=config.log_level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    dictConfig(_logging_config(config))
     web, store, account, discord, runtime, public_http = build(config)
 
     @web.app.on_event("startup")
@@ -120,7 +122,7 @@ def main() -> None:
         web.app,
         host=config.host,
         port=config.port,
-        log_config=_uvicorn_log_config(config.log_level),
+        log_config=None,
         proxy_headers=False,
     )
 

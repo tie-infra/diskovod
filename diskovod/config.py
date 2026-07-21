@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+
+_LOG_LEVELS = frozenset({"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"})
+_DEFAULT_COMPONENT_LOG_LEVELS = {"uvicorn.access": "WARNING"}
 
 
 @dataclass(slots=True)
@@ -14,8 +18,13 @@ class RuntimeConfig:
     public_url: str = "http://localhost:3090"
     data_dir: Path = Path("./data")
     log_level: str = "INFO"
+    log_levels: dict[str, str] = field(default_factory=lambda: dict(_DEFAULT_COMPONENT_LOG_LEVELS))
     admin_password_file: Path | None = None
     secret_key_file: Path | None = None
+
+    def __post_init__(self) -> None:
+        self.log_level = self._log_level(self.log_level, "log_level")
+        self.log_levels = self._component_log_levels(self.log_levels)
 
     @classmethod
     def load(cls, path: Path | None) -> "RuntimeConfig":
@@ -37,10 +46,32 @@ class RuntimeConfig:
             port=int(payload.get("port", 3090)),
             public_url=public_url,
             data_dir=Path(payload.get("data_dir", "./data")),
-            log_level=str(payload.get("log_level", "INFO")),
+            log_level=payload.get("log_level", "INFO"),
+            log_levels=payload.get("log_levels", {}),
             admin_password_file=cls._path(payload.get("admin_password_file")),
             secret_key_file=cls._path(payload.get("secret_key_file")),
         )
+
+    @staticmethod
+    def _log_level(value: Any, setting: str) -> str:
+        if not isinstance(value, str) or value.upper() not in _LOG_LEVELS:
+            choices = ", ".join(sorted(_LOG_LEVELS))
+            raise ValueError(f"{setting} must be one of: {choices}")
+        return value.upper()
+
+    @classmethod
+    def _component_log_levels(cls, value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            raise ValueError("log_levels must be an object mapping logger names to levels")
+
+        levels = dict(_DEFAULT_COMPONENT_LOG_LEVELS)
+        for logger_name, level in value.items():
+            if not isinstance(logger_name, str) or not logger_name.strip():
+                raise ValueError("log_levels keys must be non-empty logger names")
+            if logger_name == "root":
+                raise ValueError("use log_level to configure the root logger")
+            levels[logger_name] = cls._log_level(level, f"log_levels.{logger_name}")
+        return levels
 
     @staticmethod
     def _path(value: Any) -> Path | None:

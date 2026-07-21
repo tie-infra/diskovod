@@ -4,6 +4,9 @@
   "public_url": "http://localhost:3090",
   "data_dir": "./data",
   "log_level": "INFO",
+  "log_levels": {
+    "uvicorn.access": "WARNING"
+  },
   "admin_password_file": "./admin-password",
   "secret_key_file": "./secret-key"
 }

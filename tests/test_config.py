@@ -11,6 +11,8 @@ def test_ipv6_first_defaults():
     assert config.host == "::1"
     assert config.port == 3090
     assert config.public_url == "http://localhost:3090"
+    assert config.log_level == "INFO"
+    assert config.log_levels == {"uvicorn.access": "WARNING"}
 
 
 def test_json_configuration_and_secret_paths(tmp_path: Path):
@@ -26,6 +28,8 @@ def test_json_configuration_and_secret_paths(tmp_path: Path):
                 "port": 8443,
                 "public_url": "https://diskovod.example/base/",
                 "data_dir": str(tmp_path / "state"),
+                "log_level": "warning",
+                "log_levels": {"uvicorn": "debug", "diskovod.runtime": "ERROR"},
                 "admin_password_file": str(password_file),
                 "secret_key_file": str(secret_file),
             }
@@ -36,6 +40,12 @@ def test_json_configuration_and_secret_paths(tmp_path: Path):
     assert config.host == "::"
     assert config.port == 8443
     assert config.public_url == "https://diskovod.example/base"
+    assert config.log_level == "WARNING"
+    assert config.log_levels == {
+        "uvicorn.access": "WARNING",
+        "uvicorn": "DEBUG",
+        "diskovod.runtime": "ERROR",
+    }
     assert config.admin_password_file == password_file
     assert config.secret_key_file == secret_file
     assert RuntimeConfig.read_secret(config.admin_password_file, "password", 12) == "a-long-admin-password"
@@ -45,6 +55,22 @@ def test_secret_file_environment_variables_are_ignored(monkeypatch: pytest.Monke
     monkeypatch.setenv("DISKOVOD_ADMIN_PASSWORD_FILE", "/run/secrets/ignored")
     config = RuntimeConfig.load(None)
     assert config.admin_password_file is None
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"log_level": "verbose"}, "log_level"),
+        ({"log_levels": []}, "log_levels"),
+        ({"log_levels": {"uvicorn": "verbose"}}, "log_levels.uvicorn"),
+        ({"log_levels": {"root": "DEBUG"}}, "use log_level"),
+    ],
+)
+def test_logging_configuration_is_validated(tmp_path: Path, payload: object, message: str):
+    path = tmp_path / "diskovod.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match=message):
+        RuntimeConfig.load(path)
 
 
 @pytest.mark.parametrize("public_url", ["localhost:3090", "ftp://localhost/app", "https://host/app?q=1"])

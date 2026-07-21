@@ -54,8 +54,26 @@ OAuth, and provider credentials entered in the admin UI are encrypted before per
   "public_url": "http://localhost:3090",
   "data_dir": "./data",
   "log_level": "INFO",
+  "log_levels": {
+    "uvicorn.access": "WARNING"
+  },
   "admin_password_file": "./admin-password",
   "secret_key_file": "./secret-key"
+}
+```
+
+`log_level` sets the default logging threshold. `log_levels` overrides it for individual Python
+logger namespaces; names are hierarchical, so `diskovod` controls all application loggers while a
+more specific entry such as `diskovod.runtime` controls only that component. Supported levels are
+`DEBUG`, `INFO`, `WARNING`, `ERROR`, and `CRITICAL` (case-insensitive). Successful and unsuccessful
+Uvicorn requests are all emitted at `INFO`, so the default `uvicorn.access` level of `WARNING`
+disables access lines entirely. To troubleshoot Uvicorn without enabling other components or noisy
+request logs, use:
+
+```json
+"log_levels": {
+  "uvicorn": "DEBUG",
+  "uvicorn.access": "WARNING"
 }
 ```
 
@@ -90,6 +108,7 @@ The flake exposes `overlays.default`, `packages.diskovod`, and `nixosModules.def
       port = 3090;
       public_url = "https://diskovod.example.com";
       log_level = "INFO";
+      log_levels."uvicorn.access" = "WARNING";
       admin_password_file = "/run/credentials/diskovod.service/admin-password";
       secret_key_file = "/run/credentials/diskovod.service/secret-key";
     };

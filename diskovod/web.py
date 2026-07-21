@@ -9,6 +9,7 @@ import re
 import secrets
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -30,6 +31,7 @@ from .localization import (
 )
 from .interaction import (
     ActiveTurnInput,
+    AvailabilitySchedule,
     InteractionPolicy,
     InvocationAlias,
     OwnerHandoff,
@@ -214,6 +216,17 @@ class WebApp:
             invocation_snooze_behavior=(
                 "respect" if form.get("invocation_snooze_behavior") == "respect" else "bypass"
             ),
+            availability_schedule=AvailabilitySchedule(
+                enabled=form.get("schedule_enabled") is not None,
+                weekdays=frozenset(
+                    int(item)
+                    for item in form.getlist("schedule_weekdays")
+                    if str(item).isdigit() and 0 <= int(item) <= 6
+                ),
+                start_minute=self._time_input_minutes(str(form.get("schedule_start") or "09:00")),
+                end_minute=self._time_input_minutes(str(form.get("schedule_end") or "17:00")),
+                timezone=str(form.get("schedule_timezone") or "").strip(),
+            ),
             owner_handoff=OwnerHandoff(
                 availability_transition=(
                     str(form.get("owner_handoff_transition"))
@@ -260,6 +273,7 @@ class WebApp:
                     reactions=reactions,
                 )
             )
+        if form.get("trigger_direct_address") is not None:
             rules.append(
                 TriggerRule(
                     "direct_address",
@@ -291,6 +305,13 @@ class WebApp:
             if (clean := item.strip())
         )
         return replace(policy, trigger_rules=tuple(rules[:16]))
+
+    @staticmethod
+    def _time_input_minutes(value: str) -> int:
+        match = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", value)
+        if match is None:
+            raise ValueError("Invalid schedule time")
+        return int(match.group(1)) * 60 + int(match.group(2))
 
     def _routes(self) -> None:
         auth = self.require_admin
@@ -402,6 +423,7 @@ class WebApp:
             await self._prepare_chat_view(view)
             profile = self.store.assistant_profile()
             view["assistant_display_name"] = assistant_name_for(profile.prompt_locale, profile.assistant_name)
+            view["owner_timezone"] = profile.owner_timezone
             if test_input:
                 policy, _, _ = await self.store.ainteraction_policy(channel_id)
                 participant = "owner" if test_participant == "owner" else "peer"
@@ -732,6 +754,7 @@ class WebApp:
                     profile.prompt_locale,
                     profile.assistant_name,
                 ),
+                owner_timezone=profile.owner_timezone,
                 invocation_test_input=test_input[:1000],
                 invocation_test_participant=participant,
                 invocation_test_result=test_result,
@@ -1647,6 +1670,25 @@ class WebApp:
             await self.runtime.permanently_pause(channel_id)
             return self._redirect(f"/chats/{channel_id}", message=self._t("conversation_paused"))
 
+        @self.app.post("/chats/{channel_id}/snooze")
+        async def snooze(channel_id: str, minutes: int = Form(...), _: str = Depends(auth)):
+            if await self.store.aconversation(channel_id) is None:
+                return self._redirect(f"/chats/{channel_id}", error=self._t("conversation_not_found"))
+            until = await self.store.asnooze(channel_id, max(1, min(minutes, 10_080)) * 60)
+            owner_timezone = self.store.assistant_profile().owner_timezone
+            until_label = datetime.fromtimestamp(until, ZoneInfo(owner_timezone)).strftime(
+                "%Y-%m-%d %H:%M %Z"
+            )
+            return self._redirect(
+                f"/chats/{channel_id}",
+                message=self._t("conversation_snoozed_until", time=until_label),
+            )
+
+        @self.app.post("/chats/{channel_id}/snooze/clear")
+        async def clear_snooze(channel_id: str, _: str = Depends(auth)):
+            await self.store.aclear_snooze(channel_id)
+            return self._redirect(f"/chats/{channel_id}", message=self._t("conversation_resumed"))
+
         @self.app.post("/chats/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):
             self.runtime.cancel(channel_id)
@@ -1859,6 +1901,7 @@ class WebApp:
             "locale": interface.locale,
             "locales": SUPPORTED_LOCALES,
             "t": lambda key, **values: ui_text(interface.locale, key, **values),
+            "format_minutes": lambda value: f"{int(value) // 60:02d}:{int(value) % 60:02d}",
             "public_url": self.public_url,
             "message": request.query_params.get("message"),
             "error": request.query_params.get("error"),

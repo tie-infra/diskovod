@@ -4,7 +4,7 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
-from diskovod.interaction import preset_policy
+from diskovod.interaction import AvailabilitySchedule, preset_policy
 
 from diskovod.models import (
     DEFAULT_BASE_INSTRUCTIONS,
@@ -317,6 +317,23 @@ async def test_interaction_policy_survives_pause_and_resume(tmp_path: Path):
     await store.aset_permanent_pause("dm-1", False)
     assert (await store.ainteraction_policy("dm-1"))[0].preset == "shared"
     assert await store.acan_automate("dm-1") is True
+    await store.aclose()
+
+
+async def test_interaction_policy_persists_an_availability_schedule(tmp_path: Path):
+    store = await Store.open(tmp_path / "state.sqlite3", SECRET)
+    await store.aupsert_conversation("dm-1", "peer-1", "Sam")
+    schedule = AvailabilitySchedule(
+        enabled=True,
+        weekdays=frozenset({0, 2, 4}),
+        start_minute=8 * 60 + 30,
+        end_minute=18 * 60,
+        timezone="Europe/Paris",
+    )
+    policy = replace(preset_policy("autonomous"), availability_schedule=schedule)
+
+    assert await store.aset_interaction_policy("dm-1", policy)
+    assert (await store.ainteraction_policy("dm-1"))[0].availability_schedule == schedule
     await store.aclose()
 
 

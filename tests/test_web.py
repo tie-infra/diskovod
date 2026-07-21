@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPBasicCredentials
 from starlette.requests import Request
+from starlette.datastructures import FormData
 
 from diskovod.discord import DiscordService
 from diskovod.store import Store
@@ -107,6 +108,8 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/chats/{channel_id}/force-reply" in route_paths
     assert "/chats/{channel_id}/interaction" in route_paths
     assert "/chats/{channel_id}/interaction/reset" in route_paths
+    assert "/chats/{channel_id}/snooze" in route_paths
+    assert "/chats/{channel_id}/snooze/clear" in route_paths
     assert "/inbox/escalations/{escalation_id}/claim" in route_paths
     assert "/inbox/escalations/{escalation_id}/resolve" in route_paths
     assert "/inbox/escalations/{escalation_id}/dismiss" in route_paths
@@ -130,6 +133,28 @@ def test_assistant_settings_defaults_reset_the_assistant_domain():
 def test_automation_presets_are_explicit_values_and_custom_changes_remain_custom():
     assert WebApp._automation_preset(AutomationSettings()) == "natural"
     assert WebApp._automation_preset(AutomationSettings(debounce_seconds=9)) == "custom"
+
+
+async def test_interaction_form_saves_direct_address_without_requiring_reactions(tmp_path):
+    store = await Store.open(tmp_path / "state.sqlite3", "x" * 32)
+    web = make_web()
+    web.store = store
+    policy = web._interaction_policy_from_form(
+        FormData(
+            [
+                ("preset", "on_invocation"),
+                ("trigger_direct_address", "on"),
+                ("use_assistant_name_alias", "on"),
+                ("allow_bare_alias", "on"),
+                ("trigger_participants", "peer"),
+                ("active_turn_participants", "peer"),
+                ("schedule_start", "09:00"),
+                ("schedule_end", "17:00"),
+            ]
+        )
+    )
+    assert [rule.kind for rule in policy.trigger_rules] == ["direct_address"]
+    await store.aclose()
 
 
 async def test_subscription_probe_summary_defers_payload_to_diagnostics(tmp_path):

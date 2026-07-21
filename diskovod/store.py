@@ -870,6 +870,7 @@ class Store:
             "identity_marker": row["identity_marker"],
             "delivery": row["delivery"],
             "active_turn_input": json.loads(row["active_turn_input"]),
+            "availability_schedule": json.loads(row["availability_schedule"]),
             "invocation_snooze_behavior": row["invocation_snooze_behavior"],
             "invocation_turn_lifetime": row["invocation_turn_lifetime"],
         }
@@ -906,8 +907,9 @@ class Store:
                 INSERT INTO chat_interaction_policies(
                   channel_id, preset, trigger_rules, trigger_participants, owner_handoff,
                   conversation_role, identity_marker, delivery, active_turn_input,
-                  invocation_snooze_behavior, invocation_turn_lifetime, policy_version, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                  invocation_snooze_behavior, invocation_turn_lifetime, availability_schedule,
+                  policy_version, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 ON CONFLICT(channel_id) DO UPDATE SET
                   preset=excluded.preset,
                   trigger_rules=excluded.trigger_rules,
@@ -919,6 +921,7 @@ class Store:
                   active_turn_input=excluded.active_turn_input,
                   invocation_snooze_behavior=excluded.invocation_snooze_behavior,
                   invocation_turn_lifetime=excluded.invocation_turn_lifetime,
+                  availability_schedule=excluded.availability_schedule,
                   policy_version=chat_interaction_policies.policy_version + 1,
                   updated_at=excluded.updated_at
                 """,
@@ -939,6 +942,15 @@ class Store:
                     ),
                     policy.invocation_snooze_behavior,
                     policy.invocation_turn_lifetime,
+                    json.dumps(
+                        {
+                            "enabled": policy.availability_schedule.enabled,
+                            "weekdays": sorted(policy.availability_schedule.weekdays),
+                            "start_minute": policy.availability_schedule.start_minute,
+                            "end_minute": policy.availability_schedule.end_minute,
+                            "timezone": policy.availability_schedule.timezone,
+                        }
+                    ),
                     now,
                 ),
             )

@@ -30,7 +30,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 13
+TARGET_SCHEMA_VERSION = 14
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -775,6 +775,11 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     CREATE UNIQUE INDEX conversation_waits_active_channel
       ON conversation_waits(channel_id)
       WHERE state IN ('arming','scheduled','resuming');
+    """,
+    """
+    ALTER TABLE chat_interaction_policies
+      ADD COLUMN availability_schedule TEXT NOT NULL
+      DEFAULT '{"enabled":false,"weekdays":[0,1,2,3,4,5,6],"start_minute":540,"end_minute":1020,"timezone":""}';
     """,
 )
 

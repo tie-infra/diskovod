@@ -7,7 +7,7 @@ from dataclasses import replace
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from diskovod.interaction import ActiveTurnInput, TriggerRule, preset_policy
+from diskovod.interaction import AvailabilitySchedule, ActiveTurnInput, TriggerRule, preset_policy
 from diskovod.outbound import DeliveryRecord
 from diskovod.providers import ModelConfiguration, ProviderCapabilities
 from diskovod.runtime import AgentService
@@ -218,6 +218,56 @@ async def test_configured_reaction_starts_a_turn_and_is_added_to_context(tmp_pat
         ).fetchone()
     assert tuple(event) == ("reaction", "reaction_invocation", "applied")
 
+    await service.close()
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_outside_availability_schedule_admits_context_without_starting_a_turn(tmp_path, monkeypatch):
+    monday_evening = 1_774_288_800.0  # 2026-03-23 18:00:00 UTC
+    monkeypatch.setattr("diskovod.runtime.time.time", lambda: monday_evening)
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=0)
+    )
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    await store.aset_interaction_policy(
+        "channel",
+        replace(
+            preset_policy("autonomous"),
+            availability_schedule=AvailabilitySchedule(
+                enabled=True,
+                weekdays=frozenset({0}),
+                start_minute=9 * 60,
+                end_minute=17 * 60,
+                timezone="UTC",
+            ),
+        ),
+    )
+    model = ScriptedChatModel(responses=[])
+    service = AgentService(store, FakeModels(model), RecordingTransport(), "x" * 32, UnusedPublicHTTP())
+    await service.start()
+
+    await service.submit_message(
+        message_id="discord-1",
+        channel_id="channel",
+        account_id="owner",
+        author_id="peer",
+        author_name="Peer",
+        participant_role="peer",
+        content="Hello?",
+        attachments=[],
+        observed_at=monday_evening,
+    )
+
+    assert service.tasks == {}
+    async with store.database.transaction() as connection:
+        event = await (
+            await connection.execute(
+                "SELECT json_extract(admission_decision, '$.reason') FROM conversation_events"
+            )
+        ).fetchone()
+    assert event[0] == "outside_schedule"
     await service.close()
     await store.aclose()
 

@@ -1,12 +1,15 @@
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
 from diskovod.interaction import (
+    AvailabilitySchedule,
     InvocationAlias,
     TriggerRule,
     evaluate_trigger,
     preset_policy,
+    schedule_allows,
 )
 
 
@@ -266,3 +269,29 @@ def test_reaction_invocation_matches_only_configured_reactions():
     assert matched.reason == "reaction_invocation"
     assert matched.alias == "👀"
     assert not ignored.matched
+
+
+def test_availability_schedule_supports_daytime_and_overnight_ranges():
+    monday = datetime(2026, 7, 20, tzinfo=timezone.utc)
+    daytime = AvailabilitySchedule(
+        enabled=True,
+        weekdays=frozenset({0}),
+        start_minute=9 * 60,
+        end_minute=17 * 60,
+        timezone="UTC",
+    )
+    assert schedule_allows(daytime, timestamp=monday.replace(hour=10).timestamp(), default_timezone="UTC")
+    assert not schedule_allows(daytime, timestamp=monday.replace(hour=18).timestamp(), default_timezone="UTC")
+
+    overnight = replace(daytime, start_minute=22 * 60, end_minute=2 * 60)
+    assert schedule_allows(overnight, timestamp=monday.replace(hour=23).timestamp(), default_timezone="UTC")
+    assert schedule_allows(
+        overnight,
+        timestamp=monday.replace(day=21, hour=1).timestamp(),
+        default_timezone="UTC",
+    )
+    assert not schedule_allows(
+        overnight,
+        timestamp=monday.replace(day=21, hour=3).timestamp(),
+        default_timezone="UTC",
+    )

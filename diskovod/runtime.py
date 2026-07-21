@@ -23,7 +23,7 @@ from .agent_types import AgentRuntimeContext, CapabilityProfile, DiskovodAgentSt
 from .attachments import AttachmentRepository
 from .http_client import PublicHTTP
 from .conversation import ConversationEvent, ConversationJournal
-from .interaction import InteractionPolicy, TriggerDecision, evaluate_trigger
+from .interaction import InteractionPolicy, TriggerDecision, evaluate_trigger, schedule_allows
 from .models import AssistantProfile
 from .outbound import DeliveryRecord, DiscordActionTransport, OutboundPublisher
 from .localization import (
@@ -298,8 +298,15 @@ class AgentService:
             return False, "conversation_missing"
         if conversation["availability"] == "paused":
             return False, "chat_paused"
+        now = time.time()
+        if not schedule_allows(
+            policy.availability_schedule,
+            timestamp=now,
+            default_timezone=self.store.assistant_profile().owner_timezone,
+        ):
+            return False, "outside_schedule"
         snoozed_until = conversation.get("snoozed_until")
-        if snoozed_until and float(snoozed_until) > time.time():
+        if snoozed_until and float(snoozed_until) > now:
             if not (
                 decision.rule_kind
                 in {"direct_address", "literal_prefix", "reply_to_assistant", "reaction_invocation"}

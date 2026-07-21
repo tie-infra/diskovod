@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import unicodedata
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from typing import Any, Iterable, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 Participant = Literal["owner", "peer"]
@@ -55,6 +57,15 @@ class ActiveTurnInput:
 
 
 @dataclass(frozen=True, slots=True)
+class AvailabilitySchedule:
+    enabled: bool = False
+    weekdays: frozenset[int] = frozenset(range(7))
+    start_minute: int = 9 * 60
+    end_minute: int = 17 * 60
+    timezone: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class InteractionPolicy:
     preset: Preset
     trigger_rules: tuple[TriggerRule, ...]
@@ -64,6 +75,7 @@ class InteractionPolicy:
     identity_marker: Literal["configurable", "forced"]
     delivery: Literal["immediate", "owner_approval", "dashboard_only"]
     active_turn_input: ActiveTurnInput
+    availability_schedule: AvailabilitySchedule = field(default_factory=AvailabilitySchedule)
     invocation_snooze_behavior: Literal["bypass", "respect"] = "bypass"
     invocation_turn_lifetime: Literal["strict"] = "strict"
 
@@ -71,6 +83,7 @@ class InteractionPolicy:
         value = asdict(self)
         value["trigger_participants"] = sorted(self.trigger_participants)
         value["active_turn_input"]["participants"] = sorted(self.active_turn_input.participants)
+        value["availability_schedule"]["weekdays"] = sorted(self.availability_schedule.weekdays)
         return value
 
     @classmethod
@@ -93,6 +106,7 @@ class InteractionPolicy:
                 )
             )
         active = value.get("active_turn_input", {})
+        schedule = value.get("availability_schedule", {})
         return cls(
             preset=value["preset"],
             trigger_rules=tuple(rules),
@@ -104,6 +118,13 @@ class InteractionPolicy:
             active_turn_input=ActiveTurnInput(
                 timing=active.get("timing", "inject_at_safe_points"),
                 participants=frozenset(active.get("participants", ["owner", "peer"])),
+            ),
+            availability_schedule=AvailabilitySchedule(
+                enabled=bool(schedule.get("enabled", False)),
+                weekdays=frozenset(int(item) for item in schedule.get("weekdays", range(7))),
+                start_minute=int(schedule.get("start_minute", 9 * 60)),
+                end_minute=int(schedule.get("end_minute", 17 * 60)),
+                timezone=str(schedule.get("timezone", "")),
             ),
             invocation_snooze_behavior=value.get("invocation_snooze_behavior", "bypass"),
             invocation_turn_lifetime=value.get("invocation_turn_lifetime", "strict"),
@@ -210,6 +231,20 @@ def validate_policy(
         raise ValueError("Unknown invocation snooze policy")
     if policy.invocation_turn_lifetime != "strict":
         raise ValueError("Only strict invocation turn lifetime is implemented")
+    schedule = policy.availability_schedule
+    if not schedule.weekdays <= frozenset(range(7)):
+        raise ValueError("Unknown schedule weekday")
+    if schedule.enabled and not schedule.weekdays:
+        raise ValueError("An enabled schedule requires at least one weekday")
+    if not 0 <= schedule.start_minute < 24 * 60 or not 0 <= schedule.end_minute < 24 * 60:
+        raise ValueError("Schedule times must be within one day")
+    if schedule.enabled and schedule.start_minute == schedule.end_minute:
+        raise ValueError("An enabled schedule requires a non-empty time range")
+    if schedule.timezone:
+        try:
+            ZoneInfo(schedule.timezone)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("Unknown schedule timezone") from error
     if len(policy.trigger_rules) > 16:
         raise ValueError("An interaction policy may contain at most sixteen trigger rules")
     for rule in policy.trigger_rules:
@@ -372,6 +407,28 @@ def evaluate_trigger(
         rule_matched=rule_matched,
         participant_eligible=participant_eligible,
     )
+
+
+def schedule_allows(
+    schedule: AvailabilitySchedule,
+    *,
+    timestamp: float,
+    default_timezone: str,
+) -> bool:
+    if not schedule.enabled:
+        return True
+    try:
+        timezone = ZoneInfo(schedule.timezone or default_timezone)
+    except ZoneInfoNotFoundError:
+        timezone = ZoneInfo("UTC")
+    local = datetime.fromtimestamp(timestamp, timezone)
+    minute = local.hour * 60 + local.minute
+    if schedule.start_minute < schedule.end_minute:
+        return local.weekday() in schedule.weekdays and schedule.start_minute <= minute < schedule.end_minute
+    if minute >= schedule.start_minute:
+        return local.weekday() in schedule.weekdays
+    previous_weekday = (local.weekday() - 1) % 7
+    return previous_weekday in schedule.weekdays and minute < schedule.end_minute
 
 
 def _resolve_aliases(entries: tuple[InvocationAlias, ...], assistant_name: str) -> tuple[str, ...]:

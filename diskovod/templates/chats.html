@@ -4,7 +4,7 @@
   <input class="form-control" type="search" name="q" value="{{ chats.query }}" placeholder="{{ t('search') }}">
   <select class="form-select" name="state">
     <option value="">{{ t("all") }}</option>
-    {% for state in ("autonomous", "shared", "on_invocation", "manual", "paused", "snoozed", "escalated", "failed") %}<option value="{{ state }}" {{ 'selected' if chats.state == state }}>{{ t("interaction_preset_" ~ state) if state in ("autonomous", "shared", "on_invocation", "manual") else t("availability_paused") if state == "paused" else t(state if state != "failed" else "failed_recently") }}</option>{% endfor %}
+    {% for state in ("autonomous", "shared", "on_invocation", "manual", "draft", "paused", "snoozed", "escalated", "failed") %}<option value="{{ state }}" {{ 'selected' if chats.state == state }}>{{ t("interaction_preset_" ~ state) if state in ("autonomous", "shared", "on_invocation", "manual", "draft") else t("availability_paused") if state == "paused" else t(state if state != "failed" else "failed_recently") }}</option>{% endfor %}
   </select>
   <button class="btn btn-primary">{{ t("search") }}</button>
 </form>
@@ -13,7 +13,7 @@
   <a class="chat-row" href="/chats/{{ chat.channel_id }}">
     <span class="avatar">{{ (chat.peer_name or '?')[:1]|upper }}</span>
     <span class="chat-copy"><strong>{{ chat.peer_name or t("unknown_peer") }}</strong><small>{{ chat.latest_content or t("no_messages") }}</small><span class="d-flex gap-1 mt-1">{% if chat.attachment_count %}<span>📎 {{ chat.attachment_count }}</span>{% endif %}{% if chat.active_run_count %}<span class="text-primary">● {{ t("status_running") }}</span>{% endif %}{% if chat.failed_run_count %}<span class="text-danger">● {{ t("status_failed") }}</span>{% endif %}</span></span>
-    <span class="text-end"><span class="badge text-bg-secondary">{{ t("interaction_preset_" ~ chat.effective_policy) if chat.effective_policy in ("autonomous", "shared", "on_invocation", "manual") else t("availability_paused") if chat.effective_policy == "paused" else t("snoozed") }}</span>{% if chat.escalation_count %}<span class="badge text-bg-danger">!</span>{% endif %}{% if chat.latest_message_at %}<time class="d-block small text-body-secondary" data-local-time data-timestamp="{{ chat.latest_message_at }}">{{ chat.latest_message_at }}</time>{% endif %}</span>
+    <span class="text-end"><span class="badge text-bg-secondary">{{ t("interaction_preset_" ~ chat.effective_policy) if chat.effective_policy in ("autonomous", "shared", "on_invocation", "manual", "draft") else t("availability_paused") if chat.effective_policy == "paused" else t("snoozed") }}</span>{% if chat.escalation_count %}<span class="badge text-bg-danger">!</span>{% endif %}{% if chat.latest_message_at %}<time class="d-block small text-body-secondary" data-local-time data-timestamp="{{ chat.latest_message_at }}">{{ chat.latest_message_at }}</time>{% endif %}</span>
   </a>
   {% else %}<div class="empty-state">{{ t("no_dms") }}</div>{% endfor %}
 </div>

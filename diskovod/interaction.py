@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 Participant = Literal["owner", "peer"]
-Preset = Literal["autonomous", "shared", "on_invocation", "manual"]
+Preset = Literal["autonomous", "shared", "on_invocation", "manual", "draft"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,10 +189,21 @@ def preset_policy(
             trigger_rules=(),
             trigger_participants=frozenset(),
             owner_handoff=OwnerHandoff(),
-            conversation_role="owner_delegate",
+            conversation_role="owner_copilot",
             identity_marker="configurable",
-            delivery="immediate",
+            delivery="dashboard_only",
             active_turn_input=ActiveTurnInput(timing=timing),
+        )
+    if preset == "draft":
+        return InteractionPolicy(
+            preset=preset,
+            trigger_rules=(TriggerRule("every_message", id="every-message"),),
+            trigger_participants=frozenset({"peer"}),
+            owner_handoff=OwnerHandoff("snooze", "cancel"),
+            conversation_role="owner_copilot",
+            identity_marker="forced",
+            delivery="owner_approval",
+            active_turn_input=ActiveTurnInput(timing=timing, participants=frozenset({"peer"})),
         )
     raise ValueError(f"Unknown interaction preset: {preset}")
 
@@ -204,7 +215,7 @@ def validate_policy(
     supported_attention_locales: frozenset[str] | None = None,
 ) -> None:
     participants = {"owner", "peer"}
-    if policy.preset not in {"autonomous", "shared", "on_invocation", "manual"}:
+    if policy.preset not in {"autonomous", "shared", "on_invocation", "manual", "draft"}:
         raise ValueError("Unknown interaction preset")
     if not policy.trigger_participants <= participants:
         raise ValueError("Unknown trigger participant")
@@ -225,8 +236,8 @@ def validate_policy(
         raise ValueError("Unknown identity-marker policy")
     if policy.conversation_role == "shared_assistant" and policy.identity_marker != "forced":
         raise ValueError("A shared assistant must use a forced identity marker")
-    if policy.delivery != "immediate":
-        raise ValueError("Only immediate delivery is implemented")
+    if policy.delivery not in {"immediate", "owner_approval", "dashboard_only"}:
+        raise ValueError("Unknown delivery policy")
     if policy.invocation_snooze_behavior not in {"bypass", "respect"}:
         raise ValueError("Unknown invocation snooze policy")
     if policy.invocation_turn_lifetime != "strict":

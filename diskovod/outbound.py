@@ -86,6 +86,13 @@ class OutboundPublisher:
         source_kind: str,
         source_id: str,
     ) -> list[DeliveryRecord]:
+        if context.delivery in {"owner_approval", "dashboard_only"}:
+            return await self._draft_messages(
+                context,
+                messages,
+                source_kind=source_kind,
+                source_id=source_id,
+            )
         batch_id = self._action_id(context.thread_id, source_kind, source_id, "message-batch", 0)
         segments = [
             (message_index, segment)
@@ -176,6 +183,47 @@ class OutboundPublisher:
                 )
                 reconciled.append({"id": str(row["id"]), "run_id": str(row["run_id"]), "state": "ambiguous"})
         return reconciled
+
+    async def reconcile_drafts(self) -> int:
+        """Resolve draft dispatch state from the durable action ledger after a restart."""
+        now = time.time()
+        async with self.database.transaction() as connection:
+            rows = await (
+                await connection.execute("SELECT id FROM outbound_drafts WHERE state='dispatching'")
+            ).fetchall()
+            changed = 0
+            for row in rows:
+                draft_id = str(row["id"])
+                action = await (
+                    await connection.execute(
+                        """
+                        SELECT state, result, error_code FROM outbound_actions
+                        WHERE source_id=? AND source_kind IN ('approved_draft','tool')
+                        ORDER BY created_at DESC LIMIT 1
+                        """,
+                        (draft_id,),
+                    )
+                ).fetchone()
+                if action is not None and action["state"] == "succeeded":
+                    state, result, error = "delivered", action["result"], None
+                else:
+                    state = "failed"
+                    result = action["result"] if action is not None else None
+                    error = (
+                        str(action["error_code"] or "interrupted_draft_delivery")
+                        if action is not None
+                        else "interrupted_draft_delivery"
+                    )
+                changed += (
+                    await connection.execute(
+                        """
+                        UPDATE outbound_drafts SET state=?, result=?, error=?, updated_at=?
+                        WHERE id=? AND state='dispatching'
+                        """,
+                        (state, result, error, now, draft_id),
+                    )
+                ).rowcount
+        return changed
 
     async def action(self, action_id: str) -> dict[str, object] | None:
         async with self.database.transaction() as connection:
@@ -304,6 +352,20 @@ class OutboundPublisher:
         *,
         source_id: str,
     ) -> DeliveryRecord:
+        if context.delivery in {"owner_approval", "dashboard_only"}:
+            return await self._record_draft(
+                context,
+                batch_id=self._action_id(context.thread_id, "tool", source_id, "reaction-draft", 0),
+                ordinal=0,
+                source_kind="tool",
+                source_id=source_id,
+                kind="discord_reaction",
+                payload={
+                    "channel_id": context.channel_id,
+                    "message_id": message_id,
+                    "emoji": emoji,
+                },
+            )
         action_id = self._action_id(
             context.thread_id,
             "tool",
@@ -338,6 +400,226 @@ class OutboundPublisher:
             )
         await self._finish(action_id, record)
         return record
+
+    async def drafts(
+        self,
+        *,
+        channel_id: str = "",
+        state: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        clauses: list[str] = []
+        parameters: list[object] = []
+        if channel_id:
+            clauses.append("channel_id=?")
+            parameters.append(channel_id)
+        if state:
+            clauses.append("state=?")
+            parameters.append(state)
+        query = "SELECT * FROM outbound_drafts"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC, ordinal DESC LIMIT ?"
+        parameters.append(max(1, min(limit, 500)))
+        async with self.database.transaction() as connection:
+            rows = await (await connection.execute(query, parameters)).fetchall()
+        return [self._draft_row(row) for row in rows]
+
+    async def draft(self, draft_id: str) -> dict[str, object] | None:
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute("SELECT * FROM outbound_drafts WHERE id=?", (draft_id,))
+            ).fetchone()
+        return self._draft_row(row) if row is not None else None
+
+    async def reject_draft(self, draft_id: str) -> bool:
+        now = time.time()
+        async with self.database.transaction() as connection:
+            changed = (
+                await connection.execute(
+                    """
+                    UPDATE outbound_drafts
+                    SET state='rejected', decided_at=?, updated_at=?
+                    WHERE id=? AND state='pending'
+                    """,
+                    (now, now, draft_id),
+                )
+            ).rowcount
+        return changed == 1
+
+    async def approve_draft(self, draft_id: str, *, message: str | None = None) -> DeliveryRecord | None:
+        now = time.time()
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute("SELECT * FROM outbound_drafts WHERE id=?", (draft_id,))
+            ).fetchone()
+            if row is None or row["state"] not in {"pending", "failed"}:
+                return None
+            payload = json.loads(row["payload"])
+            if row["kind"] == "discord_message" and message is not None:
+                edited = message.strip()
+                if not edited:
+                    raise ValueError("An approved message cannot be empty")
+                payload["message"] = edited[:20_000]
+            changed = (
+                await connection.execute(
+                    """
+                    UPDATE outbound_drafts
+                    SET state='dispatching', payload=?, error=NULL, decided_at=?, updated_at=?
+                    WHERE id=? AND state IN ('pending','failed')
+                    """,
+                    (_json(payload), now, now, draft_id),
+                )
+            ).rowcount
+            if changed != 1:
+                return None
+        context = AgentRuntimeContext(
+            account_id="",
+            channel_id=str(row["channel_id"]),
+            participant_ids=(),
+            owner_id="",
+            ui_locale="en",
+            prompt_locale="en",
+            assistant_name="Diskovod",
+            conversation_role="owner_copilot",
+            force_reply=False,
+            provider_id="",
+            model_id="",
+            transport_profile="",
+            capabilities=CapabilityProfile(),
+            trace_id=str(row["run_id"]),
+            identity_marker=str(row["identity_marker"]),
+            delivery="immediate",
+            run_id=str(row["run_id"]),
+            thread_id=str(row["thread_id"]),
+        )
+        async with self.database.transaction() as connection:
+            previous_action = await (
+                await connection.execute(
+                    """
+                    SELECT id, state FROM outbound_actions
+                    WHERE source_id=? AND source_kind IN ('approved_draft','tool')
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (draft_id,),
+                )
+            ).fetchone()
+            if previous_action is not None and previous_action["state"] in {"failed", "ambiguous"}:
+                await connection.execute(
+                    "UPDATE outbound_actions SET payload=? WHERE id=?",
+                    (_json(payload), previous_action["id"]),
+                )
+        if previous_action is not None and previous_action["state"] in {"failed", "ambiguous"}:
+            record = await self.retry(str(previous_action["id"]))
+            if record is None:
+                record = self._ambiguous(0, "missing_transport_result")
+        elif row["kind"] == "discord_message":
+            records = await self.publish_messages(
+                context,
+                (str(payload["message"]),),
+                source_kind="approved_draft",
+                source_id=draft_id,
+            )
+            record = records[0] if records else self._ambiguous(0, "missing_transport_result")
+        else:
+            record = await self.react(
+                context,
+                str(payload["emoji"]),
+                str(payload["message_id"]),
+                source_id=draft_id,
+            )
+        final_state = "delivered" if record.accepted else "failed"
+        async with self.database.transaction() as connection:
+            await connection.execute(
+                """
+                UPDATE outbound_drafts
+                SET state=?, result=?, error=?, updated_at=?
+                WHERE id=? AND state='dispatching'
+                """,
+                (
+                    final_state,
+                    _json(record.to_dict()),
+                    None
+                    if record.accepted
+                    else record.error_code or record.error_detail or "delivery failed",
+                    time.time(),
+                    draft_id,
+                ),
+            )
+        return record
+
+    async def _draft_messages(
+        self,
+        context: AgentRuntimeContext,
+        messages: tuple[str, ...],
+        *,
+        source_kind: str,
+        source_id: str,
+    ) -> list[DeliveryRecord]:
+        batch_id = self._action_id(context.thread_id, source_kind, source_id, "message-drafts", 0)
+        segments = [segment for message in messages for segment in _discord_segments(message)]
+        return [
+            await self._record_draft(
+                context,
+                batch_id=batch_id,
+                ordinal=ordinal,
+                source_kind=source_kind,
+                source_id=source_id,
+                kind="discord_message",
+                payload={"channel_id": context.channel_id, "message": message},
+            )
+            for ordinal, message in enumerate(segments)
+        ]
+
+    async def _record_draft(
+        self,
+        context: AgentRuntimeContext,
+        *,
+        batch_id: str,
+        ordinal: int,
+        source_kind: str,
+        source_id: str,
+        kind: str,
+        payload: dict[str, object],
+    ) -> DeliveryRecord:
+        draft_id = self._action_id(context.thread_id, source_kind, source_id, f"{kind}-draft", ordinal)
+        now = time.time()
+        state = "pending" if context.delivery == "owner_approval" else "recorded"
+        async with self.database.transaction() as connection:
+            await connection.execute(
+                """
+                INSERT OR IGNORE INTO outbound_drafts(
+                  id, batch_id, ordinal, thread_id, channel_id, run_id,
+                  source_kind, source_id, kind, payload, identity_marker,
+                  policy, state, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    draft_id,
+                    batch_id,
+                    ordinal,
+                    context.thread_id,
+                    context.channel_id,
+                    context.run_id or context.trace_id,
+                    source_kind,
+                    source_id,
+                    kind,
+                    _json(payload),
+                    context.identity_marker,
+                    context.delivery,
+                    state,
+                    now,
+                    now,
+                ),
+            )
+        return DeliveryRecord("accepted", ordinal, discord_message_id=f"draft:{draft_id}")
+
+    @staticmethod
+    def _draft_row(row) -> dict[str, object]:
+        value = dict(row)
+        value["payload"] = json.loads(value["payload"])
+        value["result"] = json.loads(value["result"]) if value.get("result") else None
+        return value
 
     async def record_escalation(
         self,

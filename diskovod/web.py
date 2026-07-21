@@ -189,7 +189,7 @@ class WebApp:
 
     def _interaction_policy_from_form(self, form: Any) -> InteractionPolicy:
         preset = str(form.get("preset") or "")
-        if preset not in {"autonomous", "shared", "on_invocation", "manual"}:
+        if preset not in {"autonomous", "shared", "on_invocation", "manual", "draft"}:
             raise ValueError("Unknown interaction preset")
         profile = self.store.assistant_profile()
         timing = (
@@ -246,6 +246,11 @@ class WebApp:
                 str(form.get("identity_marker"))
                 if form.get("identity_marker") in {"configurable", "forced"}
                 else policy.identity_marker
+            ),
+            delivery=(
+                str(form.get("delivery"))
+                if form.get("delivery") in {"immediate", "owner_approval", "dashboard_only"}
+                else policy.delivery
             ),
         )
         rules: list[TriggerRule] = []
@@ -345,6 +350,11 @@ class WebApp:
                 "inbox",
                 "inbox",
                 escalations=await self.queries.inbox(offset=offset),
+                drafts=[
+                    item
+                    for item in await self.runtime.publisher.drafts(limit=100)
+                    if item["state"] in {"pending", "recorded", "failed"}
+                ],
                 failed_runs=self._localize_run_items(await self.queries.actionable_runs()),
                 captcha_requests=self.discord.captcha_requests(),
                 connection_errors=[
@@ -1173,6 +1183,7 @@ class WebApp:
                 "shared",
                 "on_invocation",
                 "manual",
+                "draft",
             }:
                 return self._redirect("/settings/automation", error=self._t("interaction_policy_invalid"))
             updated_automation = AutomationSettings(
@@ -1758,6 +1769,28 @@ class WebApp:
                 f"/inbox/escalations/{escalation_id}", message=self._t("escalation_claimed")
             )
 
+        @self.app.post("/inbox/drafts/{draft_id}/approve")
+        async def approve_draft(
+            draft_id: str,
+            message: str | None = Form(None),
+            _: str = Depends(auth),
+        ):
+            try:
+                result = await self.runtime.publisher.approve_draft(draft_id, message=message)
+            except ValueError:
+                return self._redirect("/inbox", error=self._t("draft_message_required"))
+            if result is None:
+                return self._redirect("/inbox", error=self._t("draft_not_actionable"))
+            if not result.accepted:
+                return self._redirect("/inbox", error=self._t("draft_delivery_failed"))
+            return self._redirect("/inbox", message=self._t("draft_approved"))
+
+        @self.app.post("/inbox/drafts/{draft_id}/reject")
+        async def reject_draft(draft_id: str, _: str = Depends(auth)):
+            if not await self.runtime.publisher.reject_draft(draft_id):
+                return self._redirect("/inbox", error=self._t("draft_not_actionable"))
+            return self._redirect("/inbox", message=self._t("draft_rejected"))
+
         @self.app.post("/inbox/escalations/{escalation_id}/resolve")
         async def escalation_resolve(
             escalation_id: str,
@@ -2014,6 +2047,10 @@ class WebApp:
 
     async def _prepare_chat_view(self, view: dict[str, Any]) -> None:
         view["runtime_ready"] = self.runtime.ready
+        view["drafts"] = await self.runtime.publisher.drafts(
+            channel_id=str(view["conversation"]["channel_id"]),
+            limit=20,
+        )
         configuration = view.get("configuration") or {}
         configuration["provider_label"] = self._provider_label(configuration.get("provider_id"))
         for generation in view.get("generations") or []:

@@ -273,6 +273,47 @@ async def test_outside_availability_schedule_admits_context_without_starting_a_t
 
 
 @pytest.mark.asyncio
+async def test_manual_copilot_force_reply_stays_in_the_dashboard(tmp_path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    await store.aset_interaction_policy("channel", preset_policy("manual"))
+    await store.asave_message(
+        id="discord-1",
+        channel_id="channel",
+        author_id="peer",
+        author_name="Peer",
+        direction="in",
+        source="remote",
+        content="Can you help?",
+        timestamp=time.time(),
+    )
+    transport = RecordingTransport()
+    service = AgentService(
+        store,
+        FakeModels(ScriptedChatModel(responses=[AIMessage(content="Private suggestion")])),
+        transport,
+        "x" * 32,
+        UnusedPublicHTTP(),
+    )
+    await service.start()
+
+    await service.force_reply(
+        channel_id="channel",
+        account_id="owner",
+        trigger_message_id="discord-1",
+    )
+    await wait_for_idle(service)
+
+    assert transport.messages == []
+    drafts = await service.publisher.drafts(channel_id="channel")
+    assert len(drafts) == 1
+    assert drafts[0]["state"] == "recorded"
+    assert drafts[0]["payload"]["message"] == "Private suggestion"
+    await service.close()
+    await store.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("timing", "expected_reason"),
     (
@@ -497,6 +538,7 @@ async def test_public_output_cutover_reconciles_claims_from_legacy_graph_threads
         ).fetchone()
     assert reply["context_state"] == "unapplied"
     assert "Please continue from here" in reply["payload"]
+    await service.close()
     await store.aclose()
 
 

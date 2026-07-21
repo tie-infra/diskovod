@@ -15,6 +15,16 @@
   {% for run in failed_runs %}
   <article class="card border-danger"><div class="card-body d-flex justify-content-between gap-3"><div><h2 class="h6">{{ t("failed_runs") }} · {{ run.channel_id }}</h2><p class="small text-danger mb-0">{{ run.error or t("status_" ~ run.status) }}</p></div><a href="/activity/runs/{{ run.id }}">{{ t("inspect") }}</a></div></article>
   {% endfor %}
+  {% for draft in drafts %}
+  <article class="card {{ 'border-warning' if draft.state == 'pending' else 'border-danger' if draft.state == 'failed' else '' }}"><div class="card-body">
+    <div class="d-flex justify-content-between gap-3"><h2 class="h5">{{ t("assistant_draft") }}</h2><span class="badge text-bg-secondary">{{ t("draft_state_" ~ draft.state) }}</span></div>
+    {% if draft.kind == 'discord_message' %}
+      {% if draft.state in ('pending', 'failed') %}<form method="post" action="/inbox/drafts/{{ draft.id }}/approve"><textarea class="form-control mb-2" name="message" rows="3">{{ draft.payload.message }}</textarea><button class="btn btn-primary">{{ t("approve_and_send") }}</button></form>{% else %}<textarea class="form-control mb-2" rows="3" readonly>{{ draft.payload.message }}</textarea>{% endif %}
+    {% else %}<p>{{ t("reaction_draft", emoji=draft.payload.emoji, message_id=draft.payload.message_id) }}</p>{% if draft.state in ('pending', 'failed') %}<form method="post" action="/inbox/drafts/{{ draft.id }}/approve"><button class="btn btn-primary">{{ t("approve_and_send") }}</button></form>{% endif %}{% endif %}
+    {% if draft.state == 'pending' %}<form class="d-inline" method="post" action="/inbox/drafts/{{ draft.id }}/reject"><button class="btn btn-outline-danger mt-2">{{ t("reject") }}</button></form>{% endif %}
+    <a class="small d-block mt-2" href="/chats/{{ draft.channel_id }}">{{ t("open_chat") }}</a>
+  </div></article>
+  {% endfor %}
   {% for escalation in escalations["items"] %}
   <article class="card">
     <div class="card-body">

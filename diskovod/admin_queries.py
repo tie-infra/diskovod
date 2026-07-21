@@ -95,7 +95,7 @@ class AdminQueryService:
             )
             pattern = f"%{query[:200]}%"
             parameters.extend((pattern, pattern, pattern))
-        if state in {"autonomous", "shared", "on_invocation", "manual"}:
+        if state in {"autonomous", "shared", "on_invocation", "manual", "draft"}:
             clauses.append("COALESCE(p.preset, ?) = ? AND c.availability='active'")
             parameters.extend((default_preset, state))
         elif state == "paused":
@@ -873,7 +873,12 @@ class AdminQueryService:
         async with self.store.database.transaction() as connection:
             row = await (
                 await connection.execute(
-                    "SELECT COUNT(*) FROM escalation_interrupts WHERE state IN ('pending','claimed')"
+                    """
+                    SELECT
+                      (SELECT COUNT(*) FROM escalation_interrupts
+                       WHERE state IN ('pending','claimed')) +
+                      (SELECT COUNT(*) FROM outbound_drafts WHERE state='pending')
+                    """
                 )
             ).fetchone()
         return int(row[0])

@@ -26,7 +26,7 @@ class Transport:
         return DeliveryRecord("accepted", 0, f"reaction:{message_id}:{emoji}")
 
 
-def context() -> AgentRuntimeContext:
+def context(*, delivery: str = "immediate") -> AgentRuntimeContext:
     return AgentRuntimeContext(
         account_id="account",
         channel_id="chat",
@@ -43,6 +43,7 @@ def context() -> AgentRuntimeContext:
         capabilities=CapabilityProfile(),
         trace_id="run",
         thread_id="thread",
+        delivery=delivery,
     )
 
 
@@ -180,4 +181,76 @@ async def test_operator_can_resolve_ambiguous_delivery_without_transport(tmp_pat
     saved = await publisher.action(action_id)
     assert saved["state"] == "succeeded"
     assert transport.messages == []
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_owner_approval_holds_an_editable_draft_until_explicit_delivery(tmp_path: Path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    transport = Transport()
+    publisher = OutboundPublisher(store.database, transport)
+
+    records = await publisher.publish_messages(
+        context(delivery="owner_approval"),
+        ("original draft",),
+        source_kind="assistant_text",
+        source_id="ai-draft",
+    )
+    drafts = await publisher.drafts(state="pending")
+
+    assert records[0].accepted
+    assert transport.messages == []
+    assert len(drafts) == 1
+    assert drafts[0]["payload"]["message"] == "original draft"
+
+    delivered = await publisher.approve_draft(str(drafts[0]["id"]), message="owner edit")
+
+    assert delivered is not None and delivered.accepted
+    assert transport.messages == ["owner edit"]
+    assert (await publisher.draft(str(drafts[0]["id"])))["state"] == "delivered"
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_only_output_is_recorded_and_cannot_be_approved(tmp_path: Path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    transport = Transport()
+    publisher = OutboundPublisher(store.database, transport)
+
+    await publisher.publish_messages(
+        context(delivery="dashboard_only"),
+        ("private advice",),
+        source_kind="assistant_text",
+        source_id="ai-private",
+    )
+    drafts = await publisher.drafts(state="recorded")
+
+    assert len(drafts) == 1
+    assert drafts[0]["payload"]["message"] == "private advice"
+    assert await publisher.approve_draft(str(drafts[0]["id"])) is None
+    assert transport.messages == []
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_explicit_second_approval_retries_a_failed_draft_delivery(tmp_path: Path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    transport = Transport(raises=True)
+    publisher = OutboundPublisher(store.database, transport)
+    await publisher.publish_messages(
+        context(delivery="owner_approval"),
+        ("draft",),
+        source_kind="assistant_text",
+        source_id="ai-retry",
+    )
+    draft = (await publisher.drafts(state="pending"))[0]
+
+    failed = await publisher.approve_draft(str(draft["id"]))
+    transport.raises = False
+    retried = await publisher.approve_draft(str(draft["id"]), message="edited retry")
+
+    assert failed is not None and not failed.accepted
+    assert retried is not None and retried.accepted
+    assert transport.messages == ["edited retry"]
+    assert (await publisher.draft(str(draft["id"])))["state"] == "delivered"
     await store.aclose()

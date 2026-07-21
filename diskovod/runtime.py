@@ -122,6 +122,7 @@ class AgentService:
                 "outbound_action_reconciled",
                 {"action_id": action["id"], "state": action["state"]},
             )
+        await self.publisher.reconcile_drafts()
         await self._reconcile_abandoned_agent_runs()
         self._checkpoint_context = open_checkpointer(self.store.path, self.checkpoint_secret)
         self.checkpointer = await self._checkpoint_context.__aenter__()

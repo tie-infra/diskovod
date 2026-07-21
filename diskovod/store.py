@@ -382,6 +382,7 @@ class Store:
             "shared",
             "on_invocation",
             "manual",
+            "draft",
         }:
             result.default_interaction_preset = "autonomous"
         return result

@@ -30,7 +30,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 14
+TARGET_SCHEMA_VERSION = 15
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -780,6 +780,58 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE chat_interaction_policies
       ADD COLUMN availability_schedule TEXT NOT NULL
       DEFAULT '{"enabled":false,"weekdays":[0,1,2,3,4,5,6],"start_minute":540,"end_minute":1020,"timezone":""}';
+    """,
+    """
+    CREATE TABLE chat_interaction_policies_v15 (
+      channel_id TEXT PRIMARY KEY REFERENCES conversations(channel_id) ON DELETE CASCADE,
+      preset TEXT NOT NULL CHECK(preset IN (
+        'autonomous','shared','on_invocation','manual','draft'
+      )),
+      trigger_rules TEXT NOT NULL,
+      trigger_participants TEXT NOT NULL,
+      owner_handoff TEXT NOT NULL,
+      conversation_role TEXT NOT NULL CHECK(conversation_role IN (
+        'owner_delegate','shared_assistant','owner_copilot'
+      )),
+      identity_marker TEXT NOT NULL CHECK(identity_marker IN ('configurable','forced')),
+      delivery TEXT NOT NULL CHECK(delivery IN ('immediate','owner_approval','dashboard_only')),
+      active_turn_input TEXT NOT NULL,
+      invocation_snooze_behavior TEXT NOT NULL CHECK(invocation_snooze_behavior IN ('bypass','respect')),
+      invocation_turn_lifetime TEXT NOT NULL CHECK(invocation_turn_lifetime='strict'),
+      policy_version INTEGER NOT NULL,
+      updated_at REAL NOT NULL,
+      availability_schedule TEXT NOT NULL
+    );
+    INSERT INTO chat_interaction_policies_v15 SELECT * FROM chat_interaction_policies;
+    DROP TABLE chat_interaction_policies;
+    ALTER TABLE chat_interaction_policies_v15 RENAME TO chat_interaction_policies;
+
+    CREATE TABLE outbound_drafts (
+      id TEXT PRIMARY KEY,
+      batch_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      thread_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('discord_message','discord_reaction')),
+      payload TEXT NOT NULL,
+      identity_marker TEXT NOT NULL CHECK(identity_marker IN ('configurable','forced')),
+      policy TEXT NOT NULL CHECK(policy IN ('owner_approval','dashboard_only')),
+      state TEXT NOT NULL CHECK(state IN (
+        'pending','recorded','dispatching','delivered','rejected','failed'
+      )),
+      result TEXT,
+      error TEXT,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      decided_at REAL,
+      UNIQUE(batch_id, ordinal)
+    );
+    CREATE INDEX outbound_drafts_channel ON outbound_drafts(channel_id, created_at DESC);
+    CREATE INDEX outbound_drafts_state ON outbound_drafts(state, created_at DESC);
+    CREATE INDEX outbound_drafts_run ON outbound_drafts(run_id, created_at, ordinal);
     """,
 )
 

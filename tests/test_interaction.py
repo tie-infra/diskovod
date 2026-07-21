@@ -295,3 +295,15 @@ def test_availability_schedule_supports_daytime_and_overnight_ranges():
         timestamp=monday.replace(day=21, hour=3).timestamp(),
         default_timezone="UTC",
     )
+
+
+def test_private_and_approval_presets_have_distinct_delivery_contracts():
+    manual = preset_policy("manual")
+    draft = preset_policy("draft")
+    assert manual.trigger_rules == ()
+    assert manual.trigger_participants == frozenset()
+    assert manual.conversation_role == "owner_copilot"
+    assert manual.delivery == "dashboard_only"
+    assert draft.trigger_participants == frozenset({"peer"})
+    assert draft.conversation_role == "owner_copilot"
+    assert draft.delivery == "owner_approval"

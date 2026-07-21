@@ -27,6 +27,7 @@ dependencies = [
 
 [project.scripts]
 diskovod = "diskovod.main:main"
+diskovod-evaluate-invocation = "diskovod.invocation_evaluation:main"
 
 [tool.setuptools.packages.find]
 include = ["diskovod*"]

@@ -142,6 +142,7 @@ class ConversationJournal:
         policy_version: int,
         decision: TriggerDecision,
         applied: bool = False,
+        require_engagement: bool = False,
     ) -> bool:
         encoded_payload = _json(payload)
         now = time.time()
@@ -181,6 +182,23 @@ class ConversationJournal:
                         "reason": "coalesced",
                         "coalesced_into": coalesced_into,
                     }
+                elif require_engagement:
+                    consumed = (
+                        await connection.execute(
+                            """
+                            UPDATE conversation_engagements
+                            SET remaining_turns=remaining_turns-1, updated_at=?
+                            WHERE channel_id=? AND expires_at>? AND remaining_turns>0
+                            """,
+                            (now, channel_id, now),
+                        )
+                    ).rowcount
+                    if consumed != 1:
+                        schedule = False
+                        encoded_decision |= {
+                            "matched": False,
+                            "reason": "engagement_expired",
+                        }
             await connection.execute(
                 """
                 INSERT INTO conversation_events(

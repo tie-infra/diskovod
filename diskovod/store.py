@@ -872,6 +872,7 @@ class Store:
             "delivery": row["delivery"],
             "active_turn_input": json.loads(row["active_turn_input"]),
             "availability_schedule": json.loads(row["availability_schedule"]),
+            "engagement_window": json.loads(row["engagement_window"]),
             "invocation_snooze_behavior": row["invocation_snooze_behavior"],
             "invocation_turn_lifetime": row["invocation_turn_lifetime"],
         }
@@ -909,8 +910,8 @@ class Store:
                   channel_id, preset, trigger_rules, trigger_participants, owner_handoff,
                   conversation_role, identity_marker, delivery, active_turn_input,
                   invocation_snooze_behavior, invocation_turn_lifetime, availability_schedule,
-                  policy_version, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                  engagement_window, policy_version, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 ON CONFLICT(channel_id) DO UPDATE SET
                   preset=excluded.preset,
                   trigger_rules=excluded.trigger_rules,
@@ -923,6 +924,7 @@ class Store:
                   invocation_snooze_behavior=excluded.invocation_snooze_behavior,
                   invocation_turn_lifetime=excluded.invocation_turn_lifetime,
                   availability_schedule=excluded.availability_schedule,
+                  engagement_window=excluded.engagement_window,
                   policy_version=chat_interaction_policies.policy_version + 1,
                   updated_at=excluded.updated_at
                 """,
@@ -952,9 +954,16 @@ class Store:
                             "timezone": policy.availability_schedule.timezone,
                         }
                     ),
+                    json.dumps(
+                        {
+                            "duration_seconds": policy.engagement_window.duration_seconds,
+                            "max_followup_turns": policy.engagement_window.max_followup_turns,
+                        }
+                    ),
                     now,
                 ),
             )
+            await connection.execute("DELETE FROM conversation_engagements WHERE channel_id=?", (channel_id,))
         return True
 
     async def areset_interaction_policy(self, channel_id: str) -> bool:
@@ -962,6 +971,7 @@ class Store:
             cursor = await connection.execute(
                 "DELETE FROM chat_interaction_policies WHERE channel_id=?", (channel_id,)
             )
+            await connection.execute("DELETE FROM conversation_engagements WHERE channel_id=?", (channel_id,))
         return cursor.rowcount > 0
 
     async def asnooze(self, channel_id: str, seconds: float) -> float:
@@ -979,6 +989,76 @@ class Store:
                 "UPDATE conversations SET snoozed_until=NULL, updated_at=? WHERE channel_id=?",
                 (time.time(), channel_id),
             )
+
+    async def aengagement(self, channel_id: str, *, now: float | None = None) -> dict[str, Any] | None:
+        timestamp = time.time() if now is None else now
+        async with self.database.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT * FROM conversation_engagements WHERE channel_id=?",
+                    (channel_id,),
+                )
+            ).fetchone()
+            if row is not None and (
+                float(row["expires_at"]) <= timestamp or int(row["remaining_turns"]) <= 0
+            ):
+                await connection.execute(
+                    "DELETE FROM conversation_engagements WHERE channel_id=?", (channel_id,)
+                )
+                row = None
+        return dict(row) if row is not None else None
+
+    async def aactivate_engagement(
+        self,
+        channel_id: str,
+        *,
+        duration_seconds: int,
+        max_followup_turns: int,
+        policy_version: int,
+    ) -> None:
+        now = time.time()
+        async with self.database.transaction() as connection:
+            await connection.execute(
+                """
+                INSERT INTO conversation_engagements(
+                  channel_id, expires_at, remaining_turns, policy_version, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                  expires_at=excluded.expires_at,
+                  remaining_turns=excluded.remaining_turns,
+                  policy_version=excluded.policy_version,
+                  created_at=excluded.created_at,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    channel_id,
+                    now + duration_seconds,
+                    max_followup_turns,
+                    policy_version,
+                    now,
+                    now,
+                ),
+            )
+
+    async def atouch_engagement(self, channel_id: str, *, duration_seconds: int) -> None:
+        now = time.time()
+        async with self.database.transaction() as connection:
+            await connection.execute(
+                """
+                UPDATE conversation_engagements SET expires_at=?, updated_at=?
+                WHERE channel_id=? AND remaining_turns>0
+                """,
+                (now + duration_seconds, now, channel_id),
+            )
+
+    async def aclose_engagement(self, channel_id: str) -> bool:
+        async with self.database.transaction() as connection:
+            changed = (
+                await connection.execute(
+                    "DELETE FROM conversation_engagements WHERE channel_id=?", (channel_id,)
+                )
+            ).rowcount
+        return changed > 0
 
     async def aset_interrupt_state(self, escalation_id: str, state: str) -> bool:
         if state not in {"claimed", "resolved", "dismissed"}:

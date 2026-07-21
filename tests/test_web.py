@@ -110,6 +110,7 @@ def test_auth_callbacks_and_redirects_use_public_url():
     assert "/chats/{channel_id}/interaction/reset" in route_paths
     assert "/chats/{channel_id}/snooze" in route_paths
     assert "/chats/{channel_id}/snooze/clear" in route_paths
+    assert "/chats/{channel_id}/engagement/close" in route_paths
     assert "/inbox/escalations/{escalation_id}/claim" in route_paths
     assert "/inbox/escalations/{escalation_id}/resolve" in route_paths
     assert "/inbox/escalations/{escalation_id}/dismiss" in route_paths

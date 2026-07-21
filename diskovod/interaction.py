@@ -68,6 +68,12 @@ class AvailabilitySchedule:
 
 
 @dataclass(frozen=True, slots=True)
+class EngagementWindow:
+    duration_seconds: int = 5 * 60
+    max_followup_turns: int = 3
+
+
+@dataclass(frozen=True, slots=True)
 class InteractionPolicy:
     preset: Preset
     trigger_rules: tuple[TriggerRule, ...]
@@ -78,8 +84,9 @@ class InteractionPolicy:
     delivery: Literal["immediate", "owner_approval", "dashboard_only"]
     active_turn_input: ActiveTurnInput
     availability_schedule: AvailabilitySchedule = field(default_factory=AvailabilitySchedule)
+    engagement_window: EngagementWindow = field(default_factory=EngagementWindow)
     invocation_snooze_behavior: Literal["bypass", "respect"] = "bypass"
-    invocation_turn_lifetime: Literal["strict"] = "strict"
+    invocation_turn_lifetime: Literal["strict", "engagement_window"] = "strict"
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -109,6 +116,7 @@ class InteractionPolicy:
             )
         active = value.get("active_turn_input", {})
         schedule = value.get("availability_schedule", {})
+        engagement = value.get("engagement_window", {})
         return cls(
             preset=value["preset"],
             trigger_rules=tuple(rules),
@@ -127,6 +135,10 @@ class InteractionPolicy:
                 start_minute=int(schedule.get("start_minute", 9 * 60)),
                 end_minute=int(schedule.get("end_minute", 17 * 60)),
                 timezone=str(schedule.get("timezone", "")),
+            ),
+            engagement_window=EngagementWindow(
+                duration_seconds=int(engagement.get("duration_seconds", 5 * 60)),
+                max_followup_turns=int(engagement.get("max_followup_turns", 3)),
             ),
             invocation_snooze_behavior=value.get("invocation_snooze_behavior", "bypass"),
             invocation_turn_lifetime=value.get("invocation_turn_lifetime", "strict"),
@@ -242,8 +254,12 @@ def validate_policy(
         raise ValueError("Unknown delivery policy")
     if policy.invocation_snooze_behavior not in {"bypass", "respect"}:
         raise ValueError("Unknown invocation snooze policy")
-    if policy.invocation_turn_lifetime != "strict":
-        raise ValueError("Only strict invocation turn lifetime is implemented")
+    if policy.invocation_turn_lifetime not in {"strict", "engagement_window"}:
+        raise ValueError("Unknown invocation turn lifetime")
+    if not 30 <= policy.engagement_window.duration_seconds <= 24 * 60 * 60:
+        raise ValueError("Engagement duration must be between 30 seconds and one day")
+    if not 1 <= policy.engagement_window.max_followup_turns <= 20:
+        raise ValueError("Engagement follow-up turns must be between one and twenty")
     schedule = policy.availability_schedule
     if not schedule.weekdays <= frozenset(range(7)):
         raise ValueError("Unknown schedule weekday")

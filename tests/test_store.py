@@ -4,7 +4,7 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
-from diskovod.interaction import AvailabilitySchedule, preset_policy
+from diskovod.interaction import AvailabilitySchedule, EngagementWindow, preset_policy
 
 from diskovod.models import (
     DEFAULT_BASE_INSTRUCTIONS,
@@ -334,6 +334,36 @@ async def test_interaction_policy_persists_an_availability_schedule(tmp_path: Pa
 
     assert await store.aset_interaction_policy("dm-1", policy)
     assert (await store.ainteraction_policy("dm-1"))[0].availability_schedule == schedule
+    await store.aclose()
+
+
+async def test_engagement_window_state_survives_restart_and_policy_change_closes_it(tmp_path: Path):
+    path = tmp_path / "state.sqlite3"
+    store = await Store.open(path, SECRET)
+    await store.aupsert_conversation("dm-1", "peer-1", "Sam")
+    engagement = EngagementWindow(duration_seconds=600, max_followup_turns=4)
+    policy = replace(
+        preset_policy("on_invocation"),
+        invocation_turn_lifetime="engagement_window",
+        engagement_window=engagement,
+    )
+    assert await store.aset_interaction_policy("dm-1", policy)
+    _, policy_version, _ = await store.ainteraction_policy("dm-1")
+    await store.aactivate_engagement(
+        "dm-1",
+        duration_seconds=engagement.duration_seconds,
+        max_followup_turns=engagement.max_followup_turns,
+        policy_version=policy_version,
+    )
+    await store.aclose()
+
+    store = await Store.open(path, SECRET)
+    active = await store.aengagement("dm-1")
+    assert active is not None
+    assert active["remaining_turns"] == 4
+    assert active["policy_version"] == policy_version
+    assert await store.aset_interaction_policy("dm-1", preset_policy("shared"))
+    assert await store.aengagement("dm-1") is None
     await store.aclose()
 
 

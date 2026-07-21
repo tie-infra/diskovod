@@ -7,7 +7,13 @@ from dataclasses import replace
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from diskovod.interaction import AvailabilitySchedule, ActiveTurnInput, TriggerRule, preset_policy
+from diskovod.interaction import (
+    ActiveTurnInput,
+    AvailabilitySchedule,
+    EngagementWindow,
+    TriggerRule,
+    preset_policy,
+)
 from diskovod.outbound import DeliveryRecord
 from diskovod.providers import ModelConfiguration, ProviderCapabilities
 from diskovod.runtime import AgentService
@@ -309,6 +315,67 @@ async def test_manual_copilot_force_reply_stays_in_the_dashboard(tmp_path):
     assert len(drafts) == 1
     assert drafts[0]["state"] == "recorded"
     assert drafts[0]["payload"]["message"] == "Private suggestion"
+    await service.close()
+    await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bounded_engagement_window_accepts_only_configured_followup_turns(tmp_path):
+    store = await Store.open(tmp_path / "diskovod.sqlite3", "x" * 32)
+    await store.aset_automation_settings(
+        replace(store.automation_settings(), enabled=True, debounce_seconds=0)
+    )
+    await store.aupsert_conversation("channel", "peer", "Peer")
+    await store.aset_interaction_policy(
+        "channel",
+        replace(
+            preset_policy("on_invocation"),
+            invocation_turn_lifetime="engagement_window",
+            engagement_window=EngagementWindow(duration_seconds=300, max_followup_turns=1),
+        ),
+    )
+    model = ScriptedChatModel(
+        responses=[AIMessage(content="First answer"), AIMessage(content="Follow-up answer")]
+    )
+    transport = RecordingTransport()
+    service = AgentService(store, FakeModels(model), transport, "x" * 32, UnusedPublicHTTP())
+    await service.start()
+
+    for message_id, content in (
+        ("one", "Diskovod, help"),
+        ("two", "And one more thing"),
+        ("three", "This now needs another invocation"),
+    ):
+        await service.submit_message(
+            message_id=message_id,
+            channel_id="channel",
+            account_id="owner",
+            author_id="peer",
+            author_name="Peer",
+            participant_role="peer",
+            content=content,
+            attachments=[],
+            observed_at=time.time(),
+        )
+        await wait_for_idle(service)
+
+    assert model.index == 2
+    assert transport.messages == [
+        ("channel", ("First answer",)),
+        ("channel", ("Follow-up answer",)),
+    ]
+    async with store.database.transaction() as connection:
+        reasons = [
+            row[0]
+            for row in await (
+                await connection.execute(
+                    "SELECT json_extract(admission_decision, '$.reason') "
+                    "FROM conversation_events ORDER BY sequence"
+                )
+            ).fetchall()
+        ]
+    assert reasons == ["direct_address", "engagement_window", "not_addressed"]
+    assert await store.aengagement("channel") is None
     await service.close()
     await store.aclose()
 

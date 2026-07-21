@@ -160,6 +160,7 @@ class AgentService:
 
     async def permanently_pause(self, channel_id: str) -> None:
         await self.store.aset_permanent_pause(channel_id, True)
+        await self.store.aclose_engagement(channel_id)
         await self.cancel_followup(
             channel_id,
             reason="conversation_paused",
@@ -250,6 +251,7 @@ class AgentService:
         until = time.time()
         if transition == "pause":
             await self.store.aset_permanent_pause(channel_id, True)
+            await self.store.aclose_engagement(channel_id)
         elif transition == "snooze":
             settings = self.store.automation_settings()
             quiet_minutes = random.uniform(
@@ -257,6 +259,7 @@ class AgentService:
                 settings.max_human_quiet_minutes,
             )
             until = await self.store.asnooze(channel_id, quiet_minutes * 60)
+            await self.store.aclose_engagement(channel_id)
         if policy.owner_handoff.active_run_action == "cancel":
             await self.cancel_followup(
                 channel_id,
@@ -382,6 +385,28 @@ class AgentService:
             event_kind="edit" if edited else "message",
             reply_to_assistant=reply_to_assistant,
         )
+        engagement = (
+            await self.store.aengagement(channel_id)
+            if policy.invocation_turn_lifetime == "engagement_window"
+            else None
+        )
+        if engagement is not None and int(engagement["policy_version"]) != policy_version:
+            await self.store.aclose_engagement(channel_id)
+            engagement = None
+        if (
+            not decision.matched
+            and policy.invocation_turn_lifetime == "engagement_window"
+            and participant_role in policy.active_turn_input.participants
+            and engagement is not None
+        ):
+            decision = TriggerDecision(
+                True,
+                "engagement_window",
+                rule_kind="engagement_window",
+                rule_id="engagement-window",
+                rule_matched=True,
+                participant_eligible=True,
+            )
         scheduled, availability_reason = await self._can_schedule(channel_id, policy, decision)
         if (
             edited
@@ -435,6 +460,7 @@ class AgentService:
             policy=policy,
             policy_version=policy_version,
             decision=decision,
+            require_engagement=decision.reason == "engagement_window",
         )
         if inserted:
             await self.journal.thread_id(account_id, channel_id)
@@ -1736,6 +1762,24 @@ class AgentService:
                 "outbound_delivery_count": result.get("outbound_delivery_count", 0),
             },
         )
+        if not interrupted and interaction_policy.invocation_turn_lifetime == "engagement_window":
+            if batch.work.trigger_kind in {
+                "direct_address",
+                "literal_prefix",
+                "reply_to_assistant",
+                "reaction_invocation",
+            }:
+                await self.store.aactivate_engagement(
+                    channel_id,
+                    duration_seconds=interaction_policy.engagement_window.duration_seconds,
+                    max_followup_turns=interaction_policy.engagement_window.max_followup_turns,
+                    policy_version=batch.work.policy_version,
+                )
+            elif batch.work.trigger_kind == "engagement_window":
+                await self.store.atouch_engagement(
+                    channel_id,
+                    duration_seconds=interaction_policy.engagement_window.duration_seconds,
+                )
         if not interrupted:
             try:
                 await self._roll_if_needed(channel_id, thread_id)

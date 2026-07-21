@@ -30,7 +30,7 @@ from langgraph.store.base import (
 
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-TARGET_SCHEMA_VERSION = 15
+TARGET_SCHEMA_VERSION = 16
 
 
 TARGET_MIGRATIONS: tuple[str, ...] = (
@@ -832,6 +832,57 @@ TARGET_MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX outbound_drafts_channel ON outbound_drafts(channel_id, created_at DESC);
     CREATE INDEX outbound_drafts_state ON outbound_drafts(state, created_at DESC);
     CREATE INDEX outbound_drafts_run ON outbound_drafts(run_id, created_at, ordinal);
+    """,
+    """
+    CREATE TABLE chat_interaction_policies_v16 (
+      channel_id TEXT PRIMARY KEY REFERENCES conversations(channel_id) ON DELETE CASCADE,
+      preset TEXT NOT NULL CHECK(preset IN (
+        'autonomous','shared','on_invocation','manual','draft'
+      )),
+      trigger_rules TEXT NOT NULL,
+      trigger_participants TEXT NOT NULL,
+      owner_handoff TEXT NOT NULL,
+      conversation_role TEXT NOT NULL CHECK(conversation_role IN (
+        'owner_delegate','shared_assistant','owner_copilot'
+      )),
+      identity_marker TEXT NOT NULL CHECK(identity_marker IN ('configurable','forced')),
+      delivery TEXT NOT NULL CHECK(delivery IN ('immediate','owner_approval','dashboard_only')),
+      active_turn_input TEXT NOT NULL,
+      invocation_snooze_behavior TEXT NOT NULL CHECK(invocation_snooze_behavior IN ('bypass','respect')),
+      invocation_turn_lifetime TEXT NOT NULL CHECK(invocation_turn_lifetime IN (
+        'strict','engagement_window'
+      )),
+      policy_version INTEGER NOT NULL,
+      updated_at REAL NOT NULL,
+      availability_schedule TEXT NOT NULL,
+      engagement_window TEXT NOT NULL
+    );
+    INSERT INTO chat_interaction_policies_v16(
+      channel_id, preset, trigger_rules, trigger_participants, owner_handoff,
+      conversation_role, identity_marker, delivery, active_turn_input,
+      invocation_snooze_behavior, invocation_turn_lifetime, policy_version,
+      updated_at, availability_schedule, engagement_window
+    )
+    SELECT
+      channel_id, preset, trigger_rules, trigger_participants, owner_handoff,
+      conversation_role, identity_marker, delivery, active_turn_input,
+      invocation_snooze_behavior, invocation_turn_lifetime, policy_version,
+      updated_at, availability_schedule,
+      '{"duration_seconds":300,"max_followup_turns":3}'
+    FROM chat_interaction_policies;
+    DROP TABLE chat_interaction_policies;
+    ALTER TABLE chat_interaction_policies_v16 RENAME TO chat_interaction_policies;
+
+    CREATE TABLE conversation_engagements (
+      channel_id TEXT PRIMARY KEY REFERENCES conversations(channel_id) ON DELETE CASCADE,
+      expires_at REAL NOT NULL,
+      remaining_turns INTEGER NOT NULL CHECK(remaining_turns>=0),
+      policy_version INTEGER NOT NULL,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL
+    );
+    CREATE INDEX conversation_engagements_expiry
+      ON conversation_engagements(expires_at, remaining_turns);
     """,
 )
 

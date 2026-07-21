@@ -187,6 +187,7 @@ class AdminQueryService:
         interaction_policy, policy_version, inherited_policy = await self.store.ainteraction_policy(
             channel_id
         )
+        engagement = await self.store.aengagement(channel_id)
         conversation["effective_policy"] = (
             "paused" if conversation["availability"] == "paused" else interaction_policy.preset
         )
@@ -321,6 +322,7 @@ class AdminQueryService:
             "interaction_policy": interaction_policy.to_dict(),
             "interaction_policy_version": policy_version,
             "interaction_policy_inherited": inherited_policy,
+            "engagement": engagement,
             "generations": generations,
             "selected_generation": selected,
             "messages": transcript,

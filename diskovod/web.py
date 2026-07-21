@@ -32,6 +32,7 @@ from .localization import (
 from .interaction import (
     ActiveTurnInput,
     AvailabilitySchedule,
+    EngagementWindow,
     InteractionPolicy,
     InvocationAlias,
     OwnerHandoff,
@@ -215,6 +216,15 @@ class WebApp:
             ),
             invocation_snooze_behavior=(
                 "respect" if form.get("invocation_snooze_behavior") == "respect" else "bypass"
+            ),
+            invocation_turn_lifetime=(
+                "engagement_window"
+                if form.get("invocation_turn_lifetime") == "engagement_window"
+                else "strict"
+            ),
+            engagement_window=EngagementWindow(
+                duration_seconds=int(str(form.get("engagement_minutes") or "5")) * 60,
+                max_followup_turns=int(str(form.get("engagement_turns") or "3")),
             ),
             availability_schedule=AvailabilitySchedule(
                 enabled=form.get("schedule_enabled") is not None,
@@ -1715,6 +1725,12 @@ class WebApp:
         async def clear_snooze(channel_id: str, _: str = Depends(auth)):
             await self.store.aclear_snooze(channel_id)
             return self._redirect(f"/chats/{channel_id}", message=self._t("conversation_resumed"))
+
+        @self.app.post("/chats/{channel_id}/engagement/close")
+        async def close_engagement(channel_id: str, _: str = Depends(auth)):
+            if not await self.store.aclose_engagement(channel_id):
+                return self._redirect(f"/chats/{channel_id}", error=self._t("engagement_not_active"))
+            return self._redirect(f"/chats/{channel_id}", message=self._t("engagement_closed"))
 
         @self.app.post("/chats/{channel_id}/resume")
         async def resume(channel_id: str, _: str = Depends(auth)):

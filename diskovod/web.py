@@ -425,6 +425,8 @@ class WebApp:
             channel_id: str,
             test_input: str = "",
             test_participant: str = "peer",
+            test_event_kind: str = "message",
+            test_reaction: str = "",
             _: str = Depends(auth),
         ):
             view = await self.queries.chat(channel_id)
@@ -434,17 +436,23 @@ class WebApp:
             profile = self.store.assistant_profile()
             view["assistant_display_name"] = assistant_name_for(profile.prompt_locale, profile.assistant_name)
             view["owner_timezone"] = profile.owner_timezone
-            if test_input:
+            event_kind = test_event_kind if test_event_kind in {"message", "reply", "reaction"} else "message"
+            participant = "owner" if test_participant == "owner" else "peer"
+            view["invocation_test_participant"] = participant
+            view["invocation_test_event_kind"] = event_kind
+            view["invocation_test_reaction"] = test_reaction[:64]
+            if test_input or event_kind != "message":
                 policy, _, _ = await self.store.ainteraction_policy(channel_id)
-                participant = "owner" if test_participant == "owner" else "peer"
                 view["invocation_test_input"] = test_input[:1000]
-                view["invocation_test_participant"] = participant
                 view["invocation_test_result"] = evaluate_trigger(
                     policy,
                     participant=participant,
                     content=test_input[:1000],
                     assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
                     attention_words=invocation_attention_words(),
+                    event_kind="reaction" if event_kind == "reaction" else "message",
+                    reply_to_assistant=event_kind == "reply",
+                    reaction=test_reaction[:64],
                 ).to_dict() | {"normalized_input": normalize_invocation_text(test_input[:1000])}
             return await self._render(
                 request, "chat.html", "chats", "chat", chat=view, live_topic=f"chat:{channel_id}"
@@ -740,19 +748,25 @@ class WebApp:
             request: Request,
             test_input: str = "",
             test_participant: str = "peer",
+            test_event_kind: str = "message",
+            test_reaction: str = "",
             _: str = Depends(auth),
         ):
             policy = self.store.default_interaction_policy()
             profile = self.store.assistant_profile()
             test_result = None
             participant = "owner" if test_participant == "owner" else "peer"
-            if test_input:
+            event_kind = test_event_kind if test_event_kind in {"message", "reply", "reaction"} else "message"
+            if test_input or event_kind != "message":
                 test_result = evaluate_trigger(
                     policy,
                     participant=participant,
                     content=test_input[:1000],
                     assistant_name=assistant_name_for(profile.prompt_locale, profile.assistant_name),
                     attention_words=invocation_attention_words(),
+                    event_kind="reaction" if event_kind == "reaction" else "message",
+                    reply_to_assistant=event_kind == "reply",
+                    reaction=test_reaction[:64],
                 ).to_dict() | {"normalized_input": normalize_invocation_text(test_input[:1000])}
             return await self._render(
                 request,
@@ -767,6 +781,8 @@ class WebApp:
                 owner_timezone=profile.owner_timezone,
                 invocation_test_input=test_input[:1000],
                 invocation_test_participant=participant,
+                invocation_test_event_kind=event_kind,
+                invocation_test_reaction=test_reaction[:64],
                 invocation_test_result=test_result,
             )
 

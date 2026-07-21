@@ -277,7 +277,7 @@ class AdminQueryService:
             interaction_events = await (
                 await connection.execute(
                     """
-                    SELECT sequence, context_state, admission_decision,
+                    SELECT sequence, kind, context_state, admission_decision, payload,
                       json_extract(payload, '$.message_id') AS message_id
                     FROM conversation_events WHERE channel_id=?
                     ORDER BY sequence
@@ -298,6 +298,16 @@ class AdminQueryService:
             for row in interaction_events
             if row["message_id"]
         }
+        interaction_audit = [
+            {
+                "sequence": int(row["sequence"]),
+                "kind": str(row["kind"]),
+                "context_state": str(row["context_state"]),
+                "decision": self._payload(row["admission_decision"]),
+                "payload": self._payload(row["payload"]),
+            }
+            for row in interaction_events[-50:]
+        ]
         for message in transcript:
             message["assistant_reaction"] = reaction_map.get(str(message["id"]))
             message["interaction_event"] = event_map.get(str(message["id"]))
@@ -328,6 +338,7 @@ class AdminQueryService:
                 selected and generations and selected["generation"] != generations[0]["generation"]
             ),
             "active_wait": dict(active_wait) if active_wait else None,
+            "interaction_events": interaction_audit,
         }
 
     async def checkpoint(
@@ -519,8 +530,17 @@ class AdminQueryService:
                 elif topic == "inbox":
                     row = await (
                         await connection.execute(
-                            "SELECT COALESCE(MAX(updated_at), 0), COUNT(*) FROM escalation_interrupts "
-                            "WHERE state IN ('pending','claimed')"
+                            """
+                            SELECT
+                              COALESCE((SELECT MAX(updated_at) FROM escalation_interrupts
+                                WHERE state IN ('pending','claimed')), 0),
+                              (SELECT COUNT(*) FROM escalation_interrupts
+                                WHERE state IN ('pending','claimed')),
+                              COALESCE((SELECT MAX(updated_at) FROM outbound_drafts
+                                WHERE state IN ('pending','recorded','failed')), 0),
+                              (SELECT COUNT(*) FROM outbound_drafts
+                                WHERE state IN ('pending','recorded','failed'))
+                            """
                         )
                     ).fetchone()
                 elif topic.startswith("chat:"):
@@ -536,9 +556,13 @@ class AdminQueryService:
                                 FROM agent_runs WHERE channel_id=?), 0),
                               COALESCE((SELECT MAX(c.created_at) FROM checkpoint_index c
                                 JOIN chat_thread_generations g ON g.thread_id=c.thread_id
-                                WHERE g.channel_id=?), 0)
+                                WHERE g.channel_id=?), 0),
+                              COALESCE((SELECT MAX(sequence) FROM conversation_events
+                                WHERE channel_id=?), 0),
+                              COALESCE((SELECT MAX(updated_at) FROM outbound_drafts
+                                WHERE channel_id=?), 0)
                             """,
-                            (channel_id, channel_id, channel_id, channel_id),
+                            (channel_id, channel_id, channel_id, channel_id, channel_id, channel_id),
                         )
                     ).fetchone()
                 elif topic.startswith("run:"):
@@ -627,6 +651,26 @@ class AdminQueryService:
                     (run_id,),
                 )
             ).fetchall()
+            work_rows = await (
+                await connection.execute(
+                    "SELECT * FROM agent_work WHERE run_id=? ORDER BY created_at", (run_id,)
+                )
+            ).fetchall()
+            event_range = await (
+                await connection.execute(
+                    """
+                    SELECT MIN(sequence), MAX(sequence), COUNT(*)
+                    FROM conversation_events WHERE run_id=?
+                    """,
+                    (run_id,),
+                )
+            ).fetchone()
+            drafts = await (
+                await connection.execute(
+                    "SELECT * FROM outbound_drafts WHERE run_id=? ORDER BY created_at, ordinal",
+                    (run_id,),
+                )
+            ).fetchall()
             messages = await (
                 await connection.execute(
                     "SELECT * FROM messages WHERE channel_id=? AND timestamp<=? "
@@ -643,6 +687,27 @@ class AdminQueryService:
             "deliveries": [self._delivery(row) for row in deliveries],
             "checkpoints": [dict(row) for row in checkpoints],
             "waits": [self._wait(row) for row in waits],
+            "work": [
+                dict(row)
+                | {
+                    "decision": redact_sensitive(self._payload(row["decision"])),
+                    "policy_snapshot": redact_sensitive(self._payload(row["policy_snapshot"])),
+                }
+                for row in work_rows
+            ],
+            "captured_events": {
+                "first_sequence": int(event_range[0]) if event_range and event_range[0] is not None else None,
+                "last_sequence": int(event_range[1]) if event_range and event_range[1] is not None else None,
+                "count": int(event_range[2]) if event_range else 0,
+            },
+            "drafts": [
+                dict(row)
+                | {
+                    "payload": redact_sensitive(self._payload(row["payload"])),
+                    "result": redact_sensitive(self._payload(row["result"])),
+                }
+                for row in drafts
+            ],
             "conversation": [self._message(row) for row in reversed(messages)],
             "model_exchanges": self._model_exchanges(parsed_traces),
             "event_count": event_count,
@@ -700,6 +765,9 @@ class AdminQueryService:
             "deliveries": deliveries,
             "checkpoints": view["checkpoints"],
             "waits": view["waits"],
+            "work": view["work"],
+            "captured_events": view["captured_events"],
+            "drafts": view["drafts"],
             "truncated": view["event_count"] > 500,
         }
 
